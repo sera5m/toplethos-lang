@@ -9,33 +9,70 @@ Standout watch feature: **reverse oscilloscope** (AWG) and **normal oscilloscope
 
 ESP32-S3 has **no DAC**. Corz.org used GPIO 25/26 DACs on classic ESP32. We keep the *commands*, not the analog block.
 
+One `siggen_play` state. The **SigGen** / **Scope** watch apps, the HTML console, and `sh("wave …")` / `sh("scope")` all drive the same generator and ADC.
+
+## Watch apps
+
+Menu → **Utilities**:
+
+| App | Name | Controls |
+|-----|------|----------|
+| SigGen | `SigGenApp` | L/R field, U/D value, ENTER start/stop, BACK menu |
+| Scope | `ScopeApp` | U/D pin, ENTER freeze/run, BACK menu |
+
+Sparkline is 2×2 `SHAPE_RECT` dots (line shapes can't go up-left). Both apps poll `siggen_play_cfg()` / last ADC pin so a web Start shows up on the watch immediately.
+
 ## Web console
 
 On boot (after Wi‑Fi): `http://<watch-ip>/`
 
 - STA from `autoconnect.conf`, else AP **OIRIA-vulcan** / **vulcanvulcan**
 - **Script** — drop or paste a `.vul`, save to `/sdcard/inbox` or RAM, run
-- **Wave** — sine/square/triangle/saw + Corz one-liners
-- **Scope** — capture ADC, draw in the browser (Bojan-style)
+- **Wave** — live status, sine/square/triangle/saw/noise + Corz one-liners, **Open on watch**
+- **Scope** — live ADC plot (opens live), **Open on watch**
+
+| HTTP | |
+|------|--|
+| `GET /status` | role, ip, wave, hz, gpio, duty, amp, running, app, scope_gpio |
+| `POST /wave?wave=&hz=&duty=&pin=&amp=` | start generator |
+| `POST /wave/stop` | stop |
+| `POST /cmd` | Corz one-liner |
+| `GET /scope.json?pin=&n=` | millivolt samples |
+| `GET /apps` | registered apps + focused |
+| `POST /app?name=SigGenApp` | `close_current_and_open` |
 
 Works on **head (solo/tyrant)** and **secondary (puppet)** — same firmware. Tyrant `native("wave",…)` also UART-sends the same call to the puppet so the worker can drive the pin.
 
-## Vulcan
+## Terminal / Vulcan
 
 ```
-native("wave", kind, hz, duty, pin, amp)   // 0 sine 1 square 2 tri 3 saw
+print(sh("apps"));
+print(sh("open_app SigGenApp"));   // or open_app("SigGenApp")
+print(sh("wave 2k"));
+print(sh("s"));                    // sine
+print(sh("scope 1"));              // ADC1 GPIO1, last/min/max mV
+print(sh("stop"));
+open_app("ScopeApp");
+```
+
+## Vulcan natives
+
+```
+native("wave", kind, hz, duty, pin, amp)   // 0 sine 1 square 2 tri 3 saw 4 noise
 native("wave_stop")
 native("wave_freq", hz)
 native("wave_duty", pct)
 native("sweep", f0, f1, ms)
 native("adc", pin)                         // millivolts
+native("scope", pin, n)
 native_seq(native("wave", …), native("delay", ms), native("wave_stop"))
 ```
 
-`native_seq` packs those into one nid array (`OP_NATIVE_SEQ`). Tyrant sends
-**one** `NSQ1` blob, not N `native("wave",…);` source frames.
+`native_seq` is the trapdoor: interned nids in one array, C loop on-device,
+**one** `NSQ1` UART blob to the puppet instead of N sprintf-of-source
+translates. See `os_code/core/rs_vm/NSEQ.md`.
 
-Examples: `os_code/core/rs_vm/examples/wave.vul`
+Examples: `os_code/core/rs_vm/examples/wave.vul`, `nseq.vul`
 
 ## Corz → Vulcan
 
@@ -46,6 +83,7 @@ Examples: `os_code/core/rs_vm/examples/wave.vul`
 | `p25` | `native("wave_duty", 25)` |
 | `a1..4` | amp 12/25/50/100 |
 | `stop` `.` | `native("wave_stop")` |
+| `scope` / `scope 1` | ADC capture status |
 | loops/macros | a `.vul` file |
 | musical `*a` | not ported (use Hz) |
 
