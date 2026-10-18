@@ -1,4 +1,4 @@
-# Function generator + scope (Vulcan)
+# Function generator + scope (Toplethos)
 
 Standout watch feature: **reverse oscilloscope** (AWG) and **normal oscilloscope**.
 
@@ -26,7 +26,7 @@ Sparkline is 2×2 `SHAPE_RECT` dots (line shapes can't go up-left). Both apps po
 
 On boot (after Wi‑Fi): `http://<watch-ip>/`
 
-- STA from `autoconnect.conf`, else AP **OIRIA-vulcan** / **vulcanvulcan**
+- STA from `autoconnect.conf`, else AP **OIRIA-toplethos** / **toplethostoplethos**
 - **Script** — drop or paste a `.vul`, save to `/sdcard/inbox` or RAM, run
 - **Wave** — live status, sine/square/triangle/saw/noise + Corz one-liners, **Open on watch**
 - **Scope** — live ADC plot (opens live), **Open on watch**
@@ -43,7 +43,7 @@ On boot (after Wi‑Fi): `http://<watch-ip>/`
 
 Works on **head (solo/tyrant)** and **secondary (puppet)** — same firmware. Tyrant `native("wave",…)` also UART-sends the same call to the puppet so the worker can drive the pin.
 
-## Terminal / Vulcan
+## Terminal / Toplethos
 
 ```
 print(sh("apps"));
@@ -55,7 +55,7 @@ print(sh("stop"));
 open_app("ScopeApp");
 ```
 
-## Vulcan natives
+## Toplethos natives
 
 ```
 native("wave", kind, hz, duty, pin, amp)   // 0 sine 1 square 2 tri 3 saw 4 noise
@@ -74,9 +74,9 @@ translates. See `os_code/core/rs_vm/NSEQ.md`.
 
 Examples: `os_code/core/rs_vm/examples/wave.vul`, `nseq.vul`
 
-## Corz → Vulcan
+## Corz → Toplethos
 
-| Corz | Vulcan |
+| Corz | Toplethos |
 |------|--------|
 | `s` / `r` / `t` | `native("wave", 0\|1\|2, …)` |
 | `2000` `2k` | `native("wave_freq", 2000)` |

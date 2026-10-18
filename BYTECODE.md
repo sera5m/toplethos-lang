@@ -1,6 +1,6 @@
-# Vulcan bytecode vs Java / C#
+# Toplethos bytecode vs Java / C#
 
-Vulcan compiles `.vul` to a **small custom image** (`RSV2`), not JVM classfiles or .NET IL.
+Toplethos compiles `.vul` to a **small custom image** (`RSV2`), not JVM classfiles or .NET IL.
 
 ## Image (`rsvm_image_hdr_t`)
 
@@ -16,7 +16,7 @@ The machine is a **stack VM** with a fixed slot file (locals), a tiny heap for a
 
 ## vs Java / C#
 
-| | Java / C# | Vulcan |
+| | Java / C# | Toplethos |
 |--|-----------|--------|
 | Unit | class + methods, GC objects | one image, slots + small heap |
 | Bytecode | JVMS / CIL, huge spec | ~100 opcodes, MCU-sized |

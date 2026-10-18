@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Desktop Vulcan runner — BASE language (not GTK).
+"""Desktop Toplethos runner — BASE language (not GTK).
 
 LUT sin/cos (degrees, wrap). Includes, arrays, @memory_hard, native/py interop.
 Errors include source line numbers.
@@ -18,13 +18,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 SIN_Q15 = [int(round(math.sin(2 * math.pi * i / 256) * 32767)) for i in range(256)]
-HARD_DIR = Path(os.environ.get("VULCAN_HARD", Path.cwd() / ".vulcan_hard"))
+HARD_DIR = Path(os.environ.get("TOPLETHOS_HARD", Path.cwd() / ".toplethos_hard"))
 
 # Desktop defaults — watch firmware uses RSVM_MAX_STEPS / HEAP_BYTES / threads=1
-DEFAULT_MAX_RUN = int(os.environ.get("VULCAN_MAX_RUN", "1000000"))
-DEFAULT_RAM_CELLS = int(os.environ.get("VULCAN_RAM_CELLS", "1000000"))
-DEFAULT_STORAGE = int(os.environ.get("VULCAN_STORAGE", str(64 * 1024 * 1024)))
-DEFAULT_THREADS = int(os.environ.get("VULCAN_THREADS", str(os.cpu_count() or 4)))
+DEFAULT_MAX_RUN = int(os.environ.get("TOPLETHOS_MAX_RUN", "1000000"))
+DEFAULT_RAM_CELLS = int(os.environ.get("TOPLETHOS_RAM_CELLS", "1000000"))
+DEFAULT_STORAGE = int(os.environ.get("TOPLETHOS_STORAGE", str(64 * 1024 * 1024)))
+DEFAULT_THREADS = int(os.environ.get("TOPLETHOS_THREADS", str(os.cpu_count() or 4)))
 
 
 def _phase_from_deg(deg: int) -> int:
@@ -236,7 +236,7 @@ class Runner:
             self.base = Path(path).resolve().parent
         src = self._includes(_strip_comments(src), self.base)
         try:
-            from vulcan_latex import preprocess
+            from toplethos_latex import preprocess
             src = preprocess(src)
         except Exception:
             pass
@@ -439,7 +439,7 @@ class Runner:
             idx = [self._eval(x.strip()) for x in m.group(2).split(",")]
             self.env[m.group(1)].set(idx, self._eval(m.group(3)))
             return
-        # C / Vulcan array decl: i32 name[2][3] @memory_hard = {{1,2,3},{4,5,6}}
+        # C / Toplethos array decl: i32 name[2][3] @memory_hard = {{1,2,3},{4,5,6}}
         m = re.match(
             r"(?:i32|f32|bool|int|float)?\s*([A-Za-z_]\w*)((?:\s*\[[^\]]*\])+)\s*"
             r"((?:@\w+\s*)*)(?:=\s*(.*))?$",
@@ -696,7 +696,7 @@ def run_source(src: str, path: str | None = None) -> str:
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help"):
-        sys.stderr.write("usage: vulcan_run.py file.vul\n")
+        sys.stderr.write("usage: toplethos_run.py file.vul\n")
         return 2
     path = argv[0]
     src = open(path, encoding="utf-8").read()

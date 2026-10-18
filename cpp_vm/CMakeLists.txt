@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(vulcan_rsvm CXX C)
+project(toplethos_rsvm CXX C)
 set(CMAKE_CXX_STANDARD 17)
 set(OIRIA_ROOT "" CACHE PATH "OIRIA_OS_espIDF root (has os_code/core/rs_vm)")
 if(OIRIA_ROOT)

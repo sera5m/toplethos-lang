@@ -1,2 +1,2 @@
 print(py("math.sqrt", 16));
-print(native("strlen", "vulcan"));
+print(native("strlen", "toplethos"));

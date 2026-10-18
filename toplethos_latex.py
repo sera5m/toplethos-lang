@@ -1,9 +1,9 @@
-"""Compile-time @latex_internal: LaTeX body → Vulcan statements."""
+"""Compile-time @latex_internal: LaTeX body → Toplethos statements."""
 from __future__ import annotations
 import re
 
 
-def latex_to_vulcan(src: str) -> str:
+def latex_to_toplethos(src: str) -> str:
     s = src
     for a, b in (
         ("$$", " "), ("$", " "),
@@ -162,7 +162,7 @@ def preprocess(src: str) -> str:
                     break
             k += 1
         inner = src[start:k]
-        out.append("\n" + latex_to_vulcan(inner))
+        out.append("\n" + latex_to_toplethos(inner))
         if k < len(src) and src[k] == "}":
             out.append("}")
             k += 1

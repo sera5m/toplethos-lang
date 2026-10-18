@@ -1,6 +1,6 @@
-# Vulcan BASE standard
+# Toplethos BASE standard
 
-Backend is the C++ VM (`rs_vm`) on watch and desktop. Python `vulcan_run.py` is the desktop reference for the same language.
+Backend is the C++ VM (`rs_vm`) on watch and desktop. Python `toplethos_run.py` is the desktop reference for the same language.
 
 ## Must
 
