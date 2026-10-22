@@ -1,0 +1,17 @@
+// Parallel square map via the batch queue.
+// Each native call carries its own parameter.
+
+fn main() {
+    // enqueue 0..7 to be squared
+    native("pbatch_enqueue", 1, 0, 1, 0, 100);
+    native("pbatch_enqueue", 1, 0, 1, 1, 101);
+    native("pbatch_enqueue", 1, 0, 1, 2, 102);
+    native("pbatch_enqueue", 1, 0, 1, 3, 103);
+    native("pbatch_enqueue", 1, 0, 1, 4, 104);
+    native("pbatch_enqueue", 1, 0, 1, 5, 105);
+    native("pbatch_enqueue", 1, 0, 1, 6, 106);
+    native("pbatch_enqueue", 1, 0, 1, 7, 107);
+
+    // force the parallel flush
+    native("pbatch_flush");
+}
