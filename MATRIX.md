@@ -13,9 +13,9 @@ Already locked, before this matrix:
 | decision | rule |
 |---|---|
 | Declare before assign | `i32 y; y = expr;`. A name on the left of `=` must already exist. |
-| Immutable unless `@mut` | An unmarked binding cannot be written. `@mut` is what allows a later store. |
+| Immutable unless `@mut` | An unmarked binding cannot be written. `@mut` is what allows a later store. This is not a lifetime. |
 | Option | No missing-value hole. Absence is `Option`. |
-| Result | No exceptions. Failure is a `Result` the caller handles. |
+| Result | No exceptions. A failure is an explicit `Result`, handled by `onfail` / `onwarn` below. |
 | Distinct newtypes | `Hz` and `Pin` do not match just because both store an integer. |
 | Structural match is not the default | Nominal types stay distinct. `^=` is true only when a flow map says the layouts correspond. |
 
@@ -34,19 +34,49 @@ vec4 color = formatconvert in[src] out[new];
 
 `@ignore_if_structure_matches` is an effect on a fn. While it is present, a parameter may accept a `^=` source without `formatconvert`. It is never the default.
 
-## Duration, separate from `@mut`
+## Two axes that are not both called static
 
-The old unmarked behavior (mutable, global, freed by hand) is retired. Unmarked means immutable and `normal`.
+`static` was doing two jobs. It does not anymore.
 
-| mark | lifetime |
+| axis | words | means |
+|---|---|---|
+| Write | unmarked, or `@mut` | Unmarked cannot be stored to. `@mut` can. Says nothing about when the cell is freed. |
+| Deallocate | `ephemeral`, `normal`, `scoped`, `static`, `config` | When the cell is freed. Says nothing about whether stores are legal. |
+
+`static` means only "do not deallocate for the life of the program". A `static` binding is still immutable unless it also says `@mut`. `@mut` on a `normal` binding does not keep it alive.
+
+| mark | when it is freed |
 |---|---|
-| `ephemeral` | Lives for one use inside a call, then the cell is emptied. For a password, not for general scratch. |
-| `normal` | Unmarked duration. Lives in the enclosing fn. `normaldur` is the same word, not a second mode. |
-| `scoped` | Until this fn returns. `local` is the same word. |
-| `static` | Program lifetime. C++ static. Writable at runtime only if also `@mut`. |
-| `config` | Program lifetime, written at load. A running fn cannot store to it. `@mut` on `config` is a compile error. |
+| `ephemeral` | After one use inside a call, the cell is emptied. For a password, not for general scratch. |
+| `normal` | Unmarked duration. Freed with the enclosing fn. `normaldur` is the same word. |
+| `scoped` | Freed when this fn returns. `local` is the same word. |
+| `static` | Not freed for the life of the program. |
+| `config` | Not freed for the life of the program, and not writable after load. `@mut` on `config` is a compile error. |
 
-`@mut` and a duration mark compose. `static @mut` is a mutable static. `ephemeral` without `@mut` can be read once and is then empty.
+`config` is the one duration that also refuses writes. Every other duration composes with `@mut` freely. `static @mut` lives for the program and can be stored to. `static` without `@mut` lives for the program and cannot.
+
+## Failure is explicit
+
+No exceptions. The fn names its failure handler next to the body. The failure value is a `Result`, not a hidden channel.
+
+```text
+fn foo in[] out[] {
+  body
+} onfail {
+  if[fatal] { STOP[THIS]; }
+} onwarn {
+  stuff
+};
+```
+
+| form | what it does |
+|---|---|
+| no `onfail` | Halt. Same as `STOP[THIS]`. |
+| `onfail { … }` | Graceful path. The failure does not halt unless this block says so. |
+| `STOP[THIS]` | Halt this failure. Used inside `onfail` when the stop is conditional. |
+| `onwarn { … }` | Warning path. Does not halt. |
+
+`STOP[THIS]` is the default halt, not a second error type. `THIS` is the failure in hand.
 
 ## Where `@` sits
 
@@ -68,11 +98,11 @@ Traits are not in. Add a specific trait only when it has a name and a job. No op
 
 Not a Rust borrow checker. The capability is composed onto the binding.
 
-- `@val` is a fixed cell (vault-shaped). Writes are rejected.
-- `@ref` is the ordinary mutable cell, and still needs `@mut` to store.
+- `@val` is a fixed cell (vault-shaped). Writes are rejected. This is immutability, not `static`.
+- `@ref` is the ordinary cell, and still needs `@mut` to store.
 - `@xor` is light shared-xor-mutable for that binding only. Not a whole-program lifetime analysis.
 - `@mutex` is the explicit lock when a binding is shared and written.
-- The object frees itself when its duration ends. Manual dealloc is not the default.
+- The object frees itself when its duration ends. Manual dealloc is not the default. `static` is the mark that says not to.
 
 ## Includes
 
@@ -106,3 +136,4 @@ The scheduler reads that composition and tries GPU or CPU. Explicit `@parallel[n
 - Hindley-Milner inference. It fights mandatory declarations.
 - Rust-style borrow checking.
 - A trait system with no named traits yet.
+- Using `static` to mean immutable.
