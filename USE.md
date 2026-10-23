@@ -2,7 +2,7 @@
 
 Future language. The Halloween runner does not implement this yet. If a mark is absent, the behavior in the **default** line is what you get.
 
-`()` groups. It never calls. `[]` is the call, the index, the `if`, the `do`, the attribute argument, and the `hold`.
+`()` groups. It never calls. `[]` is the call, the index, the `if`, the `do`, the attribute argument, the `hold`, the `window`, the `gather`, and the `next`.
 
 ## Defaults
 
@@ -21,6 +21,10 @@ Future language. The Halloween runner does not implement this yet. If a mark is 
 | a shared store with no resolution | The program is wrong. There is no default join. |
 | no `@comptime` | The fn runs when it is called, even if every input is a constant. |
 | `include` | Loaded once. A cycle means already loaded. |
+| no `@topology` | A chain. One statement, then the next. |
+| no `@stream` | The fn runs to one result. It does not pull. |
+| no `@paged` | The whole value is present. |
+| an absent lane | Skipped. It is not zero. |
 
 ## Names
 
@@ -136,6 +140,77 @@ fn boom in[] out[] @require[n > 0] {
 
 There is no `guard` keyword. `if[state]` inside the body is an ordinary transition, not a guard.
 
+## Control flow
+
+Default shape is a chain. `if[cond] { }` runs the body only when the condition is present and true. An omitted `else` skips. `do n[k] { }` runs the body k times and then continues. No index name is created.
+
+```text
+loop {
+  if[done] { leave; }
+}
+```
+
+`loop` does not end on its own. `leave` ends that loop only. It is not `STOP[THIS]`, and it does not halt the program. A failure inside the loop still walks outward, and it leaves the loop on the way.
+
+`@topology` names a shape that is not a chain. Omitted, the fn is a chain, and writing `@topology[chain]` changes nothing.
+
+| mark | what the runs do |
+|---|---|
+| `@topology[fanout]` | One value, n runs. The join is still explicit. |
+| `@topology[fanin]` | The next statement waits until every run has finished, or one has failed. |
+| `@topology[barrier]` | The runs wait until all have arrived, then continue. |
+| `@topology[race]` | The first present result wins. The other runs are cancelled. |
+| `@topology[chain]` | The default. |
+
+A jump is a state transition or a failure walk. `goto`, `longjmp`, `throw`, and a callback registry are not primitives.
+
+## When one run of many stops
+
+Default for `@parallel` and for `@topology[fanout]`: if one run fails, the others are cancelled. Their holds end. Then one failure walks outward. The cancelled runs do not keep storing.
+
+`@topology[race]` cancels the others because one result became present, not because one failed. A failure in a race still cancels the rest and walks out. It is not the winning result.
+
+## Large cells
+
+Default: the whole value is present, and a present lane is dense. An absent lane is not a zero and it is not visited.
+
+```text
+i32 span @ref = window[buf, start, n];
+i32 picked = gather in[table, ids];
+i32 sector @paged @mut;
+hold[sector] {
+  sector[0] = 1;
+}
+```
+
+| form | behavior |
+|---|---|
+| `window[buf, start, n]` | A `@ref` over n elements. No copy. Read-only unless the window's name also says `@mut`. Freed with the enclosing fn. |
+| `@paged` | Only the sector named by the current `hold` is present. A read of another sector is a failure. |
+| `gather in[table, ids]` | Copies the present lanes named by `ids`, in that order. Absent lanes are skipped. |
+| a parallel op over an array | Skips absent lanes. |
+
+A store through a window is a store through `@ref`. It needs `@mut`, and `@mutex` or `@atomic` if the cell is shared.
+
+## A stream is a pull
+
+```text
+fn steps in[] out[] @stream {
+  return x;
+}
+i32 item = next[steps in[]];
+```
+
+`@stream` does not run ahead, and mentioning the fn does not run it. `next[…]` is a call. It runs one step and yields one present item. The rest stays uncomputed. `leave` inside the stream ends it. The following `next` is absent.
+
+This is not lazy evaluation. An expression that is not `next` does not pull.
+
+## What a large run does not get for free
+
+A reduction is still a named `out[]`, an `@atomic` store, or a `@mutex` span. A sum, a score, and a top-k are fns you write. The language does not insert them.
+
+There is no gradient and no tape of operations. `@checkpoint` on a fn saves the present cells, and only at a barrier or at the end of a `hold`. Omitted: nothing is saved. The language does not choose a file format.
+
 ## Attributes
 
 Attributes sit immediately after the fn or the binding, before `=` or `{`. Arguments use `[]`. The list is the whole effect list.
@@ -210,11 +285,14 @@ These are rejected, not run.
 - a store to a `@mutex` cell outside `hold`
 - a nested `hold` of the same cell
 - a read of an absent or empty cell
+- a read of a sector that is not the held page
+- using an absent lane as zero
 - two runs storing one cell with no `@mutex`, no `@atomic`, and no explicit `out[]`
 - a runtime condition inside an attribute macro
+- a stream step that runs without `next`
 
 ## Not in the language
 
-Lazy evaluation. A fn runs when called, unless it says `@comptime` and every input is a constant.
+Lazy evaluation. A fn runs when called, unless it says `@comptime` and every input is a constant. A stream advances only at `next`.
 
-No inferred types. No borrow checker. No trait system. No `guard` keyword. No `unlock`. No default reduction order. No unwrap. Attributes do not select which fn body runs.
+No inferred types. No borrow checker. No trait system. No `guard` keyword. No `unlock`. No `goto`, `longjmp`, `throw`, or callback registry. No default reduction. No unwrap. No gradient and no operation tape. Attributes do not select which fn body runs.
