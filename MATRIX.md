@@ -81,6 +81,19 @@ fn foo in[] out[] {
 
 `THIS` is the failure in hand. `STOP[THIS]` is that halt state, not a second error type.
 
+## Guards are already on the fn
+
+There is no `guard` keyword. The function form already has the two halves.
+
+| piece | job |
+|---|---|
+| `@require[…]` | Entry guard. A failed predicate is the failure state. |
+| `@ensure[…]` | Exit guard. Same failure state, checked after the body. |
+| `onfail` | Where that state is resolved. Not a second guard. |
+| `when[…]` | Comptime only, inside an attribute macro. It does not test a runtime value. |
+
+`if[state]` inside the body is an ordinary transition, not a guard. A guard is a predicate on entry or exit that produces the failure state. `onfail` is what runs when one fires.
+
 ## Parallel states are resolved by composition
 
 There is no default join order. A fork is not "pure, so it is fine." Whether it is fine depends on the effects composed onto the bindings it touches.
@@ -102,11 +115,11 @@ Attributes sit immediately after the fn or the binding, before `=` or `{`. Argum
 
 ```text
 fn tone in[t] out[here] @latex_internal @sig_gen_graph_preview {
-fn burst in[] out[] @parallel[4] {
+fn burst in[] out[] @parallel[4] @require[n > 0] {
 i32 tape[4] @memory_hard = {1, 2, 3, 4};
 ```
 
-The attribute list is also the effect list: it is the complete set of what that fn or binding is allowed to do. `@require` and `@ensure` are contracts in that list, not a second syntax.
+The attribute list is also the effect list: it is the complete set of what that fn or binding is allowed to do. `@require` and `@ensure` are the guards in that list, not a second syntax.
 
 Comptime is in: a fn may run at compile time when every input is a constant.
 
@@ -182,3 +195,4 @@ The scheduler reads that composition and tries GPU or CPU.
 - A default reduction order for parallel joins.
 - Halting inside the fn that failed when a caller still has `onfail`.
 - Unwrapping an absent value. Absence is a state, not a type with a match form.
+- A `guard` keyword. Entry is `@require`, exit is `@ensure`, and `onfail` already receives the failure.
