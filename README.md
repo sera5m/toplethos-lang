@@ -1,6 +1,8 @@
 # toplethos-lang
 
-Desktop Toplethos: language runner + GTK IDE. **Not** the ESP32 watch firmware OR the ai both of which are tangentally related and dependant on this
+Version: **Halloween** (`halloween` tag). This is v1. Anything before that tag is not the language.
+
+Desktop Toplethos: language runner. **Not** the ESP32 watch firmware or the AI project. Both depend on this.
 
 Watch OS **requires** this repo: https://github.com/sera5m/OIRIA_OS_espIDF (`third_party/toplethos-lang` submodule). Firmware VM is `os_code/core/rs_vm` in that tree — same language, C on device.
 Package index: https://github.com/sera5m/oiria-index
