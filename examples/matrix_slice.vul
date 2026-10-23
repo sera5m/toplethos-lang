@@ -1,0 +1,14 @@
+i32 x @mut = 1;
+x = x + 2;
+print(x);
+fn add in[i32 a] out[] {
+  return a + 1;
+}
+print(add in[4]);
+print(sin[90]);
+fn boom in[] out[] @require[0] {
+  return 1;
+} onfail {
+  print(7);
+};
+print(boom in[]);

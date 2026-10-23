@@ -210,6 +210,9 @@ class Runner:
         self.out = []
         self.base = Path(base) if base else Path.cwd()
         self.include_stack = []
+        self.include_seen = set()
+        self.bind = {}
+        self.stop_this = False
         self.line = 1
         self.src = ""
         self.steps = 0
@@ -266,10 +269,11 @@ class Runner:
             rel = m.group(1)
             p = (base / rel).resolve()
             key = str(p)
-            if key in self.include_stack:
-                return "// circular include " + rel
+            if key in self.include_seen or key in self.include_stack:
+                return ""
             if not p.exists():
                 raise RunError("include not found: %s" % rel)
+            self.include_seen.add(key)
             self.include_stack.append(key)
             text = self._includes(_strip_comments(p.read_text(encoding="utf-8")), p.parent)
             self.include_stack.pop()
@@ -334,14 +338,16 @@ class Runner:
         head = src[i : src.find("{", i)]
         m = re.search(r"fn\s+([A-Za-z_]\w*)", head)
         args = re.search(r"in\[([^\]]*)\]", head)
-        par = re.search(r"@parallel\s*\(\s*(\d+)\s*\)", head) or re.search(r"@parallel\b", head)
+        par = re.search(r"@parallel\s*(?:\(\s*(\d+)\s*\)|\[\s*(\d+)\s*\])", head) or re.search(
+            r"@parallel\b", head
+        )
+        req = re.search(r"@require\[([^\]]*)\]", head)
         b = src.find("{", i)
         if b < 0:
             return self._skip_fn(src, i)
         e, nxt = self._matching_brace(src, b)
-        end = self._skip_fn(src, i)
         if not m:
-            return end
+            return self._skip_fn(src, i)
         name = m.group(1)
         params = [p.strip() for p in args.group(1).split(",") if p.strip()] if args else []
         body = src[b + 1 : e]
@@ -351,11 +357,43 @@ class Runner:
             if line.startswith("return "):
                 expr = line[7:].strip()
         pn = 1
+        if par and par.lastindex:
+            pn = int(par.group(par.lastindex))
+        elif par:
+            pn = min(self.thread_cap, 4)
         if par:
-            pn = int(par.group(1)) if par.lastindex else min(self.thread_cap, 4)
             pn = max(1, min(pn, self.thread_cap))
-        self.env["__fn_" + name] = (params, expr, body, pn)
-        return end
+        handlers, nxt = self._take_handlers(src, nxt)
+        while nxt < len(src) and src[nxt] in " \t\r":
+            nxt += 1
+        if nxt < len(src) and src[nxt] == ";":
+            nxt += 1
+        self.env["__fn_" + name] = {
+            "params": params,
+            "expr": expr,
+            "body": body,
+            "pn": pn,
+            "onfail": handlers.get("onfail", ""),
+            "onwarn": handlers.get("onwarn", ""),
+            "require": req.group(1).strip() if req else "",
+        }
+        return nxt
+
+    def _take_handlers(self, src, i):
+        handlers = {}
+        while True:
+            m = re.match(r"\s*(onfail|onwarn)\b", src[i:])
+            if not m:
+                break
+            j = i + m.end()
+            while j < len(src) and src[j].isspace():
+                j += 1
+            if j >= len(src) or src[j] != "{":
+                break
+            e, nxt = self._matching_brace(src, j)
+            handlers[m.group(1)] = src[j + 1 : e]
+            i = nxt
+        return handlers, i
 
     def _skip_fn(self, src, i):
         b = src.find("{", i)
@@ -426,7 +464,13 @@ class Runner:
         return len(src) - 1, len(src)
 
     def _stmt(self, stmt: str):
+        if stmt.replace(" ", "") == "STOP[THIS]":
+            self.stop_this = True
+            raise RunError("STOP[THIS]", self.line)
         if stmt.startswith("print(") and stmt.endswith(")"):
+            self.out.append(str(self._eval(stmt[6:-1].strip())) + "\n")
+            return
+        if stmt.startswith("print[") and stmt.endswith("]"):
             self.out.append(str(self._eval(stmt[6:-1].strip())) + "\n")
             return
         if stmt.startswith("return"):
@@ -469,30 +513,43 @@ class Runner:
             elif data is not None:
                 arr.data = data
             self._ram_add(len(arr.data))
-            self.env[name] = arr
+            self._declare(name, props, arr)
             return
+        m = re.match(r"arr_new\s*\[(.+)\]\s*=\s*([A-Za-z_]\w*)$", stmt)
+        if m:
+            raise RunError("assignment is name = expr", self.line)
         m = re.match(r"arr_new\s*\((.+)\)\s*=\s*([A-Za-z_]\w*)$", stmt)
         if m:
-            dims = [int(self._eval(x.strip())) for x in m.group(1).split(",") if x.strip()]
-            self.env[m.group(2)] = Arr(dims)
-            return
-        # typed decl
+            raise RunError("assignment is name = expr", self.line)
         m = re.match(
-            r"(?:i32|f32|bool|int|string)?\s*([A-Za-z_]\w*)\s*((?:@\w+\s*)*)=\s*(.*)$",
+            r"(i32|f32|bool|int|string)\s+([A-Za-z_]\w*)\s*((?:@\w+\s*)*)(?:=\s*(.*))?$",
             stmt,
         )
-        if m and m.group(3) != "":
-            self.env[m.group(1)] = self._eval(m.group(3))
-            return
-        m = re.match(r"(?:i32|f32|bool)\s+([A-Za-z_]\w*)$", stmt)
         if m:
-            self.env[m.group(1)] = 0
+            name, props, init = m.group(2), m.group(3) or "", m.group(4)
+            self._declare(name, props, self._eval(init) if init else 0)
             return
-        m = re.match(r"(.+)=\s*([A-Za-z_]\w*)$", stmt)
-        if m:
-            self.env[m.group(2)] = self._eval(m.group(1))
+        m = re.match(r"([A-Za-z_]\w*)\s*=\s*(.*)$", stmt)
+        if m and m.group(2) != "":
+            name = m.group(1)
+            if name not in self.env:
+                raise RunError("declare %s before assign" % name, self.line)
+            if not self.bind.get(name, {}).get("mut"):
+                raise RunError("%s is immutable" % name, self.line)
+            self.env[name] = self._eval(m.group(2))
             return
+        if "=" in stmt:
+            raise RunError("assignment is name = expr", self.line)
         self._eval(stmt)
+
+    def _declare(self, name, props, value):
+        names = re.findall(r"@([A-Za-z_]\w*)", props or "")
+        if "mut" in names and "val" in names:
+            raise RunError("@mut and @val conflict", self.line)
+        if "config" in names and "mut" in names:
+            raise RunError("@mut on config", self.line)
+        self.env[name] = value
+        self.bind[name] = {"mut": "mut" in names}
 
     def _parse_c_init(self, s, dims):
         s = s.strip()
@@ -533,6 +590,11 @@ class Runner:
         expr = expr.strip()
         if not expr:
             return 0
+        expr = re.sub(
+            r"\b(sin_amp|sin|cos|tan|native|py|ccall|arr_new)\s*\[([^\[\]]*)\]",
+            lambda m: m.group(1) + "(" + m.group(2) + ")",
+            expr,
+        )
         if expr.startswith("native_seq(") or expr.startswith("nseq("):
             inner = expr[expr.find("(") + 1 :]
             if inner.endswith(")"):
@@ -547,39 +609,11 @@ class Runner:
             return self.env[m.group(1)].get(idx)
         mcall = re.match(r"([A-Za-z_]\w*)\s+in\[(.*?)\](?:\s+out\[[^\]]*\])?\s*$", expr)
         if mcall and ("__fn_" + mcall.group(1)) in self.env:
-            params, body, _full, pn = self._fn_parts(mcall.group(1))
             raw_args = [a.strip() for a in mcall.group(2).split(",") if a.strip()]
-            local = dict(self.env)
-            for n, a in zip(params, raw_args):
-                local[n] = self._eval(a)
-            saved, self.env = self.env, local
-            prev_p = self.parallel_n
-            self.parallel_n = pn
-            self.retval = None
-            try:
-                self._exec_block(_full or body, 0)
-                return self.retval if self.retval is not None else 0
-            finally:
-                self.parallel_n = prev_p
-                self.env = saved
-        # C-style fn()
+            return self._call_user(mcall.group(1), raw_args)
         m = re.match(r"([A-Za-z_]\w*)\((.*)\)\s*$", expr)
         if m and ("__fn_" + m.group(1)) in self.env:
-            params, body, _full, pn = self._fn_parts(m.group(1))
-            raw_args = [a.strip() for a in m.group(2).split(",") if a.strip()]
-            local = dict(self.env)
-            for n, a in zip(params, raw_args):
-                local[n] = self._eval(a)
-            saved, self.env = self.env, local
-            prev_p = self.parallel_n
-            self.parallel_n = pn
-            self.retval = None
-            try:
-                self._exec_block(_full or body, 0)
-                return self.retval if self.retval is not None else 0
-            finally:
-                self.parallel_n = prev_p
-                self.env = saved
+            raise RunError("() is grouping; call is %s in[]" % m.group(1), self.line)
         expr2 = re.sub(r"\bsin_amp\s*\(", " _sa(", expr)
         expr2 = re.sub(r"\bsin\s*\(", " _s(", expr2)
         expr2 = re.sub(r"\bcos\s*\(", " _c(", expr2)
@@ -679,6 +713,48 @@ class Runner:
                 time.sleep(min(ms, 5000) / 1000.0)
             return 0
         return 0
+
+    def _call_user(self, name, raw_args):
+        meta = self.env["__fn_" + name]
+        params = meta["params"]
+        body = meta["body"]
+        onfail = meta["onfail"]
+        require = meta["require"]
+        local = dict(self.env)
+        local_bind = dict(self.bind)
+        for n, a in zip(params, raw_args):
+            nm = n.split()[-1]
+            local[nm] = self._eval(a)
+            local_bind[nm] = {"mut": False}
+        saved, self.env = self.env, local
+        saved_b, self.bind = self.bind, local_bind
+        prev_p = self.parallel_n
+        self.parallel_n = meta["pn"]
+        self.retval = None
+        try:
+            if require and not self._eval(require):
+                raise RunError("require failed", self.line)
+            self._exec_block(body, 0)
+            return self.retval if self.retval is not None else 0
+        except RunError:
+            if not onfail:
+                raise
+            self.stop_this = False
+            try:
+                self._exec_block(onfail, 0)
+            except RunError:
+                if self.stop_this:
+                    self.stop_this = False
+                    raise
+                raise
+            if self.stop_this:
+                self.stop_this = False
+                raise RunError("STOP[THIS]", self.line)
+            return self.retval if self.retval is not None else 0
+        finally:
+            self.parallel_n = prev_p
+            self.env = saved
+            self.bind = saved_b
 
     def _fn_parts(self, name):
         v = self.env["__fn_" + name]
