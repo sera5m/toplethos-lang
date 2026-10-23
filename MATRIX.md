@@ -94,6 +94,30 @@ Comptime is in: a fn may run at compile time when every input is a constant.
 
 Traits are not in. Add a specific trait only when it has a name and a job. No open-ended typeclass system yet.
 
+## Attribute macros
+
+A long composition lives in one macro. The use site stays a single `@name` in the attribute position.
+
+```text
+macro cell[where] {
+  @val
+  when[where ^= static] { @static }
+  when[where ^= ephemeral] { @ephemeral }
+}
+
+i32 key @cell[ephemeral] = secret;
+fn burst in[] out[] @cell[static] @parallel[4] {
+```
+
+`@cell[ephemeral]` expands in place, then composition continues left to right. For that example the effect list is `@val @ephemeral` on the binding, and `@val @static @parallel[4]` on the fn.
+
+Rules:
+
+- The body of this macro is only attributes and `when[cond] { attributes }`. No statements, no `onfail`, no second call syntax.
+- `when` is comptime. The condition is a constant or a `^=` on the macro argument. The effect list is known before the fn runs.
+- A `when` that is false contributes nothing. It is not a runtime branch.
+- The macro does not hide a different position. Expansion still sits where the `@name` was written, after the fn or the binding.
+
 ## Reference capabilities
 
 Not a Rust borrow checker. The capability is composed onto the binding.
@@ -128,7 +152,7 @@ The scheduler reads that composition and tries GPU or CPU. Explicit `@parallel[n
 ## Also in
 
 - Multiple dispatch on nominal types. Structural dispatch only through a flow map.
-- Macros. They may not invent a `()` call form or a backwards assignment.
+- Macros. Attribute macros are the form above. A general macro may not invent a `()` call form or a backwards assignment.
 
 ## Out
 
@@ -137,3 +161,4 @@ The scheduler reads that composition and tries GPU or CPU. Explicit `@parallel[n
 - Rust-style borrow checking.
 - A trait system with no named traits yet.
 - Using `static` to mean immutable.
+- A runtime condition inside an attribute macro. That would make the effect list depend on a value that does not exist yet.
