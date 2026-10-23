@@ -8,14 +8,16 @@ Already locked, before this matrix:
 - Assignment is `name = expr`. `expr = name` is a parse error.
 - `[]` stays for `if`, `do n`, calls, and indexing.
 
+A running program is a state machine. Failure, absence, and a parallel join are states of that machine. They are not three extra control-flow forms. An undesirable state has to be resolved by composition. Leaving it unresolved is the error.
+
 ## Types
 
 | decision | rule |
 |---|---|
 | Declare before assign | `i32 y; y = expr;`. A name on the left of `=` must already exist. |
 | Immutable unless `@mut` | An unmarked binding cannot be written. `@mut` is what allows a later store. This is not a lifetime. |
-| Option | No missing-value hole. Absence is `Option`. |
-| Result | No exceptions. A failure is an explicit `Result`, handled by `onfail` / `onwarn` below. |
+| Absence | No missing-value hole and no unwrap syntax. Present and absent are states of the binding. The value is readable only in the present state. `if[state]` is the transition. |
+| Failure | No exceptions. A failure is a state, not a hidden channel. Handled as below. |
 | Distinct newtypes | `Hz` and `Pin` do not match just because both store an integer. |
 | Structural match is not the default | Nominal types stay distinct. `^=` is true only when a flow map says the layouts correspond. |
 
@@ -55,9 +57,9 @@ vec4 color = formatconvert in[src] out[new];
 
 `config` is the one duration that also refuses writes. Every other duration composes with `@mut` freely. `static @mut` lives for the program and can be stored to. `static` without `@mut` lives for the program and cannot.
 
-## Failure is explicit
+## Failure walks outward
 
-No exceptions. The fn names its failure handler next to the body. The failure value is a `Result`, not a hidden channel.
+C++ does not halt inside the function that fails. A thrown exception walks the callers. `std::terminate` runs only when the whole walk has no handler. An ignored error code does not halt at all. Toplethos follows the exception walk, not the ignored code and not a halt inside the callee.
 
 ```text
 fn foo in[] out[] {
@@ -71,12 +73,28 @@ fn foo in[] out[] {
 
 | form | what it does |
 |---|---|
-| no `onfail` | Halt. Same as `STOP[THIS]`. |
-| `onfail { … }` | Graceful path. The failure does not halt unless this block says so. |
-| `STOP[THIS]` | Halt this failure. Used inside `onfail` when the stop is conditional. |
-| `onwarn { … }` | Warning path. Does not halt. |
+| `onfail` on this fn | Resolves the failure state here. |
+| no `onfail` here | The failure state is handed to the caller. It does not halt in this fn. |
+| no `onfail` on the whole walk | Halt. Same as `STOP[THIS]`. |
+| `STOP[THIS]` | Halt this failure now. The explicit terminate, used when the stop is conditional. |
+| `onwarn` | A warning state. Does not halt, and does not replace `onfail`. |
 
-`STOP[THIS]` is the default halt, not a second error type. `THIS` is the failure in hand.
+`THIS` is the failure in hand. `STOP[THIS]` is that halt state, not a second error type.
+
+## Parallel states are resolved by composition
+
+There is no default join order. A fork is not "pure, so it is fine." Whether it is fine depends on the effects composed onto the bindings it touches.
+
+An undesirable parallel state is two runs storing the same cell with nothing to resolve the store. Resolve it by composition, or the program is wrong:
+
+| resolution | what it does |
+|---|---|
+| `@mutex` | One run holds the cell. |
+| atomic | The store itself is the resolution. |
+| accumulator | Many runs add into one declared out cell. |
+| explicit `out[]` or an output flow | The join is a named result, not a race on a shared binding. |
+
+Same machine as failure. Running, joined, and failed are states. An unresolved one is the error.
 
 ## Where `@` sits
 
@@ -138,16 +156,15 @@ No explicit export list in this pass. No ban on top-level statements in this pas
 
 ## Parallelism
 
-All four, chosen by the effect list. The set of backends must be able to grow.
+The backend is chosen by the effect list. The set of backends must be able to grow. A fork is legal only when every shared store is resolved by the table above.
 
 | mark | meaning |
 |---|---|
-| `@parallel[n]` | Explicit CPU width. No surprise fork. |
-| pure fn, no `@mut` | May fork like Bend. |
-| data-parallel array op | One op over the whole array. This is the batch, not a loop of calls. |
-| `await` | Host wait. The caller is not blocked. |
+| `@parallel[n]` | Explicit CPU width. No surprise fork. Does not silently become a GPU launch. |
+| data-parallel array op | One op over the whole array. The join is an explicit `out[]`, an accumulator, or an atomic. Not a loop of calls. |
+| `await` | Host wait is a state. The caller is not blocked. |
 
-The scheduler reads that composition and tries GPU or CPU. Explicit `@parallel[n]` stays a CPU width. It does not silently become a GPU launch.
+The scheduler reads that composition and tries GPU or CPU.
 
 ## Also in
 
@@ -162,3 +179,6 @@ The scheduler reads that composition and tries GPU or CPU. Explicit `@parallel[n
 - A trait system with no named traits yet.
 - Using `static` to mean immutable.
 - A runtime condition inside an attribute macro. That would make the effect list depend on a value that does not exist yet.
+- A default reduction order for parallel joins.
+- Halting inside the fn that failed when a caller still has `onfail`.
+- Unwrapping an absent value. Absence is a state, not a type with a match form.
