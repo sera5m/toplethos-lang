@@ -2,7 +2,7 @@
 
 Future language. The Halloween runner does not implement this yet. If a mark is absent, the behavior in the **default** line is what you get.
 
-`()` groups. It never calls. `[]` is the call, the index, the `if`, the `do`, the attribute argument, the `hold`, the `window`, the `gather`, and the `next`.
+`()` groups. It never calls. `[]` is the call, the index, the `if`, the `do`, the attribute argument, the `hold`, the `window`, the `gather`, the `next`, and the `leave`.
 
 ## Defaults
 
@@ -22,9 +22,14 @@ Future language. The Halloween runner does not implement this yet. If a mark is 
 | no `@comptime` | The fn runs when it is called, even if every input is a constant. |
 | `include` | Loaded once. A cycle means already loaded. |
 | no `@topology` | A chain. One statement, then the next. |
-| no `@stream` | The fn runs to one result. It does not pull. |
+| no `@stream` | The fn runs to one result. |
+| `@stream` with no `n` | A queue of one item. The producer waits when that slot is full. |
 | no `@paged` | The whole value is present. |
-| an absent lane | Skipped. It is not zero. |
+| an absent lane | Skipped. It is not zero, and it is not a second syntax. |
+| a missing `else` or match arm | No-op. Not a compile error. |
+| no `@structuredConcurrency` | A failed run does not cancel its siblings. The run may outlive the caller. |
+| no `@retry` | A failure walks. It is not tried again. |
+| a wait under 15 minutes | The coroutine stack stays in live memory. |
 
 ## Names
 
@@ -116,9 +121,15 @@ Default for a parameter: owned, immutable, `@normal`, present for the call. The 
 
 Several fns may share a name. The call is chosen by the nominal types of the parameters. Attributes do not select a second body.
 
+A handler written on the call is the context for that invocation. It runs only if the fn did not already resolve the failure.
+
+```text
+add in[4] onfail { leave; };
+```
+
 ## Failure
 
-A failure is a state. It is not an exception channel and not an ignored code.
+A failure is a state. It is not an exception channel and not an ignored code. It walks until some `onfail` resolves it. There is no `try` mark and no `?`.
 
 ```text
 fn boom in[] out[] @require[n > 0] {
@@ -134,45 +145,106 @@ fn boom in[] out[] @require[n > 0] {
 |---|---|
 | `@require[…]` | Entry guard. A false predicate is the failure state. Omitted: no entry guard. |
 | `@ensure[…]` | Exit guard. Same failure state, after the body. Omitted: no exit guard. |
-| `onfail` | Resolves the failure here. Omitted: the state is handed to the caller. |
+| `onfail` on the fn | Resolves the failure inside the fn. Omitted: the state is handed outward. |
+| `onfail` on the call | The next handler, if the fn did not resolve it. |
 | `STOP[THIS]` | Halt this failure now. `THIS` is the failure in hand. |
 | `onwarn` | A warning state. Does not halt, and does not replace `onfail`. Omitted: no warning path. |
+| `@retry[k]` | Run the fn again, up to k times, then the failure walks. Omitted: no retry. |
 
 There is no `guard` keyword. `if[state]` inside the body is an ordinary transition, not a guard.
 
-## Control flow
+## Cleanup
 
-Default shape is a chain. `if[cond] { }` runs the body only when the condition is present and true. An omitted `else` skips. `do n[k] { }` runs the body k times and then continues. No index name is created.
+Duration frees the cell. `hold` unlocks. These two also exist, and they are not the same as `onfail`.
 
 ```text
-loop {
-  if[done] { leave; }
+defer { print[1]; }
+faildefer { print[2]; }
+```
+
+`defer` runs on `leave`, on `return`, and on failure. `faildefer` runs only when a failure leaves the block. On a failure both run. On success only `defer` runs. Several of them run in reverse order of writing, before the failure walks to the caller. `onfail` is still the handler that resolves the state. It is not a cleanup block.
+
+## Branches
+
+`if[cond]` tests an open condition. A missing `else` is a no-op. Nothing warns about it, because there is no closed set of conditions to finish.
+
+`match` is only for a closed set: the states of a nominal value, or an enum. A missing arm is a no-op. It is not a compile error, and arms do not fall through. A project warning may say that an arm is missing. That warning is off unless the project turns it on. This is the same split as C++: an `if` without `else` is silent, and `-Wswitch` warns on an enum that does not name every enumerator. It does not reject the program.
+
+A threshold is an `if`, not a `match`.
+
+```text
+if[n < 10] { small; }
+if[n < 100] { mid; }
+match[color] {
+  red { print[1]; }
+  blue { print[2]; }
 }
 ```
 
-`loop` does not end on its own. `leave` ends that loop only. It is not `STOP[THIS]`, and it does not halt the program. A failure inside the loop still walks outward, and it leaves the loop on the way.
+If `color` is `green` and there is no `green` arm, the `match` does nothing.
 
-`@topology` names a shape that is not a chain. Omitted, the fn is a chain, and writing `@topology[chain]` changes nothing.
+## Control flow
+
+Default shape is a chain. `do n[k]` runs the body k times. The index is `i`, from 0 up to k - 1. An inner `do` shadows `i`.
+
+```text
+do n[4] {
+  if[i == 1] { continue; }
+  print[i];
+}
+loop @name[outer] {
+  do n[4] {
+    if[done] { leave[outer]; }
+  }
+}
+```
+
+`continue` starts the next iteration of the innermost `do` or `loop`. `leave` ends the innermost one. `leave[name]` ends the loop or `do` that carries `@name[name]`. Neither one is `STOP[THIS]`.
+
+`loop` does not end on its own. A failure still walks outward, and it leaves the loop on the way.
+
+`@topology` names a shape that is not a chain. Omitted, the fn is a chain.
 
 | mark | what the runs do |
 |---|---|
 | `@topology[fanout]` | One value, n runs. The join is still explicit. |
 | `@topology[fanin]` | The next statement waits until every run has finished, or one has failed. |
 | `@topology[barrier]` | The runs wait until all have arrived, then continue. |
-| `@topology[race]` | The first present result wins. The other runs are cancelled. |
+| `@topology[race]` | The first present result wins. The other arms of this race are cancelled. |
 | `@topology[chain]` | The default. |
+
+`select` is `race` over different calls, not n copies of one fn. The first call that becomes present wins. The other calls in that `select` are cancelled.
+
+```text
+select {
+  next[steps in[]];
+  tick in[];
+}
+```
+
+A pipeline is not a keyword. It is `@stream[n]` between two fns, plus `next` or `select`.
 
 A jump is a state transition or a failure walk. `goto`, `longjmp`, `throw`, and a callback registry are not primitives.
 
 ## When one run of many stops
 
-Default for `@parallel` and for `@topology[fanout]`: if one run fails, the others are cancelled. Their holds end. Then one failure walks outward. The cancelled runs do not keep storing.
+Default: Erlang plus a detached run. If one run fails, its siblings keep going. The failed run's failure walks on its own. The run may still be going after the caller returns. That is the fire-and-forget case.
 
-`@topology[race]` cancels the others because one result became present, not because one failed. A failure in a race still cancels the rest and walks out. It is not the winning result.
+`@structuredConcurrency` is the other rule, and it is opt-in. One failure cancels the siblings, their holds end, and the run may not outlive the caller. `@NoFailTolerance` is not a second mark. It means this one.
+
+`@topology[race]` and `select` still cancel the arms that lost, because that is what a race is. They do not cancel unrelated siblings.
+
+## Coroutines
+
+A coroutine is stackful. `pause` keeps the stack. `resume` continues it. The caller can do either by hand.
+
+If a wait lasts 15 minutes or more, the stack may leave live memory and sit on disk or on other memory until `resume`. The host picks where. The language only requires that the stack is not stuck in live RAM for that wait. A shorter wait stays in live memory.
+
+An accumulator is still how several paused calls join. `await` remains the host-wait state. It does not allocate a second, stackless, kind of coroutine.
 
 ## Large cells
 
-Default: the whole value is present, and a present lane is dense. An absent lane is not a zero and it is not visited.
+Default: the whole value is present, and a present lane is dense. An absent lane is not a zero and it is not visited. That absent lane is the mask. There is no `mask` keyword and no warp vote or shuffle in the language. A GPU backend may lower an absent lane to a hardware predicate. That lowering is not source syntax.
 
 ```text
 i32 span @ref = window[buf, start, n];
@@ -192,18 +264,20 @@ hold[sector] {
 
 A store through a window is a store through `@ref`. It needs `@mut`, and `@mutex` or `@atomic` if the cell is shared.
 
-## A stream is a pull
+## Streams
 
 ```text
-fn steps in[] out[] @stream {
+fn steps in[] out[] @stream[4] {
   return x;
 }
 i32 item = next[steps in[]];
 ```
 
-`@stream` does not run ahead, and mentioning the fn does not run it. `next[…]` is a call. It runs one step and yields one present item. The rest stays uncomputed. `leave` inside the stream ends it. The following `next` is absent.
+`@stream[n]` runs ahead into a queue of n items. When n items are waiting unread, the producer waits. `next` takes one. Omitted n means 1. Mentioning the fn does not by itself push. The queue does not grow past n.
 
-This is not lazy evaluation. An expression that is not `next` does not pull.
+`leave` inside the stream ends it. The following `next` is absent.
+
+This is not lazy evaluation. The bound is the only run-ahead, and it is written.
 
 ## What a large run does not get for free
 
@@ -216,7 +290,7 @@ There is no gradient and no tape of operations. `@checkpoint` on a fn saves the 
 Attributes sit immediately after the fn or the binding, before `=` or `{`. Arguments use `[]`. The list is the whole effect list.
 
 ```text
-fn burst in[] out[] @parallel[4] @require[n > 0] {
+fn burst in[] out[] @parallel[4] @structuredConcurrency @retry[3] {
 i32 key @ephemeral @val = secret;
 ```
 
@@ -236,7 +310,8 @@ i32 key @cell[ephemeral] = secret;
 | mark | default |
 |---|---|
 | omitted | No fork. One run. |
-| `@parallel[n]` | `n` CPU runs. This does not become a GPU launch. |
+| `@parallel[n]` | `n` CPU runs. This does not become a GPU launch. Siblings are not cancelled when one fails. |
+| `@structuredConcurrency` | Those n runs cancel on a failure, and they may not outlive the caller. |
 | `await` | Host wait is a state. The caller is not blocked. Omitted: the call is synchronous. |
 
 `@atomic` covers one store. `@mutex` plus `hold` covers a span. An explicit `out[]` names the joined result.
@@ -289,10 +364,11 @@ These are rejected, not run.
 - using an absent lane as zero
 - two runs storing one cell with no `@mutex`, no `@atomic`, and no explicit `out[]`
 - a runtime condition inside an attribute macro
-- a stream step that runs without `next`
+- `leave[name]` when no loop carries that name
+- a second mark `@NoFailTolerance` beside `@structuredConcurrency`
 
 ## Not in the language
 
-Lazy evaluation. A fn runs when called, unless it says `@comptime` and every input is a constant. A stream advances only at `next`.
+Lazy evaluation. A fn runs when called, unless it says `@comptime` and every input is a constant. A stream runs ahead only up to its written bound.
 
-No inferred types. No borrow checker. No trait system. No `guard` keyword. No `unlock`. No `goto`, `longjmp`, `throw`, or callback registry. No default reduction. No unwrap. No gradient and no operation tape. Attributes do not select which fn body runs.
+No inferred types. No borrow checker. No trait system. No `guard` keyword. No `unlock`. No `goto`, `longjmp`, `throw`, or callback registry. No default reduction. No unwrap. No gradient and no operation tape. No warp vote or shuffle. No requirement that every `match` arm be written. No C `switch` fall-through. Attributes do not select which fn body runs.
