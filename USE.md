@@ -86,19 +86,40 @@ The scheduler does not pick a device. You write the mark. A call through an inst
 
 ## Objects
 
-An object is a C++ standard-layout struct in memory. Fields are in the order written, with that target's C++ alignment. A C++ translation unit can read the same bytes. There is no base class, no subclass, no virtual, and no vptr.
+An object is a C++ standard-layout struct in memory. `struct` is not a second keyword. Fields are in the order written, with that target's C++ alignment, so a C++ translation unit can read the same bytes. There is no base class, no subclass, no virtual, and no vptr. `@ismutationof` does not make a child type. A flow is how two layouts correspond. It is not inheritance.
+
+The name of an object is one name. A second object with that name, or a function with that name, is a compile error.
 
 ```text
 object Point {
   i32 x;
   i32 y;
 }
-Point p;
-p.x = 1;
-Point* q = &p;
+object Line {
+  Point a;
+  Point b;
+}
+Line ink;
+ink.a.x = 1;
+Point* q = &ink.a;
 ```
 
-`p` passed as `Point` is a copy. `Point*` is the shared instance. A function that takes `Point*` is the operation. The object does not carry methods, because a method list becomes a subclass table. FFI is the bytes, not C++ name mangling.
+A field whose type is an object is a child, embedded by value. That is composition. `ink.a` is the child. `ink.a.x` is the child's field. There is no promotion: `ink.x` is not `ink.a.x`. A `Line` is not a `Point`. A `Point*` cannot aim at a `Line`.
+
+An object must not embed itself by value. That size does not end. A pointer field may aim at the same object type.
+
+```text
+object Node {
+  i32 v;
+  Node* next;
+}
+```
+
+Copying an object copies each embedded child and copies each pointer as an address. It does not follow the pointer. The instance's time mark covers the children. A field cannot carry `@ephemeral`, `@static`, or `@config`. A `@val` instance freezes every field. A `@val` field freezes that field even when the instance is mutable.
+
+Who may name the variable is the variable's scope. Who may name a field, once they can name the instance, is the field's scope. A field with no mark can be named by anyone who can name the instance. `@private` on a field is the file that defined the object. `@protected` is that same file. The bytes are still in the layout either way. FFI does not hide a field.
+
+`p` passed as `Point` is a copy of the value, children included. `Point*` is the shared instance. A function that takes `Point*` is the operation. The object does not carry methods, because a method list becomes a subclass table. FFI is the bytes, not C++ name mangling.
 
 ## Functions
 
@@ -403,7 +424,7 @@ A failure walks until `onfail` resolves it.
 | `pipe` | Moves items. Does not own their storage. |
 | `push` `pop` `flush` | Queue operations. `flush` finishes a `@device` batch. |
 | `include` | Loads a `.tpth_s` file once. A cycle means already loaded. Does not reveal `@private` names. `include lib` binds a host library's C symbols. |
-| `object` | Declares a layout. No base clause is legal. |
+| `object` | Declares one layout. A field of object type is an embedded child. No base clause. `struct` is not a keyword. |
 | `flow` | Declares the only map `$=` will accept. |
 | `macro` | A bundle of attributes. The body is attributes and `when` only. |
 | `when` | Comptime, inside a macro. A false `when` adds nothing. |
@@ -476,6 +497,11 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - `@ptr` or `@ref` as a mark
 - `^=` as structural equality. The operator is `$=`
 - a base clause on an `object`
+- `struct` used as a type
+- an object embedding itself by value
+- a time mark on a field
+- using a child object as its parent type, or the parent as the child
+- a second object with the same name, or an object and a function with the same name
 - `include` of a C or C++ header as Toplethos source
 - a `foreign` function with a body, or `@body` on one
 - `include lib` of a mangled C++ name
@@ -488,4 +514,4 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 
 ## Not in the language
 
-No overload resolution. No subclasses. No virtuals. No namespaces. No inferred types. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. A missing arm is not an error unless `@total` or the project switch says so.
+No overload resolution. No subclasses. No struct keyword. No is-a conversion between objects. No virtuals. No namespaces. No inferred types. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. A missing arm is not an error unless `@total` or the project switch says so.
