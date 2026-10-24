@@ -110,7 +110,22 @@ fn add in[i32 a] out[] {
 }
 ```
 
-Scope and geometry on that line apply to the definition. Time does not: the definition lives for the program. The type is `fn in[i32] out[]`. Two definitions with the same name are chosen by the nominal types of `in[]`. Attributes do not choose a body.
+Scope and geometry on that line apply to the definition. Time does not: the definition lives for the program. The type is `fn in[i32] out[]`. One name is one function. A second definition with that name is a compile error. Attributes do not choose a body.
+
+A mutation is a different function with its own id and its own name. It is not an overload. The call is the name you wrote. The relationship is the parent's id, never the parent's name.
+
+```text
+fn add in[i32 a] out[] {
+  return a + 1;
+}
+fn add_f in[f64 a] out[] @ismutationof[getfuncidbyname["add"]] {
+  return a + 1.0;
+}
+```
+
+`getfuncidbyname` runs at compile time. More than one function with that name is a compile error, so the name form is only a way to spell an id. `@ismutationof[id]` stores that id. A missing id is a compile error. A cycle of mutations is a compile error. A mutation of a mutation is allowed.
+
+The mark does not change the call and it does not change the C symbol. `add_f` is its own foreign name if it is `foreign`. The C side does not see `@ismutationof`.
 
 C++ equivalency is the type, the address, and the call. It is not the declarator syntax.
 
@@ -371,7 +386,7 @@ A failure walks until `onfail` resolves it.
 
 | keyword | what it does |
 |---|---|
-| `fn` | Names a definition. The body runs when it is called. Also spells the type: `fn in[i32] out[]`. |
+| `fn` | Names one definition. The body runs when it is called. Also spells the type: `fn in[i32] out[]`. A second `fn` with the same name is a compile error. |
 | `in[ ]` | The parameters. A value is copied. A pointer is not. |
 | `out[ ]` | The results. Empty means none. `out[new]` allocates. `out[here]` feeds the function taken as an input and returns what that function returns. |
 | `return` | Yields a value and leaves the function. No `return` yields nothing. |
@@ -383,6 +398,7 @@ A failure walks until `onfail` resolves it.
 | `compose` | New instance. Inner runs first, then outer. |
 | `bind` | New instance with one parameter filled. |
 | `transform` | Rewrites `@body` or `@geometry` of a `@mut` instance. Does not touch the definition. |
+| `@ismutationof[id]` | Links this function to another function's id. Not an overload and not a call. |
 | `pool` | Shared memory. The access mode is its lock. |
 | `pipe` | Moves items. Does not own their storage. |
 | `push` `pop` `flush` | Queue operations. `flush` finishes a `@device` batch. |
@@ -434,6 +450,8 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - `expr = name`
 - `name()` as a call
 - `i32 name(i32)` as a function type
+- a second function with the same name
+- `@ismutationof` a missing id, a name that is not one function, or a mutation cycle
 - `out[here]` when the function takes no function, or the named parameter is not a function
 - using `HERE` as another function, or `THIS` as a context
 - `context` reading a `@private` cell
@@ -470,4 +488,4 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 
 ## Not in the language
 
-No subclasses. No virtuals. No namespaces. No inferred types. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. A missing arm is not an error unless `@total` or the project switch says so.
+No overload resolution. No subclasses. No virtuals. No namespaces. No inferred types. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. A missing arm is not an error unless `@total` or the project switch says so.
