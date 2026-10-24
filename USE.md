@@ -67,6 +67,8 @@ bump in[&x];
 
 A function's type is `fn in[i32] out[]`. It is never written as `i32 name(i32)`.
 
+`f32` is a C `float`. `f64` is a C `double`. A foreign library may use either.
+
 ### Geometry
 
 Geometry is not a type. On a function it chooses the device. On a large cell it chooses where the bytes live.
@@ -267,6 +269,26 @@ One lookup returns both directions. It does not follow those pointers onward. Th
 
 Calculus stays ordinary functions on values. This table is the feature that removes the chase. There is no derivative operator.
 
+
+## Foreign libraries
+
+`include "file.tpth_s"` loads Toplethos. It does not parse C or C++. A header is not a Toplethos file.
+
+`include lib` names a host library and the C symbols Toplethos may call. A C++ library is reached only through `extern "C"` in that library. Overloaded C++ names, templates, and methods stay on the C++ side of the shim. An object still crosses as standard-layout bytes.
+
+```text
+include lib "m" {
+  fn sin in[f64 x] out[] foreign;
+}
+sin in[1.0];
+```
+
+The library is loaded once. A second `include lib "m"` means already loaded. A missing library or a missing symbol fails at that include, not at the first call. The host binds it, either on the link line or with `dlopen`.
+
+A value argument is copied. A pointer is the address, and it must stay valid for the call. The foreign function must not keep the pointer unless that cell outlives the call.
+
+`foreign` has no Toplethos body. `transform` of its `@body` is a compile error. The call runs on the CPU in the host. `@gpuparallel` does not retarget it. If the C function starts its own device work, that stays inside the C function.
+
 ## Flow
 
 `Hz` and `Pin` do not match because both store an integer. Nothing converts implicitly.
@@ -364,7 +386,7 @@ A failure walks until `onfail` resolves it.
 | `pool` | Shared memory. The access mode is its lock. |
 | `pipe` | Moves items. Does not own their storage. |
 | `push` `pop` `flush` | Queue operations. `flush` finishes a `@device` batch. |
-| `include` | Loads a file once. A cycle means already loaded. Does not reveal `@private` names. |
+| `include` | Loads a `.tpth_s` file once. A cycle means already loaded. Does not reveal `@private` names. `include lib` binds a host library's C symbols. |
 | `object` | Declares a layout. No base clause is legal. |
 | `flow` | Declares the only map `$=` will accept. |
 | `macro` | A bundle of attributes. The body is attributes and `when` only. |
@@ -436,6 +458,9 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - `@ptr` or `@ref` as a mark
 - `^=` as structural equality. The operator is `$=`
 - a base clause on an `object`
+- `include` of a C or C++ header as Toplethos source
+- a `foreign` function with a body, or `@body` on one
+- `include lib` of a mangled C++ name
 - an unknown `@`
 - a detached pointer to a cell that dies with the caller
 - two `@public` variables with the same name
