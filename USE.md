@@ -27,7 +27,7 @@ Ordinary cell: mutable, `@private`, freed when the function returns, on the CPU.
 | `@protected` | Any function in the same file. On an object field, also a subclass. |
 | `@public` | Any file that included this one. |
 
-A function definition defaults to `@public`. `@private` hides it from other files. There is no namespace and no `@global`. Two `@public` variables with the same name are a compile error.
+A function definition defaults to `@public`. `@private` hides it from other files. There is no `@global`. Two `@public` variables with the same short name in one namespace are a compile error.
 
 ### Time
 
@@ -178,6 +178,35 @@ A child method may reuse the parent's short name only with `@ismutationof` of th
 A method defaults to `@public`. `@private` is the file that defined it, and a subclass cannot call it or mutate it. `@protected` can be called and mutated by a subclass. A `foreign` method names its C symbol in the mark, `foreign[Point_move]`, because `Point.move` is not a C symbol.
 
 
+## Namespaces
+
+A namespace is a name prefix. It is not an object, not a value, and not a parent. It holds functions, objects, and variables. Those are its components. An object cannot hold a namespace, because a namespace is not a field and it has no bytes.
+
+`::` is the namespace mark. `.` stays an instance field or a method.
+
+```text
+namespace Draw {
+  object Point {
+    i32 x;
+    i32 y;
+  }
+  fn identity in[i32 a] out[] {
+    return a;
+  }
+}
+Draw::Point p;
+p.x = 1;
+Draw::identity in[1];
+```
+
+Inside `Draw`, the short names `Point` and `identity` are visible. Outside it, the short name is not. The qualified name always works. There is no import that pulls every name out of a namespace, because two short names would then collide.
+
+Namespaces nest. `Draw::Color::pack` is one function. Its id is that qualified name, so `getfuncidbyname["Draw::Point.move"]` is the method. The same short name in another namespace is a different function.
+
+A `@public` member of another file is still named `Draw::identity`. `@private` stays in the file that defined it. `include` loads the file once and does not copy the other file's short names into this namespace.
+
+`Draw` cannot be stored, passed, or used with `as`. `Draw::Point` is the object. `Draw` itself is only the prefix.
+
 ## Functions
 
 A definition is code, not a cell. You cannot store into it.
@@ -188,7 +217,7 @@ fn add in[i32 a] out[] {
 }
 ```
 
-Scope and geometry on that line apply to the definition. Time does not: the definition lives for the program. The type is `fn in[i32] out[]`. One name is one function. A second definition with that name is a compile error. Attributes do not choose a body.
+Scope and geometry on that line apply to the definition. Time does not: the definition lives for the program. The type is `fn in[i32] out[]`. One short name is one function inside its namespace. A second definition with that short name in the same namespace is a compile error. Attributes do not choose a body.
 
 A mutation is a different function with its own id and its own name. It is not an overload. The call is the name you wrote. The relationship is the parent's id, never the parent's name.
 
@@ -481,6 +510,7 @@ A failure walks until `onfail` resolves it.
 | `pipe` | Moves items. Does not own their storage. |
 | `push` `pop` `flush` | Queue operations. `flush` finishes a `@device` batch. |
 | `include` | Loads a `.tpth_s` file once. A cycle means already loaded. Does not reveal `@private` names. `include lib` binds a host library's C symbols. |
+| `namespace` | A name prefix for functions, objects, and variables. Not a value. |
 | `object` | Declares one layout. `@childof[Parent]` is the one parent. An embedded object field is composition, not a parent. |
 | `flow` | Declares the only map `$=` will accept. |
 | `macro` | A bundle of attributes. The body is attributes and `when` only. |
@@ -566,6 +596,8 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - an object embedding itself by value
 - a time mark on a field
 - a second object with the same name, or an object and a function with the same name
+- a second member with the same short name in one namespace
+- using a namespace as a value, a parameter, or a parent
 - `include` of a C or C++ header as Toplethos source
 - a `foreign` function with a body, or `@body` on one
 - `include lib` of a mangled C++ name
@@ -578,4 +610,4 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 
 ## Not in the language
 
-No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtual dispatch. No vptr. A child method is a mutation, not an override. No namespaces. No inferred types. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. A missing arm is not an error unless `@total` or the project switch says so.
+No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtual dispatch. No vptr. A child method is a mutation, not an override. No inferred types. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. A missing arm is not an error unless `@total` or the project switch says so.
