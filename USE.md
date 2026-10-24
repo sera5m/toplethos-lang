@@ -155,6 +155,94 @@ A transform is itself a function from an instance to an instance, so later it ca
 
 A call that has started keeps the body and geometry it started with. A transform does not change the definition, and it does not change any other instance. A `@compeval` definition cannot be made into a `@mut` instance. Binding a pointer to a cell that dies before the instance dies is the same detached-pointer error as anywhere else.
 
+## HERE, THIS, and another function
+
+These are three different things. A result being stored is not a context, and a failure is not a function.
+
+| word | what it is |
+|---|---|
+| `HERE` | The context of the function that is running. `HERE.n` is that function's own cell `n`. |
+| `THIS` | The one value in hand. In `onfail` it is the failure. In `transform` it is the instance. It is not a context and it has no fields. |
+| `context[other]` | The published cells of another function. `@public` cells, plus `@protected` cells when the reader is in the same file. `@private` cells are not in it. |
+
+```text
+fn counter in[] out[] {
+  i32 n @static @public = 0;
+  HERE.n = HERE.n + 1;
+  return HERE.n;
+}
+i32 seen = context[counter].n;
+```
+
+`STOP[THIS]` halts the failure in hand. `out[here]` is not a spelling. A call used on the right of `=` stores into that name. `out[new]` still allocates.
+
+You do not walk another function's stack to find a local. If it is not published, `context` does not have it.
+
+## Pipe and pool
+
+These are the Oiria pipe and the Oiria pool, without a subclass for each kind. A pool is the memory. A pipe only moves bytes. The lock lives inside the pool. You do not add a second `@mutex` to it.
+
+```text
+pool buf = pool[4096];
+hold[buf] @read { }
+hold[buf] @write { }
+hold[buf] @exclusive { }
+```
+
+| mode | who may be inside |
+|---|---|
+| `@read` | Many readers. No writer. |
+| `@write` | One writer. Readers may be inside. |
+| `@exclusive` | One holder. Nobody else. |
+
+`hold` acquires on entry and releases on every exit, including failure. A store without a write or exclusive hold is a compile error. A read without a hold is a compile error.
+
+`@ring` on a pool makes it a byte queue. `push` and `pop` on a pool use that queue. Full is a failure. Empty `pop` is absent.
+
+A pipe connects functions or pools. Its kind and its shape are marks, not types.
+
+| mark | Oiria kind | behavior |
+|---|---|---|
+| `@process` | InterProcess | A queue. Time is not critical. `pop` does not block. Default depth 16. |
+| `@device` | InterDevice | A batch of 1 to 255 items. `flush` sends the batch and a CRC. |
+| `@buffer` | InterBuffer | Passes a pointer. The pointer is present only during that `push`. Storing it is a compile error. |
+
+| mark | who it connects |
+|---|---|
+| `@direct` | One source, one target. Default. |
+| `@fan` | One source, many targets. |
+| `@clone` | One source, many targets, the same bytes to each. |
+| `@merge` | Many sources, one target. |
+| `@cfan` | Fan, and each target may drop the item. |
+| `@cmerge` | Merge, and each source may drop the item. |
+
+```text
+pipe link @process @direct;
+push[link, item];
+pop[link];
+```
+
+`push` is a failure when the pipe is full or the item is dropped. A filter on a pipe may only find, swap, replace, or remove bytes. It may not call a function. No filter means the bytes are copied unchanged. Unit conversion stays at `formatconvert`, not inside the pipe.
+
+## Link table
+
+Pointer chasing across functions is not required. Each function definition has an id. The key of two ids is the pair, lower id first, then the other. That key does not collide with a different pair.
+
+```text
+links[add, mine]
+```
+
+The record has two sides:
+
+| side | what it holds |
+|---|---|
+| `add` | Pointers `add` holds that point into `mine`. |
+| `mine` | Pointers `mine` holds that point into `add`. |
+
+One lookup returns both directions. It does not follow those pointers onward. The compiler fills the record when one function's instance stores a pointer into the other's published cell, or when `bind` captures such a pointer. A private cell never appears in the record.
+
+Calculus stays ordinary functions on values. This table is the feature that removes the chase. There is no derivative operator.
+
 ## Flow
 
 `Hz` and `Pin` do not match because both store an integer. Nothing converts implicitly.
@@ -165,11 +253,12 @@ flow rgb565 to vec4 {
   g = g;
   b = b;
 }
+vec4 color = formatconvert in[src];
 ```
 
 `a $= b` is true only when a `flow` says the layouts correspond. A field not named is dropped. No `flow` means not structurally equal, even when the field names look the same. `!$=` is the opposite.
 
-`formatconvert in[src] out[here]` applies one flow. `out[here]` fills a declared name. `out[new]` allocates, the same job as `create`. The runner does not do this yet. The rule is only the spelling above: one direction, the fields you name, no guessed conversion.
+`formatconvert` returns the converted value. The `=` stores it. `out[new]` allocates, the same job as `create`. The runner does not do this yet. The rule is one direction, the fields you name, no guessed conversion.
 
 `@ignore_if_structure_matches` on a function lets a parameter accept a `$=` source without `formatconvert`. Omitted: it does not.
 
@@ -187,12 +276,14 @@ flow rgb565 to vec4 {
 | `@stream` with no n | A queue of one. The producer waits when it is full. |
 | a missing `else` or match arm | No-op, unless `@total` or the project switch is on. |
 | `@NoFailTolerance` | Compile error. It is not a mode. |
+| a pipe with no kind | `@process` and `@direct`. |
+| a pool hold with no mode | `@read`. |
 
 `@comptime` may run at compile time when every input is a constant. `@compeval` must. A non-constant input to `@compeval` is a compile error.
 
 ## Shared store
 
-`@mutex` guards a cell. `lock` and `unlock` are the calls. `@xor` is not a mutex: a mutex is shared, and xor has one owner.
+`@mutex` guards a cell that is not a pool. `lock` and `unlock` are the calls. `@xor` is not a mutex: a mutex is shared, and xor has one owner. A pool uses `hold` and its access mode instead.
 
 ```text
 i32 tape[4] @static @mutex = {1, 2, 3, 4};
@@ -204,7 +295,7 @@ hold[tape] {
 }
 ```
 
-`hold` is `lock` plus `unlock` on every exit. A store outside the pair is a compile error. Every path that locks must unlock.
+`hold` on a `@mutex` cell is `lock` plus `unlock` on every exit. A store outside the pair is a compile error. Every path that locks must unlock.
 
 | how you leave | order |
 |---|---|
@@ -224,7 +315,7 @@ A failure walks until `onfail` resolves it.
 | `onfail` on the function | Resolves it here. |
 | `onfail` on the call | Used when the function did not. |
 | `@retry[k]` | Try again, up to k times, then the failure walks. |
-| `STOP[THIS]` | Halt this failure. It may sit inside `onfail`. |
+| `STOP[THIS]` | Halt the failure in hand. `THIS` is that failure. |
 | `fatal` | Skip `onfail`. The host shuts down. |
 | `onwarn` | Does not halt. |
 
@@ -236,12 +327,19 @@ A failure walks until `onfail` resolves it.
 |---|---|
 | `fn` | Names a definition. The body runs when it is called. Also spells the type: `fn in[i32] out[]`. |
 | `in[ ]` | The parameters. A value is copied. A pointer is not. |
-| `out[ ]` | The results. Empty means none. |
+| `out[ ]` | The results. Empty means none. `out[new]` allocates. |
 | `return` | Yields a value and leaves the function. No `return` yields nothing. |
+| `HERE` | The running function's own context. |
+| `THIS` | The value in hand. Not a context. |
+| `context` | Published cells of another function. |
+| `links` | The two-way pointer record for one pair of function ids. |
 | `instance` | Makes a cell from a definition. Frozen unless the cell says `@mut`. |
 | `compose` | New instance. Inner runs first, then outer. |
 | `bind` | New instance with one parameter filled. |
 | `transform` | Rewrites `@body` or `@geometry` of a `@mut` instance. Does not touch the definition. |
+| `pool` | Shared memory. The access mode is its lock. |
+| `pipe` | Moves items. Does not own their storage. |
+| `push` `pop` `flush` | Queue operations. `flush` finishes a `@device` batch. |
 | `include` | Loads a file once. A cycle means already loaded. Does not reveal `@private` names. |
 | `object` | Declares a layout. No base clause is legal. |
 | `flow` | Declares the only map `$=` will accept. |
@@ -263,17 +361,17 @@ A failure walks until `onfail` resolves it.
 | `onwarn` | A warning path. The function continues. |
 | `STOP[THIS]` | Halts the failure in hand. |
 | `fatal` | Emergency shutdown. `onfail` does not run. |
-| `lock` `unlock` | The mutex pair. |
-| `hold` | That pair around a block. |
+| `lock` `unlock` | The mutex pair, for a cell that is not a pool. |
+| `hold` | That pair around a block, or a pool access of the named mode. |
 | `pause` | Keeps the coroutine stack. |
 | `resume` | Continues a coroutine. |
 | `await` | A host wait on that same stack. Not a second kind of coroutine. |
 | `next` | Takes one item from a stream queue. |
 | `window` | A pointer over n elements. No copy. |
 | `gather` | Copies the present lanes named by the ids, in that order. Absent lanes are skipped, not stored as zero. |
-| `formatconvert` | Applies a `flow`. |
+| `formatconvert` | Applies a `flow`. The result is a value. |
 
-`@stream[n]` on a function makes that function the producer. Calling it starts it. It may run ahead until n items are unread, then it waits. `leave` inside it ends it.
+`@stream[n]` on a function makes that function the producer. Calling it starts it. It may run ahead until n items are unread, then it waits. `leave` inside it ends it. A stream is not a pool and not a pipe.
 
 `@dataparallel` on a function applies the body once per lane. The result is a new array. Different lengths are a failure. Absent lanes are skipped.
 
@@ -290,6 +388,9 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - `expr = name`
 - `name()` as a call
 - `i32 name(i32)` as a function type
+- `out[here]`
+- using `HERE` as another function, or `THIS` as a context
+- `context` reading a `@private` cell
 - a store into a function definition
 - `transform` on an instance that is not `@mut`
 - `transform` that names no group, or names `@scope` or `@time`
@@ -301,6 +402,10 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - a second use of `@ephemeral`
 - a store to a `@mutex` cell outside `lock` and `unlock`
 - a path that locks and does not unlock
+- a pool read or store without the matching `hold`
+- a second `@mutex` on a pool
+- storing the pointer from a `@buffer` pipe
+- a function call inside a pipe filter
 - writing `i` in a `do`
 - `leave[name]` with no matching `@name`
 - `@NoFailTolerance`
@@ -316,4 +421,4 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 
 ## Not in the language
 
-No subclasses. No virtuals. No namespaces. No inferred types. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. A missing arm is not an error unless `@total` or the project switch says so.
+No subclasses. No virtuals. No namespaces. No inferred types. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. A missing arm is not an error unless `@total` or the project switch says so.
