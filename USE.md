@@ -1,6 +1,6 @@
 # Use guide
 
-This revision is the language. [MATRIX.md](MATRIX.md) is older and does not win where they differ. The Halloween runner does not implement this yet.
+This is the language spec. [MATRIX.md](MATRIX.md) is older and does not win where they differ. The runner does not implement this yet.
 
 `()` groups. It never calls and it never takes an attribute argument. `[]` does.
 
@@ -51,7 +51,7 @@ You name a cell in four ways. There is no fifth.
 | `val` | The value. Passing it copies. |
 | `&val` | The address of that cell. |
 | `val*` | A pointer. It may be absent. `*p` is the cell it aims at. `*p = 1` stores there. |
-| `inst.val` | A field of an object instance. |
+| `inst.val` | A field or method of an instance. On a pointer, `p.val` is `(*p).val` when `p` is present. An absent pointer is a failure. |
 
 ```text
 i32 x = 1;
@@ -87,7 +87,7 @@ The scheduler does not pick a device. You write the mark. A call through an inst
 ## Objects
 An object is a struct in memory. `struct` is not a second keyword. Fields are in the order written, with that target's C++ alignment. There is no virtual function and no vptr. `@ismutationof` does not make a subclass. A `flow` converts two layouts that are not parent and child.
 
-The name of an object is one name. A second object with that name, or a function with that name, is a compile error.
+The short name of an object is one name inside its namespace. A second object with that short name in the same namespace, or a function with that short name there, is a compile error. `Draw::Point` and `Math::Point` are two objects.
 
 One parent is allowed. The mark is `@childof`, and it names that one object.
 
@@ -95,9 +95,17 @@ One parent is allowed. The mark is `@childof`, and it names that one object.
 object Point {
   i32 x;
   i32 y;
+  fn move in[i32 dx, i32 dy] out[] {
+    HERE.x = HERE.x + dx;
+    HERE.y = HERE.y + dy;
+  }
 }
 object Colored @childof[Point] {
   i32 rgb;
+  fn move in[i32 dx, i32 dy] out[] @ismutationof[getfuncidbyname["Point.move"]] {
+    HERE.x = HERE.x + dx;
+    HERE.rgb = 0;
+  }
 }
 Colored c;
 c.x = 1;
@@ -106,7 +114,7 @@ Point* parent = as[Point, &c];
 Colored* back = as[Colored, parent];
 ```
 
-The parent is a prefix at offset 0. The child's own fields follow it. `c.x` names the parent's field. A second `@childof`, a cycle, or a parent that is not an object is a compile error. A child must not declare a field name the parent already has.
+The parent is a prefix at offset 0. The child's own fields follow it. `c.x` names the parent's field. The parent is written the way you name that object, so another namespace is `@childof[Draw::Point]`. A second `@childof`, a cycle, or a parent that is not an object is a compile error. A child must not declare a field name the parent already has.
 
 `as[Parent, &child]` is a pointer to that prefix. It is the only upcast. `as[Child, parentPtr]` is the downcast. It is legal only when `Child` is that parent or a descendant, and it is not checked at run time, because there is no vptr. `as` of a value copies the parent prefix and nothing else. A downcast of a value is a compile error: the child fields are not there. Passing a `Colored` where a `Point` is required does not convert. A function that takes `Point*` does not accept `Colored*` until the caller writes `as`.
 
@@ -141,30 +149,17 @@ This layout matches a C struct written as the parent's fields, then the child's 
 A function that takes `Point*` is still an operation. A method is that function written inside the object. It is not a field and it is not stored in the instance, so the layout does not grow a vptr.
 
 ```text
-object Point {
-  i32 x;
-  i32 y;
-  fn move in[i32 dx, i32 dy] out[] {
-    HERE.x = HERE.x + dx;
-    HERE.y = HERE.y + dy;
-  }
-}
 Point p;
 p.move in[1, 2];
+Point* q = &p;
+q.move in[1, 2];
 ```
 
-`HERE` inside a method is the instance. Stores go into that instance. The function's full name is `Point.move`, so another object may also have a method named `move`. A bare `fn move` and a method `move` are different names.
+`HERE` inside a method is the instance. Stores go into that instance. A parameter or local with the same name is the bare name. `HERE.x` is still the field. The function's full name is `Point.move`, so another object may also have a method named `move`. A bare `fn move` and a method `move` are different names.
 
 A child does not override. It may declare a mutation of the parent method. The parent method stays what it is, and a `Point*` call still runs `Point.move` even when the pointer aims at a child.
 
 ```text
-object Colored @childof[Point] {
-  i32 rgb;
-  fn move in[i32 dx, i32 dy] out[] @ismutationof[getfuncidbyname["Point.move"]] {
-    HERE.x = HERE.x + dx;
-    HERE.rgb = 0;
-  }
-}
 Colored c;
 c.move in[1, 2];
 Point* parent = as[Point, &c];
@@ -207,6 +202,8 @@ A `@public` member of another file is still named `Draw::identity`. `@private` s
 
 `Draw` cannot be stored, passed, or used with `as`. `Draw::Point` is the object. `Draw` itself is only the prefix.
 
+A variable written in a namespace, and not inside a function, lives for the program. It is not created on the first call. With no scope mark it is `@private` to the file that contains it. `@static` there changes nothing. `@static` inside a function is still the one created on the first call.
+
 ## Functions
 
 A definition is code, not a cell. You cannot store into it.
@@ -230,7 +227,7 @@ fn add_f in[f64 a] out[] @ismutationof[getfuncidbyname["add"]] {
 }
 ```
 
-`getfuncidbyname` runs at compile time. More than one function with that name is a compile error, so the name form is only a way to spell an id. `@ismutationof[id]` stores that id. A missing id is a compile error. A cycle of mutations is a compile error. A mutation of a mutation is allowed.
+`getfuncidbyname` runs at compile time. The string is the name you would call: `add`, or `Draw::Point.move`. A short name that is not exactly one function in that namespace is a compile error, so the name form is only a way to spell an id. `@ismutationof[id]` stores that id. A missing id is a compile error. A cycle of mutations is a compile error. A mutation of a mutation is allowed.
 
 The mark does not change the call and it does not change the C symbol. `add_f` is its own foreign name if it is `foreign`. The C side does not see `@ismutationof`.
 
@@ -241,7 +238,7 @@ C++ equivalency is the type, the address, and the call. It is not the declarator
 | function type | `fn in[i32] out[]` |
 | address of the code | `&add` |
 | call | `add in[4]` |
-| overload | nominal `in[]` types |
+| overload | None. A different signature is another function. `@ismutationof` only records the lineage. |
 | `std::function` / bind | `instance` and `bind` |
 
 `&add` aims at the definition. It is not a cell.
@@ -396,7 +393,7 @@ Calculus stays ordinary functions on values. This table is the feature that remo
 
 `include "file.tpth_s"` loads Toplethos. It does not parse C or C++. A header is not a Toplethos file.
 
-`include lib` names a host library and the C symbols Toplethos may call. A C++ library is reached only through `extern "C"` in that library. Overloaded C++ names, templates, and methods stay on the C++ side of the shim. An object still crosses as standard-layout bytes.
+`include lib` names a host library and the C symbols Toplethos may call. A C++ library is reached only through `extern "C"` in that library. Overloaded C++ names, templates, and methods stay on the C++ side of the shim. An object crosses as the layout in Objects: parent prefix, then fields, no vptr.
 
 ```text
 include lib "m" {
@@ -409,7 +406,7 @@ The library is loaded once. A second `include lib "m"` means already loaded. A m
 
 A value argument is copied. A pointer is the address, and it must stay valid for the call. The foreign function must not keep the pointer unless that cell outlives the call.
 
-`foreign` has no Toplethos body. `transform` of its `@body` is a compile error. The call runs on the CPU in the host. `@gpuparallel` does not retarget it. If the C function starts its own device work, that stays inside the C function.
+A bare `foreign` uses the function's short name as the C symbol. That is legal only when the short name is one C identifier. A qualified name, and a method, must write the symbol: `foreign[Point_move]`. `foreign` has no Toplethos body. `transform` of its `@body` is a compile error. The call runs on the CPU in the host. `@gpuparallel` does not retarget it. If the C function starts its own device work, that stays inside the C function.
 
 ## Flow
 
@@ -442,7 +439,7 @@ vec4 color = formatconvert in[src];
 | `@topology[race]` or `select` | The first present result. The other arms of that race are cancelled. |
 | no `@stream` | The function runs to one result. |
 | `@stream` with no n | A queue of one. The producer waits when it is full. |
-| a missing `else` or match arm | No-op, unless `@total` or the project switch is on. |
+| a missing `else` or match arm | No-op, unless `@total` or the project switch `total` is on. |
 | `@NoFailTolerance` | Compile error. It is not a mode. |
 | a pipe with no kind | `@process` and `@direct`. |
 | a pool hold with no mode | `@read`. |
@@ -467,7 +464,7 @@ hold[tape] {
 
 | how you leave | order |
 |---|---|
-| success | `defer`, then `unlock`. |
+| success | `defer`, then `unlock`. A pool `hold` releases in that `unlock` step. |
 | failure | `faildefer`, then `defer`, then `unlock`, then `onfail`. |
 
 `@accum` on a cell means many runs may add into it. The add is the join. No other reduction is implied.
@@ -493,7 +490,7 @@ A failure walks until `onfail` resolves it.
 
 | keyword | what it does |
 |---|---|
-| `fn` | Names one definition. The body runs when it is called. Also spells the type: `fn in[i32] out[]`. A second `fn` with the same name is a compile error. |
+| `fn` | Names one definition in its namespace. The body runs when it is called. Also spells the type: `fn in[i32] out[]`. |
 | `in[ ]` | The parameters. A value is copied. A pointer is not. |
 | `out[ ]` | The results. Empty means none. `out[new]` allocates. `out[here]` feeds the function taken as an input and returns what that function returns. |
 | `return` | Yields a value and leaves the function. No `return` yields nothing. |
@@ -560,7 +557,7 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - `expr = name`
 - `name()` as a call
 - `i32 name(i32)` as a function type
-- a second function with the same name
+- a second function with the same short name in the same namespace
 - `@ismutationof` a missing id, a name that is not one function, or a mutation cycle
 - `out[here]` when the function takes no function, or the named parameter is not a function
 - using `HERE` as another function, or `THIS` as a context
@@ -595,7 +592,7 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - `struct` used as a type
 - an object embedding itself by value
 - a time mark on a field
-- a second object with the same name, or an object and a function with the same name
+- a second object with the same short name in one namespace, or an object and a function with that short name there
 - a second member with the same short name in one namespace
 - using a namespace as a value, a parameter, or a parent
 - `include` of a C or C++ header as Toplethos source
@@ -603,11 +600,11 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - `include lib` of a mangled C++ name
 - an unknown `@`
 - a detached pointer to a cell that dies with the caller
-- two `@public` variables with the same name
+- two `@public` variables with the same short name in one namespace
 - `@compeval` with an input that is not a constant
 - `@dataparallel` arrays of different lengths
-- a missing match arm when `@total` or the project switch is on
+- a missing match arm when `@total` or the project switch `total` is on
 
 ## Not in the language
 
-No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtual dispatch. No vptr. A child method is a mutation, not an override. No inferred types. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. A missing arm is not an error unless `@total` or the project switch says so.
+No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtual dispatch. No vptr. A child method is a mutation, not an override. No inferred types. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. A missing arm is not an error unless `@total` or the project switch `total` says so.
