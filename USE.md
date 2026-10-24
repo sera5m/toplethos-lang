@@ -14,10 +14,10 @@ A variable is one cell. Every mark on it belongs to one of four groups. A mark d
 |---|---|---|
 | scope | Who can name it? | `@private` `@protected` `@public` |
 | time | When does the cell exist? | unmarked `@ephemeral` `@static` `@config` |
-| type and value | What are the bits, and how do you name them? | `i32` `f32` `bool` `string` `object` `T*` `@val` `@xor` |
+| type and value | What are the bits, and how do you name them? | `i32` `f32` `bool` `string` `object` `T*` `fn in[] out[]` `@val` `@xor` |
 | geometry | Where do the bytes live, and where does a fn run? | `@paged` `@memory_hard` `@parallel[n]` `@gpuparallel` `@npuparallel` |
 
-Ordinary cell: mutable, `@private`, freed when the function returns, on the CPU. `@mut` is that ordinary cell written out. It changes nothing. It is not a scope.
+Ordinary cell: mutable, `@private`, freed when the function returns, on the CPU. `@mut` on an ordinary cell changes nothing. It is not a scope. A function instance is not an ordinary cell. Its default is frozen. See Functions.
 
 ### Scope
 
@@ -27,7 +27,7 @@ Ordinary cell: mutable, `@private`, freed when the function returns, on the CPU.
 | `@protected` | Any function in the same file. Not inheritance. There is no class. |
 | `@public` | Any file that included this one. |
 
-A function defaults to `@public`. `@private` hides it from other files. There is no namespace and no `@global`. Two `@public` variables with the same name are a compile error.
+A function definition defaults to `@public`. `@private` hides it from other files. There is no namespace and no `@global`. Two `@public` variables with the same name are a compile error.
 
 ### Time
 
@@ -65,6 +65,8 @@ bump in[&x];
 
 `@xor` is ownership for security, not a way to spell a reference. One owner. Handing it to a new `@xor` name ends the previous name. While it is held, no other name may read or store it, and a pointer to it is a compile error.
 
+A function's type is `fn in[i32] out[]`. It is never written as `i32 name(i32)`.
+
 ### Geometry
 
 Geometry is not a type. On a function it chooses the device. On a large cell it chooses where the bytes live.
@@ -78,7 +80,7 @@ Geometry is not a type. On a function it chooses the device. On a large cell it 
 | `@paged` | Only the locked sector is present. |
 | `@memory_hard` | A file. The location is fixed at program start. |
 
-The scheduler does not pick a device. You write the mark.
+The scheduler does not pick a device. You write the mark. A call through an instance uses the instance's geometry when a transform has set one, and the definition's geometry otherwise.
 
 ## Objects
 
@@ -95,6 +97,63 @@ Point* q = &p;
 ```
 
 `p` passed as `Point` is a copy. `Point*` is the shared instance. A function that takes `Point*` is the operation. The object does not carry methods, because a method list becomes a subclass table. FFI is the bytes, not C++ name mangling.
+
+## Functions
+
+A definition is code, not a cell. You cannot store into it.
+
+```text
+fn add in[i32 a] out[] {
+  return a + 1;
+}
+```
+
+Scope and geometry on that line apply to the definition. Time does not: the definition lives for the program. The type is `fn in[i32] out[]`. Two definitions with the same name are chosen by the nominal types of `in[]`. Attributes do not choose a body.
+
+C++ equivalency is the type, the address, and the call. It is not the declarator syntax.
+
+| C++ idea | here |
+|---|---|
+| function type | `fn in[i32] out[]` |
+| address of the code | `&add` |
+| call | `add in[4]` |
+| overload | nominal `in[]` types |
+| `std::function` / bind | `instance` and `bind` |
+
+`&add` aims at the definition. It is not a cell.
+
+An instance is the cell. Scope, time, `@val`, and `@xor` apply to it.
+
+```text
+fn(in[i32] out[]) mine = instance[add];
+mine in[4];
+fn(in[i32] out[])* slot = &mine;
+```
+
+The default instance is frozen. You may call it. You may not rewrite it. `@mut` on that instance is the condition that unlocks `transform`. `@mut` on ordinary data still does not rewrite code.
+
+```text
+fn(in[i32] out[]) mine @mut = instance[add];
+transform[mine] @geometry {
+  @gpuparallel
+}
+transform[mine] @body {
+  return a + 2;
+}
+```
+
+| operation | new cell or the same one | needs `@mut` |
+|---|---|---|
+| `compose in[outer, inner]` | New instance. `compose in[outer, inner] in[x]` is `outer in[inner in[x]]`. | no |
+| `bind in[f, v]` | New instance. `v` fills the first free parameter. `bind in[f, n, v]` fills parameter n. A value is copied. | no |
+| `transform[mine] @geometry` | Same instance. Device only. | yes |
+| `transform[mine] @body` | Same instance. Body only. `in[]` and `out[]` stay. | yes |
+
+A transform that names no group is a compile error. One transform may name `@body` and `@geometry` together. That is the higher-dimensional edit this version allows: one change across those axes, not a new axis language. Scope and time are not rewritten in place. A different scope or time is a new instance.
+
+A transform is itself a function from an instance to an instance, so later it can be composed and bound like any other function. That is as far as the higher-dimensional goal goes here. No extra dimension type is added.
+
+A call that has started keeps the body and geometry it started with. A transform does not change the definition, and it does not change any other instance. A `@compeval` definition cannot be made into a `@mut` instance. Binding a pointer to a cell that dies before the instance dies is the same detached-pointer error as anywhere else.
 
 ## Flow
 
@@ -119,6 +178,7 @@ flow rgb565 to vec4 {
 | if you write nothing else | what happens |
 |---|---|
 | `i32 y = 1` or `i32 y; y = 1` | Both store. Later stores are legal unless the cell is `@val` or `@config`. |
+| a function instance | Frozen. Callable. Not transformable until `@mut`. |
 | no `@comptime` and no `@compeval` | The function runs when called. |
 | no `@structuredConcurrency` | A failed sibling keeps going. The run may outlive the caller. |
 | `@topology[fanin]` or `[barrier]` | Wait for every participant. A failure does not cancel that wait. |
@@ -174,10 +234,14 @@ A failure walks until `onfail` resolves it.
 
 | keyword | what it does |
 |---|---|
-| `fn` | Names a function. The body runs when the function is called. |
+| `fn` | Names a definition. The body runs when it is called. Also spells the type: `fn in[i32] out[]`. |
 | `in[ ]` | The parameters. A value is copied. A pointer is not. |
 | `out[ ]` | The results. Empty means none. |
 | `return` | Yields a value and leaves the function. No `return` yields nothing. |
+| `instance` | Makes a cell from a definition. Frozen unless the cell says `@mut`. |
+| `compose` | New instance. Inner runs first, then outer. |
+| `bind` | New instance with one parameter filled. |
+| `transform` | Rewrites `@body` or `@geometry` of a `@mut` instance. Does not touch the definition. |
 | `include` | Loads a file once. A cycle means already loaded. Does not reveal `@private` names. |
 | `object` | Declares a layout. No base clause is legal. |
 | `flow` | Declares the only map `$=` will accept. |
@@ -225,6 +289,12 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 
 - `expr = name`
 - `name()` as a call
+- `i32 name(i32)` as a function type
+- a store into a function definition
+- `transform` on an instance that is not `@mut`
+- `transform` that names no group, or names `@scope` or `@time`
+- a `@body` transform that changes `in[]` or `out[]`
+- a `@mut` instance of a `@compeval` definition
 - a later store to `@val` or `@config`
 - `@mut` written on `@val` or `@config`
 - a pointer to an `@xor` cell, or a second reader of one
@@ -246,4 +316,4 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 
 ## Not in the language
 
-No subclasses. No virtuals. No namespaces. No inferred types. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. A missing arm is not an error unless `@total` or the project switch says so.
+No subclasses. No virtuals. No namespaces. No inferred types. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. A missing arm is not an error unless `@total` or the project switch says so.
