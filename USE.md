@@ -174,9 +174,33 @@ fn counter in[] out[] {
 i32 seen = context[counter].n;
 ```
 
-`STOP[THIS]` halts the failure in hand. `out[here]` is not a spelling. A call used on the right of `=` stores into that name. `out[new]` still allocates.
+`STOP[THIS]` halts the failure in hand. A call used on the right of `=` stores into that name. `out[new]` still allocates.
 
 You do not walk another function's stack to find a local. If it is not published, `context` does not have it.
+
+## out[here]
+
+`out[here]` is the chain. It is not the name on the left of `=`, and it is not `HERE`.
+
+This function returns a value to the function it took as an input. That input function then runs. What it returns is what this function returns. The next layer is that input. `HERE` does not switch to the callee.
+
+```text
+fn last in[i32 x] out[] {
+  return x + 1;
+}
+fn layer in[fn(in[i32] out[]) next] out[here] {
+  return 1;
+}
+layer in[last];
+```
+
+`return 1` on a function marked `out[here]` means `next in[1]`. `last` returns 2, and that is what `layer` returns.
+
+`out[here] = v` does the same delivery and does not leave the function. The expression's value is what the input function returns.
+
+If several parameters are functions, `out[here]` is the first. `out[here next]` names one. No function parameter is a compile error.
+
+The callee may read `context` of this function only for published cells. A function that does not say `out[here]` returns only to its caller.
 
 ## Pipe and pool
 
@@ -327,7 +351,7 @@ A failure walks until `onfail` resolves it.
 |---|---|
 | `fn` | Names a definition. The body runs when it is called. Also spells the type: `fn in[i32] out[]`. |
 | `in[ ]` | The parameters. A value is copied. A pointer is not. |
-| `out[ ]` | The results. Empty means none. `out[new]` allocates. |
+| `out[ ]` | The results. Empty means none. `out[new]` allocates. `out[here]` feeds the function taken as an input and returns what that function returns. |
 | `return` | Yields a value and leaves the function. No `return` yields nothing. |
 | `HERE` | The running function's own context. |
 | `THIS` | The value in hand. Not a context. |
@@ -388,7 +412,7 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - `expr = name`
 - `name()` as a call
 - `i32 name(i32)` as a function type
-- `out[here]`
+- `out[here]` when the function takes no function, or the named parameter is not a function
 - using `HERE` as another function, or `THIS` as a context
 - `context` reading a `@private` cell
 - a store into a function definition
