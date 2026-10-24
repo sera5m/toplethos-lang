@@ -24,7 +24,7 @@ Ordinary cell: mutable, `@private`, freed when the function returns, on the CPU.
 | mark | who can name it |
 |---|---|
 | `@private` | Only the function that created it. Default for a variable. |
-| `@protected` | Any function in the same file. Not inheritance. There is no class. |
+| `@protected` | Any function in the same file. On an object field, also a subclass. |
 | `@public` | Any file that included this one. |
 
 A function definition defaults to `@public`. `@private` hides it from other files. There is no namespace and no `@global`. Two `@public` variables with the same name are a compile error.
@@ -85,28 +85,45 @@ Geometry is not a type. On a function it chooses the device. On a large cell it 
 The scheduler does not pick a device. You write the mark. A call through an instance uses the instance's geometry when a transform has set one, and the definition's geometry otherwise.
 
 ## Objects
-
-An object is a C++ standard-layout struct in memory. `struct` is not a second keyword. Fields are in the order written, with that target's C++ alignment, so a C++ translation unit can read the same bytes. There is no base class, no subclass, no virtual, and no vptr. `@ismutationof` does not make a child type. A flow is how two layouts correspond. It is not inheritance.
+An object is a struct in memory. `struct` is not a second keyword. Fields are in the order written, with that target's C++ alignment. There is no virtual function and no vptr. `@ismutationof` does not make a subclass. A `flow` converts two layouts that are not parent and child.
 
 The name of an object is one name. A second object with that name, or a function with that name, is a compile error.
+
+One parent is allowed. The mark is `@childof`, and it names that one object.
 
 ```text
 object Point {
   i32 x;
   i32 y;
 }
+object Colored @childof[Point] {
+  i32 rgb;
+}
+Colored c;
+c.x = 1;
+c.rgb = 2;
+Point* parent = as[Point, &c];
+Colored* back = as[Colored, parent];
+```
+
+The parent is a prefix at offset 0. The child's own fields follow it. `c.x` names the parent's field. A second `@childof`, a cycle, or a parent that is not an object is a compile error. A child must not declare a field name the parent already has.
+
+`as[Parent, &child]` is a pointer to that prefix. It is the only upcast. `as[Child, parentPtr]` is the downcast. It is legal only when `Child` is that parent or a descendant, and it is not checked at run time, because there is no vptr. `as` of a value copies the parent prefix and nothing else. A downcast of a value is a compile error: the child fields are not there. Passing a `Colored` where a `Point` is required does not convert. A function that takes `Point*` does not accept `Colored*` until the caller writes `as`.
+
+There is still composition. An embedded field is not a parent.
+
+```text
 object Line {
   Point a;
   Point b;
 }
 Line ink;
 ink.a.x = 1;
-Point* q = &ink.a;
 ```
 
-A field whose type is an object is a child, embedded by value. That is composition. `ink.a` is the child. `ink.a.x` is the child's field. There is no promotion: `ink.x` is not `ink.a.x`. A `Line` is not a `Point`. A `Point*` cannot aim at a `Line`.
+`ink.a.x` is the embedded field. `ink.x` is not. A `Line` is not a `Point`, and `as[Point, &ink]` is a compile error.
 
-An object must not embed itself by value. That size does not end. A pointer field may aim at the same object type.
+An object must not embed itself by value. A pointer field may aim at the same object type.
 
 ```text
 object Node {
@@ -115,11 +132,13 @@ object Node {
 }
 ```
 
-Copying an object copies each embedded child and copies each pointer as an address. It does not follow the pointer. The instance's time mark covers the children. A field cannot carry `@ephemeral`, `@static`, or `@config`. A `@val` instance freezes every field. A `@val` field freezes that field even when the instance is mutable.
+Copying an object copies the parent prefix, each embedded field, and each pointer as an address. It does not follow the pointer. The instance's time mark covers the prefix and the fields. A field cannot carry `@ephemeral`, `@static`, or `@config`. A `@val` instance freezes every field. A `@val` field freezes that field even when the instance is mutable.
 
-Who may name the variable is the variable's scope. Who may name a field, once they can name the instance, is the field's scope. A field with no mark can be named by anyone who can name the instance. `@private` on a field is the file that defined the object. `@protected` is that same file. The bytes are still in the layout either way. FFI does not hide a field.
+Who may name the variable is the variable's scope. A field with no mark can be named by anyone who can name the instance. `@private` on a field is the file that defined the object, and a subclass cannot name it. `@protected` on a field is that file and any subclass. The bytes stay in the layout either way.
 
-`p` passed as `Point` is a copy of the value, children included. `Point*` is the shared instance. A function that takes `Point*` is the operation. The object does not carry methods, because a method list becomes a subclass table. FFI is the bytes, not C++ name mangling.
+This layout matches a C struct written as the parent's fields, then the child's fields. It matches C++ only for a class with no virtual function, no second base, and no vptr. Do not describe it as a C++ class hierarchy and expect the compiler to invent the same bytes.
+
+A function that takes `Point*` is the operation. The object does not carry methods.
 
 ## Functions
 
@@ -424,7 +443,7 @@ A failure walks until `onfail` resolves it.
 | `pipe` | Moves items. Does not own their storage. |
 | `push` `pop` `flush` | Queue operations. `flush` finishes a `@device` batch. |
 | `include` | Loads a `.tpth_s` file once. A cycle means already loaded. Does not reveal `@private` names. `include lib` binds a host library's C symbols. |
-| `object` | Declares one layout. A field of object type is an embedded child. No base clause. `struct` is not a keyword. |
+| `object` | Declares one layout. `@childof[Parent]` is the one parent. An embedded object field is composition, not a parent. |
 | `flow` | Declares the only map `$=` will accept. |
 | `macro` | A bundle of attributes. The body is attributes and `when` only. |
 | `when` | Comptime, inside a macro. A false `when` adds nothing. |
@@ -453,6 +472,7 @@ A failure walks until `onfail` resolves it.
 | `window` | A pointer over n elements. No copy. |
 | `gather` | Copies the present lanes named by the ids, in that order. Absent lanes are skipped, not stored as zero. |
 | `formatconvert` | Applies a `flow`. The result is a value. |
+| `as` | The explicit parent or child pointer. Not an implicit conversion. |
 
 `@stream[n]` on a function makes that function the producer. Calling it starts it. It may run ahead until n items are unread, then it waits. `leave` inside it ends it. A stream is not a pool and not a pipe.
 
@@ -496,11 +516,14 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - `@NoFailTolerance`
 - `@ptr` or `@ref` as a mark
 - `^=` as structural equality. The operator is `$=`
-- a base clause on an `object`
+- a second `@childof`, a cycle, or a parent that is not an object
+- a child field whose name the parent already uses
+- an implicit conversion between a child and its parent
+- `as` between types that are not parent and descendant
+- a downcast of a value
 - `struct` used as a type
 - an object embedding itself by value
 - a time mark on a field
-- using a child object as its parent type, or the parent as the child
 - a second object with the same name, or an object and a function with the same name
 - `include` of a C or C++ header as Toplethos source
 - a `foreign` function with a body, or `@body` on one
@@ -514,4 +537,4 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 
 ## Not in the language
 
-No overload resolution. No subclasses. No struct keyword. No is-a conversion between objects. No virtuals. No namespaces. No inferred types. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. A missing arm is not an error unless `@total` or the project switch says so.
+No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtuals. No vptr. No namespaces. No inferred types. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. A missing arm is not an error unless `@total` or the project switch says so.
