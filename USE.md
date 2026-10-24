@@ -1,197 +1,185 @@
 # Use guide
 
-Future language. The Halloween runner does not implement this yet. If a mark is absent, the behavior in the **default** line is what you get.
+This revision is the language. [MATRIX.md](MATRIX.md) is older and does not win where they differ. The Halloween runner does not implement this yet.
 
-`()` groups. It never calls. `[]` is the call, the index, the `if`, the `do`, the attribute argument, the `hold`, the `window`, the `gather`, the `next`, and the `leave`.
+`()` groups. It never calls and it never takes an attribute argument. `[]` does.
+
+An unmarked name is the ordinary case. `i32 x = 1` owns a new cell. You add a mark only to change one thing about it.
 
 ## Defaults
 
 | if you write nothing else | what happens |
 |---|---|
-| a declared name | Owns its cell. Not an alias. Immutable. Freed when the enclosing fn returns. |
-| `i32 y;` | The cell starts **absent**. A read is a failure. |
-| `i32 y = 1;` | The cell starts **present**. That `=` is the initial store, and it is allowed once. |
-| a later `y = 2` | Rejected. The name was not `@mut`. |
-| a call with no `out[]` | Results are discarded when the call is a statement. When the call is the right-hand side of `=`, the result is that value. |
-| a fn with no `return` | The call yields nothing. Reading that result is absent. |
-| no `onfail` | The failure walks to the caller. |
-| no `onfail` on the whole walk | Halt. Same as `STOP[THIS]`. |
-| no `@require` / `@ensure` | No guard. |
-| no `@parallel` | The fn does not fork. |
-| a shared store with no resolution | The program is wrong. There is no default join. |
-| no `@comptime` | The fn runs when it is called, even if every input is a constant. |
-| `include` | Loaded once. A cycle means already loaded. |
-| no `@topology` | A chain. One statement, then the next. |
-| no `@stream` | The fn runs to one result. |
-| `@stream` with no `n` | A queue of one item. The producer waits when that slot is full. |
-| no `@paged` | The whole value is present. |
-| an absent lane | Skipped. It is not zero, and it is not a second syntax. |
-| a missing `else` or match arm | No-op. Not a compile error. |
-| no `@structuredConcurrency` | A failed run does not cancel its siblings. The run may outlive the caller. |
-| no `@retry` | A failure walks. It is not tried again. |
-| a wait under 15 minutes | The coroutine stack stays in live memory. |
+| a declared name | Owns a new cell. Not an alias. Not a pointer. One store, the first one. Freed when the enclosing fn returns. |
+| `i32 y = 1` or `i32 y; y = 1` | Both are the first store. The cell is then present. |
+| a later `y = 2` | Rejected, unless the name says `@mut`. |
+| no `@comptime` and no `@compeval` | The fn runs when called. |
+| no `@parallel`, `@gpuparallel`, `@npuparallel` | One CPU run. The scheduler does not pick a device. |
+| no `@structuredConcurrency` | A failed sibling keeps going. The run may outlive the caller. |
+| `@topology[fanin]` or `[barrier]` | Wait for every participant. Not for the first. A failure does not cancel that wait. |
+| no `@stream` | The fn runs to one result. It is not a producer. |
+| no `@total`, and the project switch is off | A missing `else` or match arm is a no-op. |
+| an absent cell | The name has no value. A read is a failure. This is not an array, and not a math matrix. |
+| `@ephemeral` used twice | Compile error. One read or one mov, then the cell is wiped. |
+| `@NoFailTolerance` | Compile error. It is not a mode. |
 
-## Names
+## Names and passing
 
 ```text
 i32 y;
+y = 1;
 i32 x = 1;
-x = 2;
 ```
 
-Declare before assign. `2 = x` is a parse error.
+The first store may be on the declaration or on the next line. `2 = x` is a parse error. A second store needs `@mut`.
 
-| mark | default role | store |
-|---|---|---|
-| unmarked | Owns the cell. Not an alias. | Only the initial `=` on the declaration. |
-| `@mut` | Same ownership. Write permission. Not a lifetime. | Later stores are legal. |
-| `@val` | Owns the cell. Fixed after the initial store. | Never again. `@mut @val` is a compile error. |
-| `@ref` | Names a cell that already exists. No copy. | Only if this name also says `@mut`. |
-| `@xor` | One live name. Giving the cell to a new name ends this one. | Only with `@mut`. |
+`@mut` is not a scope. It only means this name may be stored to again. Scope is the list in the next section.
 
-`@mut` is not a kind of name. It is the permission to store, composed onto an owned cell or onto a `@ref`.
+| mark | what the name is |
+|---|---|
+| unmarked | A new cell. Passed by value: the callee gets a copy. |
+| `@mut` | This name may be stored again. On a copy, the store hits the copy. It does not write the caller. |
+| `@val` | Fixed after the first store. `@mut @val` is a compile error. |
+| `@ref` | Another name for a cell that already exists. Not a copy. The cell must be present. `@ref @mut` stores into that cell. |
+| `@ptr` | Like `@ref`, but it may be absent, and it may be aimed at a different cell later. A store needs `@mut` and a present cell. |
+| `@xor` | One live name. Giving the cell to a new name ends this one. |
 
-An unmarked `i32 key = 1` is not writable because `@mut` was left off. Adding `@mut` later is legal. `i32 key @val = 1` stays fixed even if `@mut` is added. That is the whole difference.
+`i32 b @ref = x` does not copy `x`. `i32 b = x` does.
 
-`i32 b @ref = key` does not copy `key`. A store through `b` writes `key`, and only if `b` says `@mut`.
+```text
+fn bump in[i32 a @ref @mut] out[] {
+  a = a + 1;
+}
+```
+
+`@mut` alone would change a copy. The caller's cell changes only when the parameter is `@ref @mut` or `@ptr @mut`.
+
+## Scope
+
+These say when the cell is freed. They do not grant `@mut`.
+
+| mark | when it is freed |
+|---|---|
+| unmarked, `@normal` | When the enclosing fn returns. |
+| `@ephemeral` | After its one read or its one mov. The cell is wiped. A second use is a compile error. If the compiler cannot prove there is one use, that is also a compile error. |
+| `@static` | Not freed for the life of the program. Same job as a C++ static local. It may also say `@mut`. |
+| `@config` | Not freed, and not writable after the first store. `@mut` here is a compile error. |
+
+`@scoped`, `@local`, and bare duration words are not spellings. `@static` on a fn is not a duration. Duration sits on a cell.
+
+Passing an `@ephemeral` is that one use. The caller is done with it. What the callee does with its own parameter is the callee's marks, not a second rule.
+
+`@config` and `@val` both refuse a later store. They are not the same: `@config` is a lifetime, `@val` is a freeze on a cell that still dies with its scope.
 
 ## States
 
-A cell is **absent**, **present**, or **empty**. A read is legal only while it is present. `if[state]` is the transition. There is no unwrap.
+A cell is **absent**, **present**, or **empty**.
 
-| state | how you get there |
+| state | meaning |
 |---|---|
-| absent | `i32 y;` or `@absent` on a declaration. Also the result of a fn that did not `return`. |
-| present | The initial `=`, or a later store through `@mut`. |
-| empty | `@ephemeral` after its one read. The machine empties it. That empty is not a user store and does not need `@mut`. |
+| absent | No value yet. `i32 y;` starts here. A lane in an array can be absent too. Same word, same rule. |
+| present | The first store has happened. |
+| empty | An `@ephemeral` cell after its one use. |
 
-## Duration
+`if[state[y]]` looks at the state. It does not read the value. A read of the value while absent or empty is a failure. For `@ephemeral`, a second use does not get that far: it is a compile error.
 
-Duration is an attribute. It does not grant `@mut`.
+## Mutex
 
-| mark | when the cell is freed |
-|---|---|
-| unmarked, `@normal` | When the enclosing fn returns. `@scoped` and `@local` are the same mark. |
-| `@ephemeral` | After one read. Then the cell is empty. |
-| `@static` | Not freed for the life of the program. |
-| `@config` | Not freed, and not writable after load. `@mut` here is a compile error. |
-
-## Sharing a store
-
-Default: the cell is not shared. Two runs storing one cell with none of the marks below is an error. There is no join order to fall back on.
-
-| mark | resolution |
-|---|---|
-| `@mutex` | A store is legal only inside `hold`. |
-| `@atomic` | Each store locks and unlocks itself. No span across two stores. |
-| `@volatile` | Two reads are not the same value. A register may not keep it. Does not make the store safe. |
-| accumulator, or an explicit `out[]` | The join is a named result, not a second name for the same cell. |
+`@mutex` means this cell is the thing being guarded. The name is the reference to it. `lock` and `unlock` are calls.
 
 ```text
 i32 tape[4] @static @mut @mutex = {1, 2, 3, 4};
+lock[tape];
+tape[0] = tape[0] + 1;
+unlock[tape];
+```
 
+A store to a `@mutex` cell outside `lock` / `unlock` is a compile error. Every path that locks must unlock. `hold` is sugar for that pair, including on failure:
+
+```text
 hold[tape] {
   tape[0] = tape[0] + 1;
 }
 ```
 
-Entering `hold[tape]` locks. The end of the block unlocks. There is no `unlock`. A store outside the block is a compile error. If a failure leaves the block, the hold ends before the failure walks outward. A nested `hold` of the same cell is a compile error. Two different cells lock in the order the blocks are written. Opposite orders in two runs can deadlock. The language does not invent a lock order.
+Leaving a block, the order is fixed.
 
-## Calls
+| how you leave | order |
+|---|---|
+| success | `defer`, then `unlock`. |
+| failure | `faildefer`, then `defer`, then `unlock`, then `onfail`. |
 
-```text
-fn add in[i32 a] out[] {
-  return a + 1;
-}
-i32 n = add in[4];
-add in[4];
-```
+Cleanup still sees the cell locked. `onfail` runs after the unlock. Several `defer` or `faildefer` blocks run in reverse order of writing.
 
-`add(4)` is a parse error. `()` only groups, as in `a * (b + c)`.
+## Devices
 
-A parameter is a binding. Its attributes sit after the name, inside the brackets.
+| mark | device |
+|---|---|
+| `@parallel[n]` | n CPU threads. Not a GPU launch. |
+| `@gpuparallel` | A GPU launch. The geometry is the device's. There is no thread count. |
+| `@npuparallel` | An NPU launch. Same rule. The geometry is the device's. |
 
-```text
-fn bump in[i32 a @mut] out[] {
-  a = a + 1;
-}
-```
-
-Default for a parameter: owned, immutable, `@normal`, present for the call. The caller's argument is copied in unless the parameter says `@ref`.
-
-Several fns may share a name. The call is chosen by the nominal types of the parameters. Attributes do not select a second body.
-
-A handler written on the call is the context for that invocation. It runs only if the fn did not already resolve the failure.
-
-```text
-add in[4] onfail { leave; };
-```
+The scheduler does not choose among these. You write the one you mean.
 
 ## Failure
 
-A failure is a state. It is not an exception channel and not an ignored code. It walks until some `onfail` resolves it. There is no `try` mark and no `?`.
+A failure walks until an `onfail` resolves it. No `try`. No `?`.
 
 ```text
-fn boom in[] out[] @require[n > 0] {
+fn boom in[] out[] @require[n > 0] @retry[3] {
   return 1;
 } onfail {
-  if[fatal] { STOP[THIS]; }
-} onwarn {
   print[1];
+} onwarn {
+  print[2];
 };
+add in[4] onfail { leave; };
 ```
 
-| form | default effect |
+| form | effect |
 |---|---|
-| `@require[…]` | Entry guard. A false predicate is the failure state. Omitted: no entry guard. |
-| `@ensure[…]` | Exit guard. Same failure state, after the body. Omitted: no exit guard. |
-| `onfail` on the fn | Resolves the failure inside the fn. Omitted: the state is handed outward. |
-| `onfail` on the call | The next handler, if the fn did not resolve it. |
-| `STOP[THIS]` | Halt this failure now. `THIS` is the failure in hand. |
-| `onwarn` | A warning state. Does not halt, and does not replace `onfail`. Omitted: no warning path. |
-| `@retry[k]` | Run the fn again, up to k times, then the failure walks. Omitted: no retry. |
+| `@require[…]` | Entry guard. False is a failure. Omitted: no entry guard. |
+| `@ensure[…]` | Exit guard. Omitted: no exit guard. |
+| `onfail` on the fn | Resolves it here, unless it already left this fn. |
+| `onfail` on the call | Used when the fn did not resolve it. |
+| `@retry[k]` | Run again, up to k times, then the failure walks. Omitted: no retry. |
+| `STOP[THIS]` | Halt this failure. It can be conditional, inside `onfail`. |
+| `fatal` | Not recoverable. `onfail` does not run. The host does an emergency shutdown. |
+| `onwarn` | Does not halt and does not replace `onfail`. |
 
-There is no `guard` keyword. `if[state]` inside the body is an ordinary transition, not a guard.
-
-## Cleanup
-
-Duration frees the cell. `hold` unlocks. These two also exist, and they are not the same as `onfail`.
-
-```text
-defer { print[1]; }
-faildefer { print[2]; }
-```
-
-`defer` runs on `leave`, on `return`, and on failure. `faildefer` runs only when a failure leaves the block. On a failure both run. On success only `defer` runs. Several of them run in reverse order of writing, before the failure walks to the caller. `onfail` is still the handler that resolves the state. It is not a cleanup block.
+`@NoFailTolerance` is a compile error wherever it is written. The opt-in for "a failure cancels the siblings" is only `@structuredConcurrency`.
 
 ## Branches
 
-`if[cond]` tests an open condition. A missing `else` is a no-op. Nothing warns about it, because there is no closed set of conditions to finish.
-
-`match` is only for a closed set: the states of a nominal value, or an enum. A missing arm is a no-op. It is not a compile error, and arms do not fall through. A project warning may say that an arm is missing. That warning is off unless the project turns it on. This is the same split as C++: an `if` without `else` is silent, and `-Wswitch` warns on an enum that does not name every enumerator. It does not reject the program.
-
-A threshold is an `if`, not a `match`.
+A missing `else`, and a missing `match` arm, are no-ops. Arms do not fall through. A threshold is an `if`.
 
 ```text
 if[n < 10] { small; }
-if[n < 100] { mid; }
 match[color] {
   red { print[1]; }
-  blue { print[2]; }
 }
 ```
 
-If `color` is `green` and there is no `green` arm, the `match` does nothing.
+If `color` is `blue`, nothing in the `match` runs. `@total` on that `match`, or the project switch, makes a missing arm a compile error. Off, unless you turn it on.
 
-## Control flow
+## Loops
 
-Default shape is a chain. `do n[k]` runs the body k times. The index is `i`, from 0 up to k - 1. An inner `do` shadows `i`.
+`do n[k]` runs k times. `i` is 0, 1, …, k - 1. That is `i < k`, not `i <= k`. `i` is read-only. The loop stores it. `i = 3` is a compile error. There is no form for walking `i` backward.
 
 ```text
 do n[4] {
   if[i == 1] { continue; }
   print[i];
+} onFinished {
+  print[9];
 }
+```
+
+`onFinished` runs once, after the last iteration. An inner `do` has its own `i`.
+
+`continue` starts the next iteration of the innermost `do` or `loop`. `leave` ends the innermost one. `leave[name]` ends the `loop` or `do` that says `@name[name]`. That `@name` is allowed on a `loop` or a `do`. It is not only for fns and bindings.
+
+```text
 loop @name[outer] {
   do n[4] {
     if[done] { leave[outer]; }
@@ -199,21 +187,19 @@ loop @name[outer] {
 }
 ```
 
-`continue` starts the next iteration of the innermost `do` or `loop`. `leave` ends the innermost one. `leave[name]` ends the loop or `do` that carries `@name[name]`. Neither one is `STOP[THIS]`.
+`leave` is not `STOP[THIS]` and not `fatal`.
 
-`loop` does not end on its own. A failure still walks outward, and it leaves the loop on the way.
+## Fans, races, streams
 
-`@topology` names a shape that is not a chain. Omitted, the fn is a chain.
-
-| mark | what the runs do |
+| mark | waits for |
 |---|---|
-| `@topology[fanout]` | One value, n runs. The join is still explicit. |
-| `@topology[fanin]` | The next statement waits until every run has finished, or one has failed. |
-| `@topology[barrier]` | The runs wait until all have arrived, then continue. |
-| `@topology[race]` | The first present result wins. The other arms of this race are cancelled. |
-| `@topology[chain]` | The default. |
+| `@topology[fanin]` | Every participant, then one continuation. |
+| `@topology[barrier]` | Every participant, then they all continue. |
+| `@topology[race]`, `select` | The first present result. The other arms of that race are cancelled. |
+| `@topology[fanout]` | Does not wait by itself. The join is still explicit. |
+| `@topology[chain]` | The default. One statement, then the next. |
 
-`select` is `race` over different calls, not n copies of one fn. The first call that becomes present wins. The other calls in that `select` are cancelled.
+"Any result" is `race` or `select`. It is not what `fanin` or `barrier` mean. Under the default, a failure does not cancel the remaining participants and does not end the wait. `@structuredConcurrency` is what makes one failure cancel the siblings and end the wait.
 
 ```text
 select {
@@ -222,34 +208,41 @@ select {
 }
 ```
 
-A pipeline is not a keyword. It is `@stream[n]` between two fns, plus `next` or `select`.
+The `@stream` fn is the producer. Calling it starts it.
 
-A jump is a state transition or a failure walk. `goto`, `longjmp`, `throw`, and a callback registry are not primitives.
+```text
+fn steps in[] out[] @stream[4] {
+  return x;
+}
+steps in[];
+i32 item = next[steps in[]];
+```
 
-## When one run of many stops
+It may run ahead until n items are waiting. Then it waits. Omitted n means 1. `next` is the consumer. `leave` inside the producer ends it, and the next `next` is absent. A pipeline is this queue between two fns. It is not its own keyword.
 
-Default: Erlang plus a detached run. If one run fails, its siblings keep going. The failed run's failure walks on its own. The run may still be going after the caller returns. That is the fire-and-forget case.
-
-`@structuredConcurrency` is the other rule, and it is opt-in. One failure cancels the siblings, their holds end, and the run may not outlive the caller. `@NoFailTolerance` is not a second mark. It means this one.
-
-`@topology[race]` and `select` still cancel the arms that lost, because that is what a race is. They do not cancel unrelated siblings.
+A detached run must not keep a `@ref` or `@ptr` to a cell that dies when the caller returns. That is a compile error.
 
 ## Coroutines
 
-A coroutine is stackful. `pause` keeps the stack. `resume` continues it. The caller can do either by hand.
+`initialize` starts a stackful coroutine. `create` does not. `create` allocates a new cell at run time, a different cell each time the statement runs. A declaration allocates one cell for the scope.
 
-If a wait lasts 15 minutes or more, the stack may leave live memory and sit on disk or on other memory until `resume`. The host picks where. The language only requires that the stack is not stuck in live RAM for that wait. A shorter wait stays in live memory.
+```text
+initialize steps in[];
+resume[steps];
+```
 
-An accumulator is still how several paused calls join. `await` remains the host-wait state. It does not allocate a second, stackless, kind of coroutine.
+`pause` inside the coroutine keeps the stack. `resume` continues it. `await` is a host wait on that same stack. It is not a second, stackless, kind of coroutine.
+
+If a wait has already lasted 15 minutes, the stack may leave live memory. The host picks disk or other memory. A shorter wait stays in live memory.
 
 ## Large cells
 
-Default: the whole value is present, and a present lane is dense. An absent lane is not a zero and it is not visited. That absent lane is the mask. There is no `mask` keyword and no warp vote or shuffle in the language. A GPU backend may lower an absent lane to a hardware predicate. That lowering is not source syntax.
+An absent lane is skipped. It is not zero. That is the only mask. No warp vote or shuffle in the language.
 
 ```text
 i32 span @ref = window[buf, start, n];
 i32 picked = gather in[table, ids];
-i32 sector @paged @mut;
+i32 sector @paged @mut @mutex;
 hold[sector] {
   sector[0] = 1;
 }
@@ -257,118 +250,77 @@ hold[sector] {
 
 | form | behavior |
 |---|---|
-| `window[buf, start, n]` | A `@ref` over n elements. No copy. Read-only unless the window's name also says `@mut`. Freed with the enclosing fn. |
-| `@paged` | Only the sector named by the current `hold` is present. A read of another sector is a failure. |
-| `gather in[table, ids]` | Copies the present lanes named by `ids`, in that order. Absent lanes are skipped. |
-| a parallel op over an array | Skips absent lanes. |
-
-A store through a window is a store through `@ref`. It needs `@mut`, and `@mutex` or `@atomic` if the cell is shared.
-
-## Streams
+| `window[buf, start, n]` | A `@ref` over n elements. No copy. |
+| `@paged` | Only the sector named by the current lock is present. |
+| `gather in[table, ids]` | Copies the present lanes named by `ids`, in order. |
+| `@dataparallel` on a fn | One call applies the body per lane. Absent lanes are skipped. The result is a new array, not a store into a shared cell. |
+| `@accum` on an out cell | Many runs may add into that cell. The add is the join. |
+| `@memory_hard` | The cell is a file. The location is fixed at program start. |
 
 ```text
-fn steps in[] out[] @stream[4] {
-  return x;
+fn lane in[i32 a] out[] @dataparallel {
+  return a + 1;
 }
-i32 item = next[steps in[]];
+i32 sum @mut @accum = 0;
 ```
 
-`@stream[n]` runs ahead into a queue of n items. When n items are waiting unread, the producer waits. `next` takes one. Omitted n means 1. Mentioning the fn does not by itself push. The queue does not grow past n.
+## Flow
 
-`leave` inside the stream ends it. The following `next` is absent.
+`Hz` and `Pin` do not match because both store an integer. No conversion is implicit.
 
-This is not lazy evaluation. The bound is the only run-ahead, and it is written.
+```text
+flow rgb565 to vec4 {
+  r = r;
+  g = g;
+  b = b;
+}
+vec4 color = formatconvert in[src] out[here];
+```
 
-## What a large run does not get for free
-
-A reduction is still a named `out[]`, an `@atomic` store, or a `@mutex` span. A sum, a score, and a top-k are fns you write. The language does not insert them.
-
-There is no gradient and no tape of operations. `@checkpoint` on a fn saves the present cells, and only at a barrier or at the end of a `hold`. Omitted: nothing is saved. The language does not choose a file format.
+`flow` is the map `^=` consults. A field not named on the right is dropped. No `flow` means not structurally equal. `out[here]` fills a declared name. `out[new]` is the same job as `create` for that result. `@ignore_if_structure_matches` on a fn lets a parameter accept a `^=` source without `formatconvert`. Omitted: it does not.
 
 ## Attributes
 
-Attributes sit immediately after the fn or the binding, before `=` or `{`. Arguments use `[]`. The list is the whole effect list.
-
-```text
-fn burst in[] out[] @parallel[4] @structuredConcurrency @retry[3] {
-i32 key @ephemeral @val = secret;
-```
-
-A long list can be a macro. The use site stays one `@name`. The body holds only attributes and `when[cond] { … }`. `when` is comptime. A false `when` adds nothing. It is not a runtime branch.
+`@` sits after a fn, after a binding, or after `loop` and `do` when the mark is `@name`. Arguments use `[]`. An unknown `@` is a compile error.
 
 ```text
 macro cell[where] {
   @val
-  when[where ^= static] { @static }
   when[where ^= ephemeral] { @ephemeral }
 }
 i32 key @cell[ephemeral] = secret;
 ```
 
-## Parallel
+`when` is comptime, inside the macro only. A false `when` adds nothing. `@comptime` on a fn means it may run at compile time when every input is a constant, like `constexpr`. `@compeval` means it must. A non-constant input to `@compeval` is a compile error, like `consteval`.
 
-| mark | default |
-|---|---|
-| omitted | No fork. One run. |
-| `@parallel[n]` | `n` CPU runs. This does not become a GPU launch. Siblings are not cancelled when one fails. |
-| `@structuredConcurrency` | Those n runs cancel on a failure, and they may not outlive the caller. |
-| `await` | Host wait is a state. The caller is not blocked. Omitted: the call is synchronous. |
-
-`@atomic` covers one store. `@mutex` plus `hold` covers a span. An explicit `out[]` names the joined result.
-
-## Types
-
-`i32`, `f32`, `bool`, and `string` are representations. A newtype is nominal: `Hz` and `Pin` do not match because both store an integer.
-
-Default conversion: none. `^=` is true only when a flow map says the layouts correspond, including a different field order or a partial field set. No flow map means not structurally equal.
-
-```text
-vec4 color = formatconvert in[src] out[here];
-vec4 color = formatconvert in[src] out[new];
-```
-
-`out[here]` fills the declared binding. `out[new]` allocates it. `@ignore_if_structure_matches` on a fn lets a parameter accept a `^=` source without `formatconvert`. Omitted: it does not.
-
-## Include
+## Include and comments
 
 ```text
 include "lib.tpth_s";
 ```
 
-Every include in the project is one set. It is deduped and ordered by dependency. A cycle means already loaded, not a second copy and not an error. There is no export list. A library's names are visible.
+Loaded once. A cycle means already loaded. No export list.
 
-## Comments
-
-`//` to the end of the line is a comment. A graph marker is a comment:
-
-```text
-//<<<node id=1 name=add>>>
-//<<<link from=1 to=2>>>
-```
-
-The marker is not code. A macro does not expand it.
+`//` to the end of the line is a comment, including a graph marker. A marker is not code.
 
 ## Compile errors
 
-These are rejected, not run.
-
 - `expr = name`
 - `name()` as a call
-- a store to a name without `@mut`, after the initial `=`
-- `@mut` with `@val`
-- `@mut` on `@config`
-- a store to a `@mutex` cell outside `hold`
-- a nested `hold` of the same cell
-- a read of an absent or empty cell
-- a read of a sector that is not the held page
-- using an absent lane as zero
-- two runs storing one cell with no `@mutex`, no `@atomic`, and no explicit `out[]`
-- a runtime condition inside an attribute macro
-- `leave[name]` when no loop carries that name
-- a second mark `@NoFailTolerance` beside `@structuredConcurrency`
+- a second store without `@mut`
+- `@mut` with `@val`, or `@mut` on `@config`
+- `@static` used as a duration on a fn
+- a second use of `@ephemeral`, or a use the compiler cannot prove is the only one
+- a store to a `@mutex` cell outside `lock` and `unlock`
+- a path that locks and does not unlock
+- writing `i` in a `do`
+- `leave[name]` with no matching `@name`
+- `@NoFailTolerance`
+- an unknown `@`
+- a detached `@ref` or `@ptr` to a cell that dies with the caller
+- `@compeval` with an input that is not a constant
+- a missing match arm when `@total` or the project switch is on
 
 ## Not in the language
 
-Lazy evaluation. A fn runs when called, unless it says `@comptime` and every input is a constant. A stream runs ahead only up to its written bound.
-
-No inferred types. No borrow checker. No trait system. No `guard` keyword. No `unlock`. No `goto`, `longjmp`, `throw`, or callback registry. No default reduction. No unwrap. No gradient and no operation tape. No warp vote or shuffle. No requirement that every `match` arm be written. No C `switch` fall-through. Attributes do not select which fn body runs.
+No inferred types. No borrow checker. No trait system. No `guard`. No `goto`, `longjmp`, `throw`, or callback registry. No default reduction. No unwrap. No gradient. No warp syntax. No C `switch` fall-through. No silent GPU launch. `@mut` is not a scope. A missing arm is not an error unless `@total` or the project switch says so.
