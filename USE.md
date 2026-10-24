@@ -4,15 +4,17 @@ This revision is the language. [MATRIX.md](MATRIX.md) is older and does not win 
 
 `()` groups. It never calls and it never takes an attribute argument. `[]` does.
 
-An unmarked name is the ordinary case. `i32 x = 1` owns a new cell. You add a mark only to change one thing about it.
+An ordinary variable is mutable. You do not write `@mut` to get one. `@mut` is that ordinary case, written out. It changes nothing, and it is not a scope.
 
 ## Defaults
 
 | if you write nothing else | what happens |
 |---|---|
-| a declared name | Owns a new cell. Not an alias. Not a pointer. One store, the first one. Freed when the enclosing fn returns. |
-| `i32 y = 1` or `i32 y; y = 1` | Both are the first store. The cell is then present. |
-| a later `y = 2` | Rejected, unless the name says `@mut`. |
+| a declared name | A new mutable cell. Private to the function. Not a pointer and not a reference. Freed when the function returns. |
+| `i32 y = 1` or `i32 y; y = 1` | Both store. Later stores are also legal. |
+| `@val` or `@config` | A later store is rejected. |
+| no visibility mark on a variable | `@private`. Hidden outside the function that created it. |
+| no visibility mark on a fn | `@public`. An include can call it. |
 | no `@comptime` and no `@compeval` | The fn runs when called. |
 | no `@parallel`, `@gpuparallel`, `@npuparallel` | One CPU run. The scheduler does not pick a device. |
 | no `@structuredConcurrency` | A failed sibling keeps going. The run may outlive the caller. |
@@ -23,47 +25,80 @@ An unmarked name is the ordinary case. `i32 x = 1` owns a new cell. You add a ma
 | `@ephemeral` used twice | Compile error. One read or one mov, then the cell is wiped. |
 | `@NoFailTolerance` | Compile error. It is not a mode. |
 
-## Names and passing
+## Names, pointers, references
 
 ```text
 i32 y;
 y = 1;
+y = 2;
 i32 x = 1;
 ```
 
-The first store may be on the declaration or on the next line. `2 = x` is a parse error. A second store needs `@mut`.
+`2 = x` is a parse error. `@mut` is optional on an ordinary cell. `@mut` together with `@val` or `@config` is a compile error, because those two refuse a later store.
 
-`@mut` is not a scope. It only means this name may be stored to again. Scope is the list in the next section.
+These three are not the same word.
 
-| mark | what the name is |
+| form | what it is |
 |---|---|
-| unmarked | A new cell. Passed by value: the callee gets a copy. |
-| `@mut` | This name may be stored again. On a copy, the store hits the copy. It does not write the caller. |
-| `@val` | Fixed after the first store. `@mut @val` is a compile error. |
-| `@ref` | Another name for a cell that already exists. Not a copy. The cell must be present. `@ref @mut` stores into that cell. |
-| `@ptr` | Like `@ref`, but it may be absent, and it may be aimed at a different cell later. A store needs `@mut` and a present cell. |
-| `@xor` | One live name. Giving the cell to a new name ends this one. |
-
-`i32 b @ref = x` does not copy `x`. `i32 b = x` does.
+| unmarked, or `@mut` | The cell itself. Passed by value: the callee gets a copy. Stores hit that copy. |
+| `i32*` | A pointer. `var*`. It is an address. It may be absent. `&x` aims it. `*p` is the cell. `*p = 1` stores into that cell. |
+| `@ref` | A reference to anything: a cell, a function, or a sector. It does not point. It is not an address, you cannot reseat it, and you cannot turn it into a pointer. You may pass it and, when it refers to a cell, you may read that cell. You may not store through it. |
+| `@xor` | Rust-like ownership, for security. One owner. Handing the cell to a new `@xor` name ends the previous one. While it is held, no other name may read or store that cell. A pointer to it is a compile error. A `@ref` does not take this ownership. |
+| `@val` | The cell is fixed after the first store. Not a lifetime. |
 
 ```text
-fn bump in[i32 a @ref @mut] out[] {
-  a = a + 1;
+i32 x = 1;
+i32* p = &x;
+*p = 2;
+fn bump in[i32* a] out[] {
+  *a = *a + 1;
+}
+bump in[&x];
+```
+
+`i32* q @ref = x` is a compile error. A reference is not a pointer.
+
+```text
+i32 key @xor = secret;
+i32 moved @xor = key;
+```
+
+After that handoff, `key` is ended. `moved` is the only owner.
+
+## Visibility
+
+This is the scope that `@mut` is not. A variable is created in a function and hidden outside it, unless a visibility mark says otherwise. There is no namespace and no `@global`. There is no class, so `@protected` is the file, not a derived class.
+
+| mark | who can name it |
+|---|---|
+| `@private` | Only the function that created it. Default for a variable. |
+| `@protected` | Any function in the same file. |
+| `@public` | Any file that included this one. |
+
+`@static` does not publish the name. Inside a function it is a C++ static: one cell, for the life of the program, still `@private` unless you say otherwise. The cell is created on the first call and is absent before that.
+
+```text
+fn counter in[] out[] {
+  i32 n @static @public = 0;
+  n = n + 1;
+  return n;
 }
 ```
 
-`@mut` alone would change a copy. The caller's cell changes only when the parameter is `@ref @mut` or `@ptr @mut`.
+After `counter` has run, other files can name `n`. Two `@public` variables with the same name are a compile error.
+
+A function defaults to `@public`. `@private` on a function hides it from other files. `@protected` keeps it in this file.
 
 ## Scope
 
-These say when the cell is freed. They do not grant `@mut`.
+These say when the cell is freed. They are not visibility, and they are not `@mut`.
 
 | mark | when it is freed |
 |---|---|
 | unmarked, `@normal` | When the enclosing fn returns. |
 | `@ephemeral` | After its one read or its one mov. The cell is wiped. A second use is a compile error. If the compiler cannot prove there is one use, that is also a compile error. |
-| `@static` | Not freed for the life of the program. Same job as a C++ static local. It may also say `@mut`. |
-| `@config` | Not freed, and not writable after the first store. `@mut` here is a compile error. |
+| `@static` | Not freed for the life of the program. Hidden unless visibility says otherwise. |
+| `@config` | Not freed, and not writable after the first store. |
 
 `@scoped`, `@local`, and bare duration words are not spellings. `@static` on a fn is not a duration. Duration sits on a cell.
 
@@ -78,17 +113,17 @@ A cell is **absent**, **present**, or **empty**.
 | state | meaning |
 |---|---|
 | absent | No value yet. `i32 y;` starts here. A lane in an array can be absent too. Same word, same rule. |
-| present | The first store has happened. |
+| present | A store has happened. |
 | empty | An `@ephemeral` cell after its one use. |
 
 `if[state[y]]` looks at the state. It does not read the value. A read of the value while absent or empty is a failure. For `@ephemeral`, a second use does not get that far: it is a compile error.
 
 ## Mutex
 
-`@mutex` means this cell is the thing being guarded. The name is the reference to it. `lock` and `unlock` are calls.
+`@mutex` means this cell is the thing being guarded. `lock` and `unlock` are calls. This is not `@xor`. A mutex is shared and locked. `xor` has one owner and no unlock.
 
 ```text
-i32 tape[4] @static @mut @mutex = {1, 2, 3, 4};
+i32 tape[4] @static @mutex = {1, 2, 3, 4};
 lock[tape];
 tape[0] = tape[0] + 1;
 unlock[tape];
@@ -220,7 +255,7 @@ i32 item = next[steps in[]];
 
 It may run ahead until n items are waiting. Then it waits. Omitted n means 1. `next` is the consumer. `leave` inside the producer ends it, and the next `next` is absent. A pipeline is this queue between two fns. It is not its own keyword.
 
-A detached run must not keep a `@ref` or `@ptr` to a cell that dies when the caller returns. That is a compile error.
+A detached run must not keep a pointer to a cell that dies when the caller returns. That is a compile error. A `@public @static` cell is how a value survives the function and stays nameable.
 
 ## Coroutines
 
@@ -240,9 +275,9 @@ If a wait has already lasted 15 minutes, the stack may leave live memory. The ho
 An absent lane is skipped. It is not zero. That is the only mask. No warp vote or shuffle in the language.
 
 ```text
-i32 span @ref = window[buf, start, n];
+i32* span = window[buf, start, n];
 i32 picked = gather in[table, ids];
-i32 sector @paged @mut @mutex;
+i32 sector @paged @mutex;
 hold[sector] {
   sector[0] = 1;
 }
@@ -250,7 +285,7 @@ hold[sector] {
 
 | form | behavior |
 |---|---|
-| `window[buf, start, n]` | A `@ref` over n elements. No copy. |
+| `window[buf, start, n]` | A pointer over n elements. No copy. |
 | `@paged` | Only the sector named by the current lock is present. |
 | `gather in[table, ids]` | Copies the present lanes named by `ids`, in order. |
 | `@dataparallel` on a fn | One call applies the body per lane. Absent lanes are skipped. The result is a new array, not a store into a shared cell. |
@@ -261,8 +296,10 @@ hold[sector] {
 fn lane in[i32 a] out[] @dataparallel {
   return a + 1;
 }
-i32 sum @mut @accum = 0;
+i32 sum @accum = 0;
 ```
+
+A window is a pointer because it is a span of addresses. A `@ref` to a sector does not give those addresses.
 
 ## Flow
 
@@ -299,7 +336,7 @@ i32 key @cell[ephemeral] = secret;
 include "lib.tpth_s";
 ```
 
-Loaded once. A cycle means already loaded. No export list.
+Loaded once. A cycle means already loaded. No export list. Visibility is what hides a name. An include does not override `@private`.
 
 `//` to the end of the line is a comment, including a graph marker. A marker is not code.
 
@@ -307,8 +344,11 @@ Loaded once. A cycle means already loaded. No export list.
 
 - `expr = name`
 - `name()` as a call
-- a second store without `@mut`
 - `@mut` with `@val`, or `@mut` on `@config`
+- a later store to `@val` or `@config`
+- a store through a `@ref`
+- turning a `@ref` into a pointer
+- a pointer to an `@xor` cell, or a second reader of one
 - `@static` used as a duration on a fn
 - a second use of `@ephemeral`, or a use the compiler cannot prove is the only one
 - a store to a `@mutex` cell outside `lock` and `unlock`
@@ -317,10 +357,12 @@ Loaded once. A cycle means already loaded. No export list.
 - `leave[name]` with no matching `@name`
 - `@NoFailTolerance`
 - an unknown `@`
-- a detached `@ref` or `@ptr` to a cell that dies with the caller
+- `@ptr` as a mark. The spelling is `i32*`
+- a detached pointer to a cell that dies with the caller
+- two `@public` variables with the same name
 - `@compeval` with an input that is not a constant
 - a missing match arm when `@total` or the project switch is on
 
 ## Not in the language
 
-No inferred types. No borrow checker. No trait system. No `guard`. No `goto`, `longjmp`, `throw`, or callback registry. No default reduction. No unwrap. No gradient. No warp syntax. No C `switch` fall-through. No silent GPU launch. `@mut` is not a scope. A missing arm is not an error unless `@total` or the project switch says so.
+No inferred types. No borrow checker. No trait system. No class and no inheritance. No namespace and no `@global`. No `guard`. No `goto`, `longjmp`, `throw`, or callback registry. No default reduction. No unwrap. No gradient. No warp syntax. No C `switch` fall-through. No silent GPU launch. `@mut` is not a scope and not required. A missing arm is not an error unless `@total` or the project switch says so.
