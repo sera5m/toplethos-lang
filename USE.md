@@ -227,7 +227,22 @@ fn add_f in[f64 a] out[] @ismutationof[getfuncidbyname["add"]] {
 }
 ```
 
-`getfuncidbyname` runs at compile time. The string is the name you would call: `add`, or `Draw::Point.move`. A short name that is not exactly one function in that namespace is a compile error, so the name form is only a way to spell an id. `@ismutationof[id]` stores that id. A missing id is a compile error. A cycle of mutations is a compile error. A mutation of a mutation is allowed.
+`fnid` is the id of a definition. It is a value. It is not a pointer, not an instance, and not callable. An instance does not get its own id. Transforming an instance does not change the id or the name.
+
+```text
+fnid slot @static = getfuncidbyname["add"];
+string who = getnamebyfuncid[slot];
+fn(in[i32] out[]) f = getfuncbyid[slot];
+f in[1];
+```
+
+`getfuncidbyname` runs at compile time. The string is the name you would call: `add`, or `Draw::Point.move`. A short name that is not exactly one function in that namespace is a compile error. The result is a `fnid`.
+
+`getnamebyfuncid` returns the qualified name. A constant id is resolved at compile time. An id read from a cell, including a `@static` cell, is resolved when that call runs. One id has one name.
+
+`getfuncbyid` returns that definition as a frozen function value. You may call it. `instance` of it makes a cell. It is not a `@mut` instance. A missing id is a compile error when the id is a constant, and a failure when the id comes from a cell.
+
+`@ismutationof[id]` stores that id. A missing id is a compile error. A cycle of mutations is a compile error. A mutation of a mutation is allowed.
 
 The mark does not change the call and it does not change the C symbol. `add_f` is its own foreign name if it is `foreign`. The C side does not see `@ismutationof`.
 
@@ -503,6 +518,9 @@ A failure walks until `onfail` resolves it.
 | `bind` | New instance with one parameter filled. |
 | `transform` | Rewrites `@body` or `@geometry` of a `@mut` instance. Does not touch the definition. |
 | `@ismutationof[id]` | Links this function to another function's id. Not an overload and not a call. |
+| `getfuncidbyname` | Compile time. The call name becomes a `fnid`. |
+| `getnamebyfuncid` | The qualified name of that id. |
+| `getfuncbyid` | The frozen function value of that id. |
 | `pool` | Shared memory. The access mode is its lock. |
 | `pipe` | Moves items. Does not own their storage. |
 | `push` `pop` `flush` | Queue operations. `flush` finishes a `@device` batch. |
@@ -559,6 +577,8 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - `i32 name(i32)` as a function type
 - a second function with the same short name in the same namespace
 - `@ismutationof` a missing id, a name that is not one function, or a mutation cycle
+- `getfuncidbyname` of a name that is not one function
+- `getnamebyfuncid` or `getfuncbyid` of a constant id that does not exist
 - `out[here]` when the function takes no function, or the named parameter is not a function
 - using `HERE` as another function, or `THIS` as a context
 - `context` reading a `@private` cell
