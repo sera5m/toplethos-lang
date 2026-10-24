@@ -138,7 +138,45 @@ Who may name the variable is the variable's scope. A field with no mark can be n
 
 This layout matches a C struct written as the parent's fields, then the child's fields. It matches C++ only for a class with no virtual function, no second base, and no vptr. Do not describe it as a C++ class hierarchy and expect the compiler to invent the same bytes.
 
-A function that takes `Point*` is the operation. The object does not carry methods.
+A function that takes `Point*` is still an operation. A method is that function written inside the object. It is not a field and it is not stored in the instance, so the layout does not grow a vptr.
+
+```text
+object Point {
+  i32 x;
+  i32 y;
+  fn move in[i32 dx, i32 dy] out[] {
+    HERE.x = HERE.x + dx;
+    HERE.y = HERE.y + dy;
+  }
+}
+Point p;
+p.move in[1, 2];
+```
+
+`HERE` inside a method is the instance. Stores go into that instance. The function's full name is `Point.move`, so another object may also have a method named `move`. A bare `fn move` and a method `move` are different names.
+
+A child does not override. It may declare a mutation of the parent method. The parent method stays what it is, and a `Point*` call still runs `Point.move` even when the pointer aims at a child.
+
+```text
+object Colored @childof[Point] {
+  i32 rgb;
+  fn move in[i32 dx, i32 dy] out[] @ismutationof[getfuncidbyname["Point.move"]] {
+    HERE.x = HERE.x + dx;
+    HERE.rgb = 0;
+  }
+}
+Colored c;
+c.move in[1, 2];
+Point* parent = as[Point, &c];
+parent.move in[1, 2];
+```
+
+`c.move` is `Colored.move` because the static type is `Colored`. `parent.move` is `Point.move`. Nothing is chosen at run time. If a child has no method of that short name, the search walks the parent chain and uses the first one it finds. That walk is fixed when compiling.
+
+A child method may reuse the parent's short name only with `@ismutationof` of that parent method. Without the mark, the reused name is a compile error. A mutation with a different short name does not hide the parent method.
+
+A method defaults to `@public`. `@private` is the file that defined it, and a subclass cannot call it or mutate it. `@protected` can be called and mutated by a subclass. A `foreign` method names its C symbol in the mark, `foreign[Point_move]`, because `Point.move` is not a C symbol.
+
 
 ## Functions
 
@@ -473,6 +511,7 @@ A failure walks until `onfail` resolves it.
 | `gather` | Copies the present lanes named by the ids, in that order. Absent lanes are skipped, not stored as zero. |
 | `formatconvert` | Applies a `flow`. The result is a value. |
 | `as` | The explicit parent or child pointer. Not an implicit conversion. |
+| method | A `fn` inside an object. Called as `inst.move in[...]`. Not a field. |
 
 `@stream[n]` on a function makes that function the producer. Calling it starts it. It may run ahead until n items are unread, then it waits. `leave` inside it ends it. A stream is not a pool and not a pipe.
 
@@ -518,6 +557,8 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - `^=` as structural equality. The operator is `$=`
 - a second `@childof`, a cycle, or a parent that is not an object
 - a child field whose name the parent already uses
+- a child method reusing a short name without `@ismutationof` of that parent method
+- a subclass calling or mutating a `@private` method
 - an implicit conversion between a child and its parent
 - `as` between types that are not parent and descendant
 - a downcast of a value
@@ -537,4 +578,4 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 
 ## Not in the language
 
-No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtuals. No vptr. No namespaces. No inferred types. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. A missing arm is not an error unless `@total` or the project switch says so.
+No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtual dispatch. No vptr. A child method is a mutation, not an override. No namespaces. No inferred types. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. A missing arm is not an error unless `@total` or the project switch says so.
