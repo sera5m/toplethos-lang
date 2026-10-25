@@ -21,7 +21,7 @@ A statement ends with `;`. A brace block does not. `return`, a declaration, a st
 | 5 | `<` `>` `<=` `>=` | left |
 | 6 | `==` `!=` `$=` `!$=` | left |
 | 7 | `&&` | left, and the right runs only when the left is true |
-| 8 | `||` | left, and the right runs only when the left is false |
+| 8 | `\|\|` | left, and the right runs only when the left is false |
 | 9 | `=` `+=` `^=` | right |
 
 `!`, `&&`, and `||` take `bool` and result in `bool`. An integer is not a `bool`. There is no bitwise `&`, `|`, or `^`. `&` is only the address.
