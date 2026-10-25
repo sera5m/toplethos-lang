@@ -6,7 +6,25 @@ This is language spec 1.0. [MATRIX.md](MATRIX.md) is older and does not win wher
 
 `//` through the end of the line is a comment. A graph marker is a comment. It is not code.
 
-`$` is structural equality and nothing else. It is not a variable sigil. `^` is free. `goto` is not in this version. Later, if it exists, it takes a pointer to a program position, not a text label.
+`$` is structural equality and nothing else. It is not a variable sigil. `^` alone is not an operator. `^=` resolves and stores. `goto` is not in this version. Later, if it exists, it takes a pointer to a program position, not a text label.
+
+A statement ends with `;`. A brace block does not. `return`, a declaration, a store, and a call used as a statement all end with `;`.
+
+`a + b * c` is `a + (b * c)`. `a - b - c` is `(a - b) - c`. `a = b = c` is `a = (b = c)`. The order is C++ precedence, and only these operators exist:
+
+| order | operators | associativity |
+|---|---|---|
+| 1 | `::` `.` `in[]` `[index]` | |
+| 2 | unary `+` `-` `!` `*` `&`, and `as[T, v]` | |
+| 3 | `*` `/` | left |
+| 4 | `+` `-` | left |
+| 5 | `<` `>` `<=` `>=` | left |
+| 6 | `==` `!=` `$=` `!$=` | left |
+| 7 | `&&` | left, and the right runs only when the left is true |
+| 8 | `||` | left, and the right runs only when the left is false |
+| 9 | `=` `+=` `^=` | right |
+
+`!`, `&&`, and `||` take `bool` and result in `bool`. An integer is not a `bool`. There is no bitwise `&`, `|`, or `^`. `&` is only the address.
 
 ## What a variable is
 
@@ -80,11 +98,13 @@ Geometry is not a type. On a function it chooses the device. On a large cell it 
 | unmarked | CPU. One run. |
 | `@parallel[n]` | n CPU threads. Not a GPU launch. |
 | `@gpuparallel` | GPU. The geometry is the device's. No thread count. |
-| `@npuparallel` | NPU. Same rule. |
+| `@npuparallel` | NPU. The same crossing rule as the GPU. |
 | `@paged` | Only the locked sector is present. |
 | `@memory_hard` | A file. The location is fixed at program start. |
 
 The scheduler does not pick a device. You write the mark. A call through an instance uses the instance's geometry when a transform has set one, and the definition's geometry otherwise.
+
+A `@gpuparallel` or `@npuparallel` parameter or result must be an atom, an `enum`, or an array or object made only of those. An `enum` crosses as its underlying atom. An object crosses only when it contains no pointer. A pointer, `string`, `rng`, `fn`, `fnid`, `pool`, or `pipe` is a compile error. The host copies the inputs to the device and copies the results back. The device does not keep a pointer after the call.
 
 ## Objects
 An object is a struct in memory. `struct` is not a second keyword. Fields are in the order written, with that target's C++ alignment. There is no virtual function and no vptr. `@ismutationof` does not make a subclass. A `flow` converts two layouts that are not parent and child.
@@ -566,7 +586,7 @@ i32 hi = clamp in[v, 0, 10];
 swap in[&a, &b];
 ```
 
-`rng` is an engine, not a hidden global. Copying it copies the state.
+`rng` is an engine, not a hidden global. Copying it copies the 312-word state. The engine is C++ `std::mt19937_64`. `rng[s]` seeds it with that `ui64`, by the C++11 constructor that passes the value to `seed`. `rng[1]` is that constructor with seed `1`. Two engines seeded with `1` draw the same sequence.
 
 ```text
 rng engine = rng[1];
@@ -574,7 +594,9 @@ i32 roll = rand in[engine, 0, 10];
 f64 unit = randf in[engine];
 ```
 
-`rand` is inclusive on both ends, and both ends are the same integer atom. `lo > hi` is a failure. `randf` returns an `f64` in `[0, 1)`.
+`rand` is inclusive on both ends, and both ends are the same integer atom. `lo > hi` is a failure. If the range is every value of a 64-bit atom, the next engine word is that value. Otherwise let `n` be the number of values in the range. Draw a `ui64`. Let `rem` be `2^64` modulo `n`. Draw again while the word is below `rem`, then return `lo` plus that word modulo `n`.
+
+`randf` takes the next word, keeps its high 53 bits, and multiplies by `2^-53`. The result is an `f64` in `[0, 1)`. It is never `1`.
 
 ## Flow
 
@@ -801,6 +823,9 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - `@compeval` with an input that is not a constant
 - `@dataparallel` arrays of different lengths
 - a missing match arm when `@total` or the project switch `total` is on
+- a statement, other than a brace block, that does not end with `;`
+- `!`, `&&`, or `||` applied to a value that is not `bool`
+- a `@gpuparallel` or `@npuparallel` parameter or result that cannot cross
 - `i32[0]`, or an array size that is not a constant
 - a brace list longer than the array
 - two enumerators with the same value
