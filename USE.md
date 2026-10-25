@@ -4,6 +4,8 @@ This is the language spec. [MATRIX.md](MATRIX.md) is older and does not win wher
 
 `()` groups. It never calls and it never takes an attribute argument. `[]` does.
 
+`//` through the end of the line is a comment. A graph marker is a comment. It is not code.
+
 `$` is structural equality and nothing else. It is not a variable sigil. `^` is free. `goto` is not in this version. Later, if it exists, it takes a pointer to a program position, not a text label.
 
 ## What a variable is
@@ -14,7 +16,7 @@ A variable is one cell. Every mark on it belongs to one of four groups. A mark d
 |---|---|---|
 | scope | Who can name it? | `@private` `@protected` `@public` |
 | time | When does the cell exist? | unmarked `@ephemeral` `@static` `@config` |
-| type and value | What are the bits, and how do you name them? | `i32` `f32` `bool` `string` `object` `T*` `fn in[] out[]` `@val` `@xor` |
+| type and value | What are the bits, and how do you name them? | `i8` `i16` `i32` `i64` `u8` `u16` `u32` `u64` `size` `f32` `f64` `bool` `string` `object` `T*` `fn in[] out[T]` `fnid` `@val` `@xor` |
 | geometry | Where do the bytes live, and where does a fn run? | `@paged` `@memory_hard` `@parallel[n]` `@gpuparallel` `@npuparallel` |
 
 Ordinary cell: mutable, `@private`, freed when the function returns, on the CPU. `@mut` on an ordinary cell changes nothing. It is not a scope. A function instance is not an ordinary cell. Its default is frozen. See Functions.
@@ -65,7 +67,7 @@ bump in[&x];
 
 `@xor` is ownership for security, not a way to spell a reference. One owner. Handing it to a new `@xor` name ends the previous name. While it is held, no other name may read or store it, and a pointer to it is a compile error.
 
-A function's type is `fn in[i32] out[]`. It is never written as `i32 name(i32)`.
+A function's type is `fn in[i32] out[i32]` when it returns an `i32`, and `fn in[i32] out[]` when it returns nothing. It is never written as `i32 name(i32)`.
 
 `f32` is a C `float`. `f64` is a C `double`. A foreign library may use either.
 
@@ -185,7 +187,7 @@ namespace Draw {
     i32 x;
     i32 y;
   }
-  fn identity in[i32 a] out[] {
+  fn identity in[i32 a] out[i32] {
     return a;
   }
 }
@@ -194,7 +196,9 @@ p.x = 1;
 Draw::identity in[1];
 ```
 
-Inside `Draw`, the short names `Point` and `identity` are visible. Outside it, the short name is not. The qualified name always works. There is no import that pulls every name out of a namespace, because two short names would then collide.
+Inside `Draw`, the short names `Point` and `identity` are visible. Outside it, the short name is not. The qualified name always works. There is no `using` and no argument-dependent lookup. Both would make a short name ambiguous.
+
+The same namespace may be opened again, in this file or another. The members are added to the one namespace. A repeated short name is still a compile error.
 
 Namespaces nest. `Draw::Color::pack` is one function. Its id is that qualified name, so `getfuncidbyname["Draw::Point.move"]` is the method. The same short name in another namespace is a different function.
 
@@ -214,15 +218,25 @@ fn add in[i32 a] out[] {
 }
 ```
 
-Scope and geometry on that line apply to the definition. Time does not: the definition lives for the program. The type is `fn in[i32] out[]`. One short name is one function inside its namespace. A second definition with that short name in the same namespace is a compile error. Attributes do not choose a body.
+This is a compile error. The message is: function "add" on line 1 has no designated type out[] in function definition and cannot return this statement.
+
+```text
+fn add in[i32 a] out[i32] {
+  return a + 1;
+}
+```
+
+`out[i32]` is the result type. You write it. It is not inferred. `out[]` means there is no result. A path out of an `out[T]` function with no `return` is a compile error. A result of a different type is a compile error.
+
+Scope and geometry on that line apply to the definition. Time does not: the definition lives for the program. The type is `fn in[i32] out[i32]`. One short name is one function inside its namespace. A second definition with that short name in the same namespace is a compile error. Attributes do not choose a body.
 
 A mutation is a different function with its own id and its own name. It is not an overload. The call is the name you wrote. The relationship is the parent's id, never the parent's name.
 
 ```text
-fn add in[i32 a] out[] {
+fn add in[i32 a] out[i32] {
   return a + 1;
 }
-fn add_f in[f64 a] out[] @ismutationof[getfuncidbyname["add"]] {
+fn add_f in[f64 a] out[f64] @ismutationof[getfuncidbyname["add"]] {
   return a + 1.0;
 }
 ```
@@ -232,7 +246,7 @@ fn add_f in[f64 a] out[] @ismutationof[getfuncidbyname["add"]] {
 ```text
 fnid slot @static = getfuncidbyname["add"];
 string who = getnamebyfuncid[slot];
-fn(in[i32] out[]) f = getfuncbyid[slot];
+fn(in[i32] out[i32]) f = getfuncbyid[slot];
 f in[1];
 ```
 
@@ -250,7 +264,7 @@ C++ equivalency is the type, the address, and the call. It is not the declarator
 
 | C++ idea | here |
 |---|---|
-| function type | `fn in[i32] out[]` |
+| function type | `fn in[i32] out[i32]` |
 | address of the code | `&add` |
 | call | `add in[4]` |
 | overload | None. A different signature is another function. `@ismutationof` only records the lineage. |
@@ -261,15 +275,15 @@ C++ equivalency is the type, the address, and the call. It is not the declarator
 An instance is the cell. Scope, time, `@val`, and `@xor` apply to it.
 
 ```text
-fn(in[i32] out[]) mine = instance[add];
+fn(in[i32] out[i32]) mine = instance[add];
 mine in[4];
-fn(in[i32] out[])* slot = &mine;
+fn(in[i32] out[i32])* slot = &mine;
 ```
 
 The default instance is frozen. You may call it. You may not rewrite it. `@mut` on that instance is the condition that unlocks `transform`. `@mut` on ordinary data still does not rewrite code.
 
 ```text
-fn(in[i32] out[]) mine @mut = instance[add];
+fn(in[i32] out[i32]) mine @mut = instance[add];
 transform[mine] @geometry {
   @gpuparallel
 }
@@ -283,7 +297,7 @@ transform[mine] @body {
 | `compose in[outer, inner]` | New instance. `compose in[outer, inner] in[x]` is `outer in[inner in[x]]`. | no |
 | `bind in[f, v]` | New instance. `v` fills the first free parameter. `bind in[f, n, v]` fills parameter n. A value is copied. | no |
 | `transform[mine] @geometry` | Same instance. Device only. | yes |
-| `transform[mine] @body` | Same instance. Body only. `in[]` and `out[]` stay. | yes |
+| `transform[mine] @body` | Same instance. Body only. The `in` and `out` types stay. | yes |
 
 A transform that names no group is a compile error. One transform may name `@body` and `@geometry` together. That is the higher-dimensional edit this version allows: one change across those axes, not a new axis language. Scope and time are not rewritten in place. A different scope or time is a new instance.
 
@@ -298,11 +312,11 @@ These are three different things. A result being stored is not a context, and a 
 | word | what it is |
 |---|---|
 | `HERE` | The context of the function that is running. `HERE.n` is that function's own cell `n`. |
-| `THIS` | The one value in hand. In `onfail` it is the failure. In `transform` it is the instance. It is not a context and it has no fields. |
+| `THIS` | The failure in `onfail`, or the instance in `transform`. A failure has no payload. `THIS` is not a value and it has no fields. |
 | `context[other]` | The published cells of another function. `@public` cells, plus `@protected` cells when the reader is in the same file. `@private` cells are not in it. |
 
 ```text
-fn counter in[] out[] {
+fn counter in[] out[i32] {
   i32 n @static @public = 0;
   HERE.n = HERE.n + 1;
   return HERE.n;
@@ -316,15 +330,15 @@ You do not walk another function's stack to find a local. If it is not published
 
 ## out[here]
 
-`out[here]` is the chain. It is not the name on the left of `=`, and it is not `HERE`.
+`out[here]` is the chain. It is not the name on the left of `=`, and it is not `HERE`. The result type is the `out` type of the function taken as input. It is still designated. It is not inferred from the body.
 
 This function returns a value to the function it took as an input. That input function then runs. What it returns is what this function returns. The next layer is that input. `HERE` does not switch to the callee.
 
 ```text
-fn last in[i32 x] out[] {
+fn last in[i32 x] out[i32] {
   return x + 1;
 }
-fn layer in[fn(in[i32] out[]) next] out[here] {
+fn layer in[fn(in[i32] out[i32]) next] out[here] {
   return 1;
 }
 layer in[last];
@@ -412,7 +426,7 @@ Calculus stays ordinary functions on values. This table is the feature that remo
 
 ```text
 include lib "m" {
-  fn sin in[f64 x] out[] foreign;
+  fn sin in[f64 x] out[f64] foreign;
 }
 sin in[1.0];
 ```
@@ -422,6 +436,60 @@ The library is loaded once. A second `include lib "m"` means already loaded. A m
 A value argument is copied. A pointer is the address, and it must stay valid for the call. The foreign function must not keep the pointer unless that cell outlives the call.
 
 A bare `foreign` uses the function's short name as the C symbol. That is legal only when the short name is one C identifier. A qualified name, and a method, must write the symbol: `foreign[Point_move]`. `foreign` has no Toplethos body. `transform` of its `@body` is a compile error. The call runs on the CPU in the host. `@gpuparallel` does not retarget it. If the C function starts its own device work, that stays inside the C function.
+
+
+## Entry
+
+The host calls `main`.
+
+```text
+fn main in[] out[i32] {
+  return 0;
+}
+```
+
+There is one `main`. It takes nothing. The result type is `i32`, and you write it. `0` is a normal exit. A failure that leaves `main` halts. It is not returned as `0`.
+
+## Values
+
+An atom is one of `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `size`, `f32`, `f64`. `size` is the target's unsigned pointer width. `bool` is `true` or `false`. A string is `"text"`. `int` and `long` are not names: their width is not fixed.
+
+`+` is the functor `addmagnitude`. The compiler unwraps the call to one definite row. There is no value that stays polymorphic at run time.
+
+The compiler's record of a cell that holds an atom is `valueprimitive { ptr_to_elem, size, atom }`. It is not a cell the program allocates. A struct is not an atom. A field is, when the field's type is an atom. `v.x += 1` is `v.x = v.x + 1` for that field's atom.
+
+| inputs | row | result |
+|---|---|---|
+| the same integer atom twice | Integer add. The bits wrap. | That atom. |
+| the same float atom twice | IEEE 754 add. | That atom. |
+| an integer and a float, either order | Convert the integer to that float, then float add. | That float. |
+| two integers of different width | No row. | Compile error. |
+| two floats of different width | No row. | Compile error. |
+| anything else | No row, until you add one. | Compile error. |
+
+`-`, `*`, and `/` are `submagnitude`, `mulmagnitude`, and `divmagnitude`. They use the same row rules. `/` by zero is a failure.
+
+`==`, `!=`, `<`, `>`, `<=`, and `>=` result in `bool`. They accept two of the same atom, or an integer and a float under the same conversion as `+`. Pointer `==` and `!=` compare the address. An ordered compare of pointers is a compile error. `bool` and `string` have no arithmetic row.
+
+A new row is compile time. Its types are definite atoms. The body may call a row that already exists. It may not call the functor and hit itself.
+
+```text
+row[addmagnitude] in[i16 a, i32 b] out[i32] {
+  return addmagnitude in[as[i32, a], b];
+}
+```
+
+`as[i32, a]` on atoms is the `convert` functor. Built-in rows widen an integer to a wider integer of the same signedness, convert an integer to `f32` or `f64`, and widen `f32` to `f64`. A narrowing `as` has no built-in row.
+
+The C++ environment maps fixed-width names only.
+
+| C++ | here |
+|---|---|
+| `int8_t` `int16_t` `int32_t` `int64_t` | `i8` `i16` `i32` `i64` |
+| `uint8_t` `uint16_t` `uint32_t` `uint64_t` | `u8` `u16` `u32` `u64` |
+| `float` `double` | `f32` `f64` |
+| `size_t` | `size` |
+| `bool` | `bool` |
 
 ## Flow
 
@@ -499,16 +567,18 @@ A failure walks until `onfail` resolves it.
 | `fatal` | Skip `onfail`. The host shuts down. |
 | `onwarn` | Does not halt. |
 
+A failure has no payload. `STOP[THIS]` ends it. It does not produce a value, and it does not become `0`. If the failure leaves `main` with nothing stopping it, the host halts.
+
 `@structuredConcurrency` is the only mark that cancels siblings when one fails. A detached run must not keep a pointer to a cell that dies with the caller.
 
 ## Keywords
 
 | keyword | what it does |
 |---|---|
-| `fn` | Names one definition in its namespace. The body runs when it is called. Also spells the type: `fn in[i32] out[]`. |
+| `fn` | Names one definition in its namespace. The body runs when it is called. Also spells the type: `fn in[i32] out[i32]`. |
 | `in[ ]` | The parameters. A value is copied. A pointer is not. |
-| `out[ ]` | The results. Empty means none. `out[new]` allocates. `out[here]` feeds the function taken as an input and returns what that function returns. |
-| `return` | Yields a value and leaves the function. No `return` yields nothing. |
+| `out[ ]` | The designated result. `out[]` means none. `out[i32]` means an `i32`. `out[here]` uses the input function's `out` type. |
+| `return` | Yields the designated result and leaves. `return` with a value in `out[]` is a compile error. |
 | `HERE` | The running function's own context. |
 | `THIS` | The value in hand. Not a context. |
 | `context` | Published cells of another function. |
@@ -525,7 +595,7 @@ A failure walks until `onfail` resolves it.
 | `pipe` | Moves items. Does not own their storage. |
 | `push` `pop` `flush` | Queue operations. `flush` finishes a `@device` batch. |
 | `include` | Loads a `.tpth_s` file once. A cycle means already loaded. Does not reveal `@private` names. `include lib` binds a host library's C symbols. |
-| `namespace` | A name prefix for functions, objects, and variables. Not a value. |
+| `namespace` | A C++-style prefix. It may be opened again. Not a value. No `using`. |
 | `object` | Declares one layout. `@childof[Parent]` is the one parent. An embedded object field is composition, not a parent. |
 | `flow` | Declares the only map `$=` will accept. |
 | `macro` | A bundle of attributes. The body is attributes and `when` only. |
@@ -555,7 +625,7 @@ A failure walks until `onfail` resolves it.
 | `window` | A pointer over n elements. No copy. |
 | `gather` | Copies the present lanes named by the ids, in that order. Absent lanes are skipped, not stored as zero. |
 | `formatconvert` | Applies a `flow`. The result is a value. |
-| `as` | The explicit parent or child pointer. Not an implicit conversion. |
+| `as` | Parent or child pointer, or an atom conversion that has a `convert` row. |
 | method | A `fn` inside an object. Called as `inst.move in[...]`. Not a field. |
 
 `@stream[n]` on a function makes that function the producer. Calling it starts it. It may run ahead until n items are unread, then it waits. `leave` inside it ends it. A stream is not a pool and not a pipe.
@@ -572,6 +642,12 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 
 ## Compile errors
 
+- `return` of a value when `out[]` has no designated type
+- a result whose type is not the designated `out` type
+- a path out of `out[T]` with no `return`
+- a second `main`, or a program with no `main`
+- `+` with no row, or a narrowing `as` with no row
+- `/` is not a compile error when the divisor is zero. It is a failure
 - `expr = name`
 - `name()` as a call
 - `i32 name(i32)` as a function type
@@ -627,4 +703,4 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 
 ## Not in the language
 
-No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtual dispatch. No vptr. A child method is a mutation, not an override. No inferred types. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. A missing arm is not an error unless `@total` or the project switch `total` says so.
+No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtual dispatch. No vptr. A child method is a mutation, not an override. No inferred result types. No runtime polymorphic number. No `using`. No argument-dependent lookup. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. A missing arm is not an error unless `@total` or the project switch `total` says so.
