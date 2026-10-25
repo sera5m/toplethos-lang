@@ -456,15 +456,18 @@ The prefix says what the atom is. The number is the width, the way `i32` is.
 
 | prefix | meaning | widths |
 |---|---|---|
-| `i` | Signed integer. | `i8` `i16` `i32` `i64` |
-| `ui` | Unsigned integer. | `ui8` `ui16` `ui32` `ui64` |
-| `f` | IEEE 754 float. It has a sign. | `f32` `f64` |
-| `uf` | Unsigned float. An IEEE value with the sign bit required to be `0`. | `uf32` `uf64` |
+| `i` | Signed integer. | `i4` `i8` `i16` `i32` `i64` |
+| `ui` | Unsigned integer. | `ui4` `ui8` `ui16` `ui32` `ui64` |
+| `f` | IEEE 754 float. It has a sign. | `f8e4m3` `f8e5m2` `f16` `f32` `f64` |
+| `bf` | Bfloat. `f32`'s exponent, a 7-bit mantissa. Not `f16`. | `bf16` |
+| `uf` | Unsigned float. The same layout as `f`, with the sign bit required to be `0`. | `uf8e4m3` `uf8e5m2` `uf32` `uf64` |
 | `t` | Balanced ternary. The number counts trits, not bits. Each trit is `-1`, `0`, or `+1`. | `t1` `t8` `t16` `t32` `t64` |
 
 `size` is the target's unsigned pointer width. `bool` is `true` or `false`. `char` is one 8-bit code unit, written `'A'`. It is not `ui8` and it is not `i8`. A string is `"text"`. `int` and `long` are not names: their width is not fixed. C++ has no unsigned float and no ternary, so `uf` and `t` have no C++ name.
 
 A trit is stored in two bits: `00` is `-1`, `01` is `0`, `10` is `+1`. `11` is not a trit. `t8` is 16 bits. A negative `uf` literal is a compile error.
+
+There is no single `f8`. `f8e4m3` is 1 sign, 4 exponent, 3 mantissa. `f8e5m2` is 1 sign, 5 exponent, 2 mantissa. `uf8e4m3` and `uf8e5m2` are those layouts with the sign bit required to be `0`. `bf16` is not a short `f32` and it is not `f16`. `i4` is `-8` through `7`. `ui4` is `0` through `15`. One `i4` or `ui4` cell uses the low nibble of a byte. An array of them packs two per byte, low nibble first.
 
 Every cell the compiler can describe has one type primitive. It is not a value you can store.
 
@@ -486,7 +489,9 @@ typeprimitive { ptr_to_elem, size, kind }
 | two floats of different width or signedness | No row. | Compile error. |
 | anything else | No row, until you add one. | Compile error. |
 
-`-`, `*`, and `/` are `submagnitude`, `mulmagnitude`, and `divmagnitude`. They use the same row rules, except `uf` subtraction has no built-in row: a negative result does not fit. `/` by zero is a failure. `onfail` runs.
+`-`, `*`, and `/` are `submagnitude`, `mulmagnitude`, and `divmagnitude`. They use the same row rules, except `uf` subtraction has no built-in row: a negative result does not fit. `/` by zero is a failure.
+
+A product of small factors resolves to a wider atom. `i4`, `ui4`, `i8`, and `ui8` multiply to `i32`. `f8e4m3`, `f8e5m2`, `uf8e4m3`, `uf8e5m2`, `f16`, and `bf16` multiply to `f32`. The `+` of two equal atoms stays that atom. `onfail` runs.
 
 `@divzero[0]` on a function makes a zero divisor return `0` of the result type instead. `@divzero[max]` returns the largest finite positive value of that atom. A negative dividend does not flip it. This is risky: the failure does not happen, so `onfail` does not run, and a zero divisor looks like a normal result. The mark is off unless you write it. It does not apply to any other failure.
 
@@ -500,7 +505,7 @@ row[addmagnitude] in[i16 a, i32 b] out[i32] {
 }
 ```
 
-`as[i32, a]` on atoms is the `convert` functor. Built-in rows widen `i` to a wider `i`, `ui` to a wider `ui`, and `t` to a longer `t`. They also widen `f32` to `f64`, `uf32` to `uf64`, and `uf` to `f` of the same width, because every `uf` value fits in `f`. An integer to `f32` or `f64` is a built-in row too. `t1` to `i8` or a wider `i` is a built-in row. A narrowing `as`, `f` to `uf`, or `i` to `ui`, has no built-in row.
+`as[i32, a]` on atoms is the `convert` functor. Built-in rows widen `i` to a wider `i`, `ui` to a wider `ui`, and `t` to a longer `t`. They widen `f8e4m3` and `f8e5m2` to `f16`, `f16` to `f32`, `f32` to `f64`, and `bf16` to `f32`. A `uf` widens to `f` of the same layout. `uf8e4m3` and `uf8e5m2` also widen to `f16`, and `uf32` widens to `uf64`. An integer to `f16`, `f32`, or `f64` is a built-in row too. `t1` to `i8` or a wider `i` is a built-in row. A narrowing `as`, `f` to `uf`, `f16` to `bf16`, `bf16` to `f16`, or `i` to `ui`, has no built-in row.
 
 The C++ environment maps fixed-width names only.
 
