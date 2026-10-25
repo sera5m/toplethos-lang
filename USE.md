@@ -16,7 +16,7 @@ A variable is one cell. Every mark on it belongs to one of four groups. A mark d
 |---|---|---|
 | scope | Who can name it? | `@private` `@protected` `@public` |
 | time | When does the cell exist? | unmarked `@ephemeral` `@static` `@config` |
-| type and value | What are the bits, and how do you name them? | `i8` `i16` `i32` `i64` `u8` `u16` `u32` `u64` `size` `f32` `f64` `bool` `char` `string` `object` `T*` `fn in[] out[T]` `fnid` `@val` `@xor` |
+| type and value | What are the bits, and how do you name them? | `i8` `i16` `i32` `i64` `ui8` `ui16` `ui32` `ui64` `size` `f32` `f64` `bool` `char` `string` `object` `T*` `fn in[] out[T]` `fnid` `@val` `@xor` |
 | geometry | Where do the bytes live, and where does a fn run? | `@paged` `@memory_hard` `@parallel[n]` `@gpuparallel` `@npuparallel` |
 
 Ordinary cell: mutable, `@private`, freed when the function returns, on the CPU. `@mut` on an ordinary cell changes nothing. It is not a scope. A function instance is not an ordinary cell. Its default is frozen. See Functions.
@@ -452,7 +452,19 @@ There is one `main`. It takes nothing. The result type is `i32`, and you write i
 
 ## Values
 
-An atom is a fixed-width type, the way `i32` is. The atoms are `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `size`, `f32`, `f64`, `bool`, and `char`. `size` is the target's unsigned pointer width. `bool` is `true` or `false`. `char` is one 8-bit code unit, written `'A'`. It is not `u8` and it is not `i8`. A string is `"text"`. `int` and `long` are not names: their width is not fixed.
+The prefix says what the atom is. The number is the width, the way `i32` is.
+
+| prefix | meaning | widths |
+|---|---|---|
+| `i` | Signed integer. | `i8` `i16` `i32` `i64` |
+| `ui` | Unsigned integer. | `ui8` `ui16` `ui32` `ui64` |
+| `f` | IEEE 754 float. It has a sign. | `f32` `f64` |
+| `uf` | Unsigned float. An IEEE value with the sign bit required to be `0`. | `uf32` `uf64` |
+| `t` | Balanced ternary. The number counts trits, not bits. Each trit is `-1`, `0`, or `+1`. | `t1` `t8` `t16` `t32` `t64` |
+
+`size` is the target's unsigned pointer width. `bool` is `true` or `false`. `char` is one 8-bit code unit, written `'A'`. It is not `ui8` and it is not `i8`. A string is `"text"`. `int` and `long` are not names: their width is not fixed. C++ has no unsigned float and no ternary, so `uf` and `t` have no C++ name.
+
+A trit is stored in two bits: `00` is `-1`, `01` is `0`, `10` is `+1`. `11` is not a trit. `t8` is 16 bits. A negative `uf` literal is a compile error.
 
 Every cell the compiler can describe has one type primitive. It is not a value you can store.
 
@@ -466,14 +478,15 @@ typeprimitive { ptr_to_elem, size, kind }
 
 | inputs | row | result |
 |---|---|---|
-| the same integer atom twice | Integer add. The bits wrap. | That atom. |
-| the same float atom twice | IEEE 754 add. | That atom. |
+| the same `i` or `ui` width twice | Integer add. The bits wrap. | That atom. |
+| the same `f` or `uf` width twice | IEEE 754 add. A `uf` result that would be negative is a failure. | That atom. |
+| the same `t` width twice | Balanced ternary add. The trits wrap. | That atom. |
 | an integer and a float, either order | Convert the integer to that float, then float add. | That float. |
-| two integers of different width | No row. | Compile error. |
-| two floats of different width | No row. | Compile error. |
+| two integers of different width or signedness | No row. | Compile error. |
+| two floats of different width or signedness | No row. | Compile error. |
 | anything else | No row, until you add one. | Compile error. |
 
-`-`, `*`, and `/` are `submagnitude`, `mulmagnitude`, and `divmagnitude`. They use the same row rules. `/` by zero is a failure. `onfail` runs.
+`-`, `*`, and `/` are `submagnitude`, `mulmagnitude`, and `divmagnitude`. They use the same row rules, except `uf` subtraction has no built-in row: a negative result does not fit. `/` by zero is a failure. `onfail` runs.
 
 `@divzero[0]` on a function makes a zero divisor return `0` of the result type instead. `@divzero[max]` returns the largest finite positive value of that atom. A negative dividend does not flip it. This is risky: the failure does not happen, so `onfail` does not run, and a zero divisor looks like a normal result. The mark is off unless you write it. It does not apply to any other failure.
 
@@ -487,14 +500,14 @@ row[addmagnitude] in[i16 a, i32 b] out[i32] {
 }
 ```
 
-`as[i32, a]` on atoms is the `convert` functor. Built-in rows widen an integer to a wider integer of the same signedness, convert an integer to `f32` or `f64`, and widen `f32` to `f64`. A narrowing `as` has no built-in row.
+`as[i32, a]` on atoms is the `convert` functor. Built-in rows widen `i` to a wider `i`, `ui` to a wider `ui`, and `t` to a longer `t`. They also widen `f32` to `f64`, `uf32` to `uf64`, and `uf` to `f` of the same width, because every `uf` value fits in `f`. An integer to `f32` or `f64` is a built-in row too. `t1` to `i8` or a wider `i` is a built-in row. A narrowing `as`, `f` to `uf`, or `i` to `ui`, has no built-in row.
 
 The C++ environment maps fixed-width names only.
 
 | C++ | here |
 |---|---|
 | `int8_t` `int16_t` `int32_t` `int64_t` | `i8` `i16` `i32` `i64` |
-| `uint8_t` `uint16_t` `uint32_t` `uint64_t` | `u8` `u16` `u32` `u64` |
+| `uint8_t` `uint16_t` `uint32_t` `uint64_t` | `ui8` `ui16` `ui32` `ui64` |
 | `float` `double` | `f32` `f64` |
 | `size_t` | `size` |
 | `bool` | `bool` |
