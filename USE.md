@@ -16,7 +16,7 @@ A variable is one cell. Every mark on it belongs to one of four groups. A mark d
 |---|---|---|
 | scope | Who can name it? | `@private` `@protected` `@public` |
 | time | When does the cell exist? | unmarked `@ephemeral` `@static` `@config` |
-| type and value | What are the bits, and how do you name them? | `i8` `i16` `i32` `i64` `u8` `u16` `u32` `u64` `size` `f32` `f64` `bool` `string` `object` `T*` `fn in[] out[T]` `fnid` `@val` `@xor` |
+| type and value | What are the bits, and how do you name them? | `i8` `i16` `i32` `i64` `u8` `u16` `u32` `u64` `size` `f32` `f64` `bool` `char` `string` `object` `T*` `fn in[] out[T]` `fnid` `@val` `@xor` |
 | geometry | Where do the bytes live, and where does a fn run? | `@paged` `@memory_hard` `@parallel[n]` `@gpuparallel` `@npuparallel` |
 
 Ordinary cell: mutable, `@private`, freed when the function returns, on the CPU. `@mut` on an ordinary cell changes nothing. It is not a scope. A function instance is not an ordinary cell. Its default is frozen. See Functions.
@@ -452,11 +452,17 @@ There is one `main`. It takes nothing. The result type is `i32`, and you write i
 
 ## Values
 
-An atom is one of `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `size`, `f32`, `f64`. `size` is the target's unsigned pointer width. `bool` is `true` or `false`. A string is `"text"`. `int` and `long` are not names: their width is not fixed.
+An atom is a fixed-width type, the way `i32` is. The atoms are `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `size`, `f32`, `f64`, `bool`, and `char`. `size` is the target's unsigned pointer width. `bool` is `true` or `false`. `char` is one 8-bit code unit, written `'A'`. It is not `u8` and it is not `i8`. A string is `"text"`. `int` and `long` are not names: their width is not fixed.
 
-`+` is the functor `addmagnitude`. The compiler unwraps the call to one definite row. There is no value that stays polymorphic at run time.
+Every cell the compiler can describe has one type primitive. It is not a value you can store.
 
-The compiler's record of a cell that holds an atom is `valueprimitive { ptr_to_elem, size, atom }`. It is not a cell the program allocates. A struct is not an atom. A field is, when the field's type is an atom. `v.x += 1` is `v.x = v.x + 1` for that field's atom.
+```text
+typeprimitive { ptr_to_elem, size, kind }
+```
+
+`kind` is an atom or the name of a layout. A struct is a layout. A field whose type is an atom has that atom as its kind. `v.x += 1` is `v.x = v.x + 1` for that field's kind.
+
+`+` is the functor `addmagnitude`. The compiler unwraps the call to one definite row. There is no value that stays polymorphic at run time. `bool`, `char`, and `string` have no arithmetic row until you add one.
 
 | inputs | row | result |
 |---|---|---|
@@ -467,7 +473,9 @@ The compiler's record of a cell that holds an atom is `valueprimitive { ptr_to_e
 | two floats of different width | No row. | Compile error. |
 | anything else | No row, until you add one. | Compile error. |
 
-`-`, `*`, and `/` are `submagnitude`, `mulmagnitude`, and `divmagnitude`. They use the same row rules. `/` by zero is a failure.
+`-`, `*`, and `/` are `submagnitude`, `mulmagnitude`, and `divmagnitude`. They use the same row rules. `/` by zero is a failure. `onfail` runs.
+
+`@divzero[0]` on a function makes a zero divisor return `0` of the result type instead. `@divzero[max]` returns the largest finite positive value of that atom. A negative dividend does not flip it. This is risky: the failure does not happen, so `onfail` does not run, and a zero divisor looks like a normal result. The mark is off unless you write it. It does not apply to any other failure.
 
 `==`, `!=`, `<`, `>`, `<=`, and `>=` result in `bool`. They accept two of the same atom, or an integer and a float under the same conversion as `+`. Pointer `==` and `!=` compare the address. An ordered compare of pointers is a compile error. `bool` and `string` have no arithmetic row.
 
@@ -490,6 +498,7 @@ The C++ environment maps fixed-width names only.
 | `float` `double` | `f32` `f64` |
 | `size_t` | `size` |
 | `bool` | `bool` |
+| `char` | `char` |
 
 ## Flow
 
@@ -504,9 +513,16 @@ flow rgb565 to vec4 {
 vec4 color = formatconvert in[src];
 ```
 
-`a $= b` is true only when a `flow` says the layouts correspond. A field not named is dropped. No `flow` means not structurally equal, even when the field names look the same. `!$=` is the opposite.
+A `flow` is a row of the `resolve` functor between two layouts. The type primitive of each side is `{ ptr_to_elem, size, kind }`, and `kind` is the layout name. `$=` asks whether that row exists. `a $= b` is true only when a `flow` names the correspondence. A field not named is dropped. No `flow` means not structurally equal, even when the field names look the same. `!$=` is the opposite. `$=` does not convert.
 
-`formatconvert` returns the converted value. The `=` stores it. `out[new]` allocates, the same job as `create`. The runner does not do this yet. The rule is one direction, the fields you name, no guessed conversion.
+`^=` is the store form of `resolve`. It is not xor, and it is not `$=`.
+
+```text
+i32 n ^= 1.5;
+vec4 color ^= src;
+```
+
+The right-hand value is resolved into the left-hand cell's kind, then stored. Two atoms use a `convert` row. Two layouts use the `flow` row. No row is a compile error. A layout and an atom do not resolve without a row you added. `formatconvert in[src]` is the same flow row, returned as a value instead of stored. `as[T, v]` is the same convert row, returned as a value.
 
 `@ignore_if_structure_matches` on a function lets a parameter accept a `$=` source without `formatconvert`. Omitted: it does not.
 
@@ -597,7 +613,7 @@ A failure has no payload. `STOP[THIS]` ends it. It does not produce a value, and
 | `include` | Loads a `.tpth_s` file once. A cycle means already loaded. Does not reveal `@private` names. `include lib` binds a host library's C symbols. |
 | `namespace` | A C++-style prefix. It may be opened again. Not a value. No `using`. |
 | `object` | Declares one layout. `@childof[Parent]` is the one parent. An embedded object field is composition, not a parent. |
-| `flow` | Declares the only map `$=` will accept. |
+| `flow` | A `resolve` row between two layouts. `$=` asks if it exists. `^=` stores through it. |
 | `macro` | A bundle of attributes. The body is attributes and `when` only. |
 | `when` | Comptime, inside a macro. A false `when` adds nothing. |
 | `create` | Allocates a new cell each time the statement runs. |
@@ -625,7 +641,8 @@ A failure has no payload. `STOP[THIS]` ends it. It does not produce a value, and
 | `window` | A pointer over n elements. No copy. |
 | `gather` | Copies the present lanes named by the ids, in that order. Absent lanes are skipped, not stored as zero. |
 | `formatconvert` | Applies a `flow`. The result is a value. |
-| `as` | Parent or child pointer, or an atom conversion that has a `convert` row. |
+| `as` | Parent or child pointer, or a `convert` row returned as a value. |
+| `^=` | Resolve the right-hand kind into the left-hand cell and store. Not xor. Not `$=`. |
 | method | A `fn` inside an object. Called as `inst.move in[...]`. Not a field. |
 
 `@stream[n]` on a function makes that function the producer. Calling it starts it. It may run ahead until n items are unread, then it waits. `leave` inside it ends it. A stream is not a pool and not a pipe.
@@ -677,13 +694,14 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - `leave[name]` with no matching `@name`
 - `@NoFailTolerance`
 - `@ptr` or `@ref` as a mark
-- `^=` as structural equality. The operator is `$=`
+- `^=` used to compare. `$=` compares structure. `^=` resolves and stores.
+- `@divzero` with an argument other than `0` or `max`
 - a second `@childof`, a cycle, or a parent that is not an object
 - a child field whose name the parent already uses
 - a child method reusing a short name without `@ismutationof` of that parent method
 - a subclass calling or mutating a `@private` method
 - an implicit conversion between a child and its parent
-- `as` between types that are not parent and descendant
+- `as` between objects that are not parent and descendant, or between atoms with no `convert` row
 - a downcast of a value
 - `struct` used as a type
 - an object embedding itself by value
