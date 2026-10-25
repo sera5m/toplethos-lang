@@ -1,48 +1,13 @@
 # toplethos-lang
 
-Version: **Halloween** (`halloween` tag). This is v1. Anything before that tag is not the language.
+Language spec **1.0** is [USE.md](USE.md). That file wins. [MATRIX.md](MATRIX.md) is the older decision log. The tag is `v1.0`. The older `halloween` tag is not 1.0.
 
-Desktop Toplethos: language runner. **Not** the ESP32 watch firmware or the AI project. Both depend on this.
+`toplethos_run.py` and the watch VM are an older runner. They do not implement 1.0. Programs in `examples/` are runner programs.
 
-Watch OS **requires** this repo: https://github.com/sera5m/OIRIA_OS_espIDF (`third_party/toplethos-lang` submodule). Firmware VM is `os_code/core/rs_vm` in that tree — same language, C on device.
-Package index: https://github.com/sera5m/oiria-index
-
-## Pieces
-
-| file | what |
-|------|------|
-| `toplethos_run.py` | interpreter (LUT sin/cos, fns, `@latex_internal`) |
-| `toplethos_latex.py` | LaTeX body → Toplethos |
-| `toplethos_ide.py` | GTK4 editor, graphs, companion |
-| `graph_preview.py` | `@sig_gen_graph_preview` plots |
-| `companion.py` | capability-limited offload host |
-| `examples/` | `.vul` samples |
-
-`toplethos_run.py` is plain Python. Use it in other projects with no GTK.
+This repo is the language. It is not the ESP32 watch firmware and not the IDE. The watch links it from [OIRIA_OS_espIDF](https://github.com/sera5m/OIRIA_OS_espIDF). The desktop editor is [toplethos-ide](https://github.com/sera5m/toplethos-ide).
 
 ```bash
 python3 toplethos_run.py examples/sin_demo.vul
-python3 -c "from toplethos_run import run_source; print(run_source('print(sin(90));'))"
 ```
 
-## Linux
-
-```bash
-sudo pacman -S python python-gobject gtk4 python-pyserial python-matplotlib
-python3 toplethos_ide.py examples/sig_gen.vul
-```
-(only tested on arch linux/wayland (endeavoros titan)
-## Windows
-
-Interpreter:
-
-```bat
-py -3 toplethos_run.py examples\sin_demo.vul
-```
-
-IDE: MSYS2 UCRT64 GTK4 + PyGObject. GDK uses Win32 (untested)
-
-## Tags
-
-- `@latex_internal` — body is LaTeX, rewritten before run
-- `@sig_gen_graph_preview` — Debugger / Graphs
+That command runs the old runner, not a 1.0 program.

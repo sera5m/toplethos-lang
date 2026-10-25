@@ -1,3 +1,5 @@
+Host or runner note. Not language 1.0. [USE.md](USE.md) is the spec.
+
 # Function generator + scope (Toplethos)
 
 Standout watch feature: **reverse oscilloscope** (AWG) and **normal oscilloscope**.

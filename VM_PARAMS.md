@@ -1,3 +1,5 @@
+Host or runner note. Not language 1.0. [USE.md](USE.md) is the spec.
+
 # VM parameters (both interpreters)
 
 | Directive | Python desktop | C++ / watch |

@@ -2,6 +2,8 @@
 
 Superseded by [USE.md](USE.md). Where this file disagrees with that one, USE.md wins. Kept as the older decision log only.
 
+Later reversals live only in USE.md. `^=` in this log is the old structural test. 1.0 uses `$=` for that and `^=` to resolve and store. An ordinary cell is mutable. A result type is written in `out[]`.
+
 Decisions from 2026-10-23. This is the target language, not what `toplethos_run.py` implements today. `STANDARD.md` stays the current runner until these land.
 
 Already locked, before this matrix:

@@ -1,3 +1,5 @@
+Host or runner note. Not language 1.0. [USE.md](USE.md) is the spec.
+
 # Live memory interop (NOTE — not implemented)
 
 Do **not** wire TensorFlow C / shared C++ heaps in this pass.

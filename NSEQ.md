@@ -1,3 +1,5 @@
+Host or runner note. Not language 1.0. [USE.md](USE.md) is the spec.
+
 # native_seq — trapdoored on-device array action
 
 `native("wave", …)` is one interpreter op **plus** a string lookup, **plus**

@@ -1,3 +1,5 @@
+Host or runner note. Not language 1.0. [USE.md](USE.md) is the spec.
+
 # Toplethos bytecode vs Java / C#
 
 Toplethos compiles `.vul` to a **small custom image** (`RSV2`), not JVM classfiles or .NET IL.

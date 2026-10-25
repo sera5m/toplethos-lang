@@ -1,3 +1,5 @@
+Host or runner note. Not language 1.0. [USE.md](USE.md) is the spec.
+
 # What this repo is
 
 **toplethos-lang is BASE.** Not an IDE. Not “the watch.”

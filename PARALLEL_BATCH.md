@@ -1,3 +1,5 @@
+Host or runner note. Not language 1.0. [USE.md](USE.md) is the spec.
+
 # Parallel batch execution (desktop backend)
 
 Toplethos can enqueue function calls with per-item parameters and run them as a data-parallel batch.

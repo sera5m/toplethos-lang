@@ -1,3 +1,5 @@
+Host or runner note. Not language 1.0. [USE.md](USE.md) is the spec.
+
 GTK IDE sources (`toplethos_ide.py`, `latex_view.py`, `graph_preview.py`, `companion.py`, `toplethos_latex.py`) ship from the same desktop tree used while developing with the watch.
 
 On a machine that already has that folder:
