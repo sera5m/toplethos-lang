@@ -1,6 +1,6 @@
 # Use guide
 
-This is the language spec. [MATRIX.md](MATRIX.md) is older and does not win where they differ. The runner does not implement this yet.
+This is language spec 1.0. [MATRIX.md](MATRIX.md) is older and does not win where they differ. The runner does not implement this yet.
 
 `()` groups. It never calls and it never takes an attribute argument. `[]` does.
 
@@ -207,6 +207,8 @@ A `@public` member of another file is still named `Draw::identity`. `@private` s
 `Draw` cannot be stored, passed, or used with `as`. `Draw::Point` is the object. `Draw` itself is only the prefix.
 
 A variable written in a namespace, and not inside a function, lives for the program. It is not created on the first call. With no scope mark it is `@private` to the file that contains it. `@static` there changes nothing. `@static` inside a function is still the one created on the first call.
+
+Namespace variables initialize in a fixed order. A file is initialized when `include` first reaches it, depth first, and a file already loaded is skipped. Inside a file, the order is source order. An initializer that reads a namespace variable later in that order is a compile error. This is stricter than C++ across translation units, where that order is unspecified.
 
 ## Functions
 
@@ -487,6 +489,7 @@ typeprimitive { ptr_to_elem, size, kind }
 | an integer and a float, either order | Convert the integer to that float, then float add. | That float. |
 | two integers of different width or signedness | No row. | Compile error. |
 | two floats of different width or signedness | No row. | Compile error. |
+| two `string` values | Append the bytes of the right to the left. | `string` |
 | anything else | No row, until you add one. | Compile error. |
 
 `-`, `*`, and `/` are `submagnitude`, `mulmagnitude`, and `divmagnitude`. They use the same row rules, except `uf` subtraction has no built-in row: a negative result does not fit. `/` by zero is a failure.
@@ -517,6 +520,61 @@ The C++ environment maps fixed-width names only.
 | `size_t` | `size` |
 | `bool` | `bool` |
 | `char` | `char` |
+
+
+## Arrays, enums, and strings
+
+An array's size is part of its type. The size is a constant. `i32[0]` is a compile error. An array does not become a pointer. Passing it copies every element. `&a[0]` is the pointer.
+
+```text
+i32 tape[4] = {1, 2, 3, 4};
+i32 cell = tape[0];
+size n = size in[tape];
+```
+
+A short brace list zero-fills the rest. A long one is a compile error. `i32 grid[2][3]` is row-major, and the last index is contiguous. `size in[grid]` is `2`. `size in[grid[0]]` is `3`.
+
+The index may be `size` or an integer atom. A negative index is a failure. An index past the end is a failure. C++ leaves that undefined. This is a failure instead.
+
+An enum is a closed set of names. The underlying atom defaults to `i32`. The first name is `0` and each next name is one more, unless you write a value. Two names with the same value are a compile error. An enumerator is not an integer. `Color::red` is the name.
+
+```text
+enum Color {
+  red,
+  green,
+  blue
+}
+Color c = Color::red;
+match[c] {
+  Color::red { }
+  Color::green { }
+  Color::blue { }
+}
+```
+
+`as[i32, c]` is the underlying value. `as[Color, n]` accepts any value of that atom, including one with no name. `match` does not fall through. An arm that does not match is skipped. `@total`, or the project switch `total`, makes a missing named arm a compile error. A value with no name matches no arm.
+
+A `string` is a sequence of `char`, like `std::string`. `"text"` is a `string`, not a pointer. `==` and `<` compare the bytes in order. `+` appends. `size in[s]` is the number of `char` values. `s[i]` is one `char`, with the same index rule as an array.
+
+## Utilities
+
+`min`, `max`, `clamp`, and `abs` take one atom. The arguments of `min`, `max`, and `clamp` are that same atom. `abs` of the lowest signed value is a failure. `swap` takes two pointers to the same type.
+
+```text
+i32 lo = min in[a, b];
+i32 hi = clamp in[v, 0, 10];
+swap in[&a, &b];
+```
+
+`rng` is an engine, not a hidden global. Copying it copies the state.
+
+```text
+rng engine = rng[1];
+i32 roll = rand in[engine, 0, 10];
+f64 unit = randf in[engine];
+```
+
+`rand` is inclusive on both ends, and both ends are the same integer atom. `lo > hi` is a failure. `randf` returns an `f64` in `[0, 1)`.
 
 ## Flow
 
@@ -637,7 +695,7 @@ A failure has no payload. `STOP[THIS]` ends it. It does not produce a value, and
 | `create` | Allocates a new cell each time the statement runs. |
 | `initialize` | Starts a stackful coroutine. Does not allocate a variable. |
 | `if` | Runs the body when the condition is present and true. A missing `else` is a no-op. |
-| `match` | One arm of a closed set. A missing arm is a no-op. Arms do not fall through. |
+| `match` | One arm of an `enum` or of constant values of one atom. A missing arm is a no-op. Arms do not fall through. |
 | `do n[k]` | Runs the body k times. `i` is 0 through k - 1, read-only. `i < k`, not `i <= k`. |
 | `onFinished` | Runs once after that `do` finishes. |
 | `loop` | Runs until `leave` or a failure. |
@@ -659,6 +717,13 @@ A failure has no payload. `STOP[THIS]` ends it. It does not produce a value, and
 | `window` | A pointer over n elements. No copy. |
 | `gather` | Copies the present lanes named by the ids, in that order. Absent lanes are skipped, not stored as zero. |
 | `formatconvert` | Applies a `flow`. The result is a value. |
+| `enum` | A closed set of names. Not an integer. |
+| `size` | The length of an array or a `string`. |
+| `min` `max` `clamp` `abs` | The usual arithmetic utilities. Same atom. |
+| `swap` | Exchanges two cells through pointers. |
+| `rng` | An explicit random engine. |
+| `rand` | An inclusive integer from that engine. |
+| `randf` | An `f64` in `[0, 1)` from that engine. |
 | `as` | Parent or child pointer, or a `convert` row returned as a value. |
 | `^=` | Resolve the right-hand kind into the left-hand cell and store. Not xor. Not `$=`. |
 | method | A `fn` inside an object. Called as `inst.move in[...]`. Not a field. |
@@ -736,6 +801,12 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - `@compeval` with an input that is not a constant
 - `@dataparallel` arrays of different lengths
 - a missing match arm when `@total` or the project switch `total` is on
+- `i32[0]`, or an array size that is not a constant
+- a brace list longer than the array
+- two enumerators with the same value
+- a `match` arm that is not a value of the scrutinee's type
+- `min`, `max`, or `clamp` of two different atoms
+- `rand` with `lo > hi`
 
 ## Not in the language
 
