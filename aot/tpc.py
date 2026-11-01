@@ -1178,6 +1178,19 @@ class MemAsm:
 
 
 def compile_source(src):
+    import re
+    if re.search(r"(?m)^\s*fn\s+main\b", src):
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lang"))
+        from emit import assemble
+        from front import CompileError as FrontError
+        from front import parse as front_parse
+        try:
+            prog = front_parse(src)
+        except FrontError as e:
+            raise CompileError(str(e))
+        return ["USE.md core"], assemble(prog), False
     head = "\n" + src
     if "\nfn " in head or "\nobject " in head or "\nf64 " in head:
         import feat

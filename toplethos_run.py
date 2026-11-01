@@ -776,6 +776,12 @@ def main(argv=None):
         return 2
     path = argv[0]
     src = open(path, encoding="utf-8").read()
+    if re.search(r"(?m)^\s*fn\s+main\b", src):
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent / "lang"))
+        from host import main_interp
+        return main_interp(src)
     try:
         sys.stdout.write(run_source(src, path))
     except RunError as e:

@@ -1,6 +1,6 @@
 # Use guide
 
-This is language spec 1.0. [MATRIX.md](MATRIX.md) is older and does not win where they differ. The runner does not implement this yet.
+This is language spec 1.0. [MATRIX.md](MATRIX.md) is older and does not win where they differ. A program with `fn main` is parsed by one front end. The interpreter and the compiler both execute that program, or both reject it. The CPU core is what they run: `i32`, `i64`, `f64`, `bool`, pointers, arrays, objects, calls, `if`, `loop`, and `do`. Anything else in this file is rejected by both with the same message until it exists. Files with no `main` are still the old runner.
 
 `()` groups. It never calls and it never takes an attribute argument. `[]` does.
 
