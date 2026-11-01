@@ -777,7 +777,6 @@ def main(argv=None):
     path = argv[0]
     src = open(path, encoding="utf-8").read()
     if re.search(r"(?m)^\s*fn\s+main\b", src):
-        import sys
         from pathlib import Path
         sys.path.insert(0, str(Path(__file__).resolve().parent / "lang"))
         from host import main_interp
