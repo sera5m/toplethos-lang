@@ -243,10 +243,18 @@ class Parser:
                 body.append(st)
 
     def directive(self):
+        # set_step_depth and the other set_* lines are interpreter budgets.
+        # This pipeline has no step counter, so the number is discarded.
+        # It is not an i32. 5000000000 is a legal budget and an illegal i32.
         self.ident()
         self.skip()
         if self.peek() == "-" or self.peek().isdigit():
-            self.number()
+            if self.peek() == "-":
+                self.get()
+            if not self.peek().isdigit():
+                self.fail("expected a number")
+            while self.peek().isdigit():
+                self.get()
         self.expect(";")
         return None
 
