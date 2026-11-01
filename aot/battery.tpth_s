@@ -1,9 +1,9 @@
-// The rows this compiler can lower: direct, call, object.
-// Same Horner and same N as battery.cpp and battery.rs.
-// Threads, async, checked, raw, and mutex are in those two files.
-// This compiler does not lower them yet.
+// One program. direct, then call, then object. Same Horner, same order.
+// x = i * 0.000001, i = 0 .. 1999999.
+// Both hosts run this file. The clock is outside the program.
 //
-// python3 aot/tpc.py aot/battery.tpth_s -o /tmp/battery_tp
+// python3 aot/tpc.py aot/battery.tpth_s -o /tmp/battery_tp --run
+// python3 toplethos_run.py aot/battery.tpth_s
 
 fn horner in[f64 x] out[f64] {
   f64 y = 8.0;
@@ -39,58 +39,46 @@ object Poly {
   }
 }
 
-Poly p;
-p.c0 = 1.0;
-p.c1 = 2.0;
-p.c2 = 3.0;
-p.c3 = 4.0;
-p.c4 = 5.0;
-p.c5 = 6.0;
-p.c6 = 7.0;
-p.c7 = 8.0;
+fn main in[] out[i32] {
+  Poly p;
+  p.c0 = 1.0;
+  p.c1 = 2.0;
+  p.c2 = 3.0;
+  p.c3 = 4.0;
+  p.c4 = 5.0;
+  p.c5 = 6.0;
+  p.c6 = 7.0;
+  p.c7 = 8.0;
 
-i32 n = 2000000;
-i32 i = 0;
-f64 s = 0.0;
-f64 x = 0.0;
-f64 y = 0.0;
+  f64 s = 0.0;
+  f64 x = 0.0;
+  f64 y = 0.0;
+  do n[2000000] {
+    x = as[f64, i] * 0.000001;
+    y = 8.0;
+    y = 7.0 + x * y;
+    y = 6.0 + x * y;
+    y = 5.0 + x * y;
+    y = 4.0 + x * y;
+    y = 3.0 + x * y;
+    y = 2.0 + x * y;
+    y = 1.0 + x * y;
+    s = s + y;
+  }
+  print in[s];
 
-tp_begin in["direct"];
-loop {
-  if !(i < n) { leave; }
-  x = as[f64, i] * 0.000001;
-  y = 8.0;
-  y = 7.0 + x * y;
-  y = 6.0 + x * y;
-  y = 5.0 + x * y;
-  y = 4.0 + x * y;
-  y = 3.0 + x * y;
-  y = 2.0 + x * y;
-  y = 1.0 + x * y;
-  s = s + y;
-  i = i + 1;
+  s = 0.0;
+  do n[2000000] {
+    x = as[f64, i] * 0.000001;
+    s = s + horner in[x];
+  }
+  print in[s];
+
+  s = 0.0;
+  do n[2000000] {
+    x = as[f64, i] * 0.000001;
+    s = s + p.eval in[x];
+  }
+  print in[s];
+  return 0;
 }
-tp_end in[s];
-
-tp_begin in["call"];
-s = 0.0;
-i = 0;
-loop {
-  if !(i < n) { leave; }
-  x = as[f64, i] * 0.000001;
-  s = s + horner in[x];
-  i = i + 1;
-}
-tp_end in[s];
-
-tp_begin in["object"];
-s = 0.0;
-i = 0;
-loop {
-  if !(i < n) { leave; }
-  x = as[f64, i] * 0.000001;
-  s = s + p.eval in[x];
-  i = i + 1;
-}
-tp_end in[s];
-tp_threads in[n];

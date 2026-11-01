@@ -7,6 +7,7 @@
 // mutex is a different, smaller job: 4 threads adding under one lock.
 //
 // g++ -O2 -ffp-contract=off -pthread -o /tmp/battery_cpp aot/battery.cpp
+// or: sh aot/battery.sh
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>

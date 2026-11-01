@@ -23,6 +23,7 @@ class Interp:
         self.prog = prog
         self.out = []
         self.frames = []
+        self.returned = False
 
     def run(self):
         self.call(self.prog["fns"]["main"], [])
@@ -41,9 +42,11 @@ class Interp:
             box["v"] = self.here_box
             frame[fn["here"]] = box
         self.frames.append(frame)
+        saved = self.returned
         try:
             return self.stmts(fn["body"])
         finally:
+            self.returned = saved
             self.frames.pop()
 
     def block(self, body):
@@ -273,7 +276,13 @@ class Interp:
         if row == ("f64",):
             if op == "/" and b == 0.0:
                 raise Failure("division by zero")
-            return {"+": a + b, "-": a - b, "*": a * b, "/": a / b}[op]
+            if op == "+":
+                return a + b
+            if op == "-":
+                return a - b
+            if op == "*":
+                return a * b
+            return a / b
         bits = 32 if row == ("i32",) else 64
         if op == "/":
             if b == 0:

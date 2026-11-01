@@ -1,31 +1,4 @@
-// Same polynomial as the compiled battery, in the interpreter's syntax.
-// The interpreter has no object, no loop/leave, and no f64 keyword.
-// f32 here is a Python float, so the sum can still match.
-// It also has no stopwatch attribute. Time this file from outside.
-//
-// python3 toplethos_run.py aot/battery_interp.tpth_s
-set_max_run 100000000;
-
-fn horner in[f32 x] {
-  f32 y @mut = 8.0;
-  y = 7.0 + x * y;
-  y = 6.0 + x * y;
-  y = 5.0 + x * y;
-  y = 4.0 + x * y;
-  y = 3.0 + x * y;
-  y = 2.0 + x * y;
-  y = 1.0 + x * y;
-  return y;
+// Not a second program. aot/battery.sh runs aot/battery.tpth_s on both hosts.
+fn main in[] out[i32] {
+  return 0;
 }
-
-f32 s @mut = 0.0;
-i32 i @mut = 0;
-f32 x @mut = 0.0;
-f32 y @mut = 0.0;
-do n[2000000] {
-  x = i * 0.000001;
-  y = horner in[x];
-  s = s + y;
-  i = i + 1;
-}
-print(s);
