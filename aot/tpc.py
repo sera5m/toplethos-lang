@@ -10,6 +10,7 @@ import argparse
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 I32_MIN = -2147483648
 I32_MAX = 2147483647
@@ -93,13 +94,93 @@ class Inc:
     line: int
 
 
+@dataclass
+class StrLit:
+    s: str
+
+
+@dataclass
+class Index:
+    base: object
+    idx: object
+
+
+@dataclass
+class SizeOf:
+    expr: object
+
+
+@dataclass
+class Call:
+    name: str
+    args: list
+
+
+@dataclass
+class Cmp:
+    op: str
+    a: object
+    b: object
+
+
+@dataclass
+class Logic:
+    op: str
+    a: object
+    b: object
+
+
+@dataclass
+class Not:
+    a: object
+
+
+@dataclass
+class DeclStr:
+    name: str
+    expr: object
+    line: int
+
+
+@dataclass
+class DeclMap:
+    name: str
+    line: int
+
+
+@dataclass
+class If:
+    cond: object
+    body: list
+    els: list
+    line: int
+
+
+@dataclass
+class Loop:
+    body: list
+    line: int
+
+
+@dataclass
+class Leave:
+    line: int
+
+
+@dataclass
+class CallStmt:
+    name: str
+    args: list
+    line: int
+
+
 class Parser:
     def __init__(self, src):
         self.s = src
         self.i = 0
         self.line = 1
         self.col = 1
-        self.known = set()
+        self.known = {}
 
     def fail(self, msg):
         raise ParseError(f"{self.line}:{self.col} {msg}")
@@ -183,26 +264,113 @@ class Parser:
             raise ParseError(f"{start_line}:{start_col} integer does not fit in i32")
         return v
 
+    def string_lit(self):
+        self.get()
+        chars = []
+        while True:
+            c = self.get()
+            if c == '"':
+                return "".join(chars)
+            if c == "":
+                self.fail("unclosed string")
+            if c == "\\":
+                n = self.get()
+                esc = {"n": "\n", "t": "\t", "\\": "\\", '"': '"'}
+                if n not in esc:
+                    self.fail("bad escape")
+                chars.append(esc[n])
+            else:
+                chars.append(c)
+
+    def char_lit(self):
+        self.get()
+        c = self.get()
+        if c == "":
+            self.fail("unclosed char")
+        if c == "\\":
+            n = self.get()
+            esc = {"n": "\n", "t": "\t", "\\": "\\", "'": "'"}
+            if n not in esc:
+                self.fail("bad escape")
+            c = esc[n]
+        if self.peek() != "'":
+            self.fail("unclosed char")
+        self.get()
+        return Const(ord(c))
+
+    def match_op(self, tok):
+        self.skip()
+        if not self.s.startswith(tok, self.i):
+            return False
+        if tok in ("<", ">") and self.s.startswith(tok + "=", self.i):
+            return False
+        if tok == "!" and self.s.startswith("!=", self.i):
+            return False
+        if tok == "&" or tok == "|":
+            return False
+        for _ in range(len(tok)):
+            self.get()
+        return True
+
+    def arglist(self):
+        self.expect("[")
+        args = []
+        self.skip()
+        if self.peek() != "]":
+            while True:
+                args.append(self.expr())
+                self.skip()
+                if self.peek() == ",":
+                    self.get()
+                    continue
+                break
+        self.expect("]")
+        return args
+
+    def postfix(self, e):
+        self.skip()
+        if self.peek() == "[":
+            self.get()
+            idx = self.expr()
+            self.expect("]")
+            return Index(e, idx)
+        return e
+
     def factor(self):
         self.skip()
         if self.peek() == "(":
             self.get()
             e = self.expr()
             self.expect(")")
-            return e
+            return self.postfix(e)
+        if self.peek() == "!" and not self.s.startswith("!=", self.i):
+            self.get()
+            return Not(self.factor())
+        if self.peek() == '"':
+            return StrLit(self.string_lit())
+        if self.peek() == "'":
+            return self.char_lit()
         if self.peek() == "-":
             self.get()
             f = self.factor()
             if isinstance(f, Const):
-                v = i32(-f.v)
-                return Const(v)
+                return Const(i32(-f.v))
             return Bin("-", Const(0), f)
         if self.peek().isdigit():
             return Const(self.number())
+        if self.match_kw("size"):
+            if not self.match_kw("in"):
+                self.fail("expected size in[value]")
+            self.expect("[")
+            inner = self.expr()
+            self.expect("]")
+            return SizeOf(inner)
         name = self.ident()
+        if self.match_kw("in"):
+            return Call(name, self.arglist())
         if name not in self.known:
             self.fail(f"'{name}' is used before it is declared")
-        return Name(name)
+        return self.postfix(Name(name))
 
     def term(self):
         e = self.factor()
@@ -218,7 +386,7 @@ class Parser:
             self.get()
             e = Bin(op, e, self.factor())
 
-    def expr(self):
+    def add_expr(self):
         e = self.term()
         while True:
             self.skip()
@@ -228,7 +396,26 @@ class Parser:
             else:
                 return e
 
-    def block(self):
+    def cmp_expr(self):
+        e = self.add_expr()
+        for tok in ("<=", ">=", "==", "!=", "<", ">"):
+            if self.match_op(tok):
+                return Cmp(tok, e, self.add_expr())
+        return e
+
+    def and_expr(self):
+        e = self.cmp_expr()
+        while self.match_op("&&"):
+            e = Logic("&&", e, self.cmp_expr())
+        return e
+
+    def expr(self):
+        e = self.and_expr()
+        while self.match_op("||"):
+            e = Logic("||", e, self.and_expr())
+        return e
+
+    def block(self, allow_decl=False):
         self.expect("{")
         body = []
         while True:
@@ -238,7 +425,7 @@ class Parser:
                 return body
             if not self.peek():
                 self.fail("unclosed '{'")
-            st = self.statement(allow_decl=False)
+            st = self.statement(allow_decl=allow_decl)
             if st is not None:
                 body.append(st)
 
@@ -258,39 +445,71 @@ class Parser:
         self.expect(";")
         return None
 
+    def bind(self, kind, line, allow_decl):
+        if not allow_decl:
+            self.fail(f"declare {kind} at the top level, not inside do")
+        name = self.ident()
+        if name in self.known:
+            self.fail(f"'{name}' is already declared")
+        if kind == "map":
+            self.expect(";")
+            self.known[name] = kind
+            return DeclMap(name, line)
+        self.expect("=")
+        expr = self.expr()
+        self.expect(";")
+        self.known[name] = kind
+        if kind == "string":
+            return DeclStr(name, expr, line)
+        return Decl(name, expr, line)
+
     def statement(self, allow_decl):
         line = self.line
         self.skip()
         if self.s.startswith("set_", self.i):
             return self.directive()
         if self.match_kw("i32"):
-            if not allow_decl:
-                self.fail("declare i32 at the top level, not inside do")
-            name = self.ident()
-            if name in self.known:
-                self.fail(f"'{name}' is already declared")
-            self.expect("=")
-            expr = self.expr()
-            self.expect(";")
-            self.known.add(name)
-            return Decl(name, expr, line)
+            return self.bind("i32", line, allow_decl)
+        if self.match_kw("string"):
+            return self.bind("string", line, allow_decl)
+        if self.match_kw("map"):
+            return self.bind("map", line, allow_decl)
         if self.match_kw("print"):
             self.expect("(")
             expr = self.expr()
             self.expect(")")
             self.expect(";")
             return Print(expr, line)
+        if self.match_kw("if"):
+            cond = self.expr()
+            body = self.block(allow_decl=True)
+            els = []
+            self.skip()
+            if self.match_kw("else"):
+                els = self.block(allow_decl=True)
+            return If(cond, body, els, line)
+        if self.match_kw("loop"):
+            return Loop(self.block(allow_decl=True), line)
+        if self.match_kw("leave"):
+            self.expect(";")
+            return Leave(line)
         if self.match_kw("do"):
             if not self.match_kw("n"):
                 self.fail("expected 'do n[count]'")
             self.expect("[")
             count = self.expr()
             self.expect("]")
-            body = self.block()
+            body = self.block(allow_decl=False)
             return Do(count, body, line)
         name = self.ident()
+        if self.match_kw("in"):
+            args = self.arglist()
+            self.expect(";")
+            return CallStmt(name, args, line)
         if name not in self.known:
             self.fail(f"'{name}' is used before it is declared")
+        if self.known[name] != "i32":
+            self.fail(f"'{name}' is not an i32")
         self.expect("=")
         expr = self.expr()
         self.expect(";")
@@ -381,6 +600,23 @@ def show(stmts, ind=0):
         elif isinstance(s, Do):
             lines.append(f"{pad}do n[{show_e(s.count)}]")
             lines.extend(show(s.body, ind + 1))
+        elif isinstance(s, If):
+            lines.append(f"{pad}if {show_e(s.cond)}")
+            lines.extend(show(s.body, ind + 1))
+            if s.els:
+                lines.append(f"{pad}else")
+                lines.extend(show(s.els, ind + 1))
+        elif isinstance(s, Loop):
+            lines.append(f"{pad}loop")
+            lines.extend(show(s.body, ind + 1))
+        elif isinstance(s, Leave):
+            lines.append(f"{pad}leave")
+        elif isinstance(s, DeclStr):
+            lines.append(f"{pad}string {s.name} = {show_e(s.expr)}")
+        elif isinstance(s, DeclMap):
+            lines.append(f"{pad}map {s.name}")
+        elif isinstance(s, CallStmt):
+            lines.append(f"{pad}{s.name} in[{', '.join(show_e(a) for a in s.args)}]")
         elif isinstance(s, Inc):
             lines.append(f"{pad}inc {s.name} by {s.k} times {show_e(s.count)}")
         else:
@@ -393,6 +629,20 @@ def show_e(e):
         return str(e.v)
     if isinstance(e, Name):
         return e.n
+    if isinstance(e, StrLit):
+        return '"' + e.s + '"'
+    if isinstance(e, Index):
+        return f"{show_e(e.base)}[{show_e(e.idx)}]"
+    if isinstance(e, SizeOf):
+        return f"size in[{show_e(e.expr)}]"
+    if isinstance(e, Call):
+        return f"{e.name} in[{', '.join(show_e(a) for a in e.args)}]"
+    if isinstance(e, Cmp):
+        return f"({show_e(e.a)} {e.op} {show_e(e.b)})"
+    if isinstance(e, Logic):
+        return f"({show_e(e.a)} {e.op} {show_e(e.b)})"
+    if isinstance(e, Not):
+        return f"!{show_e(e.a)}"
     if isinstance(e, Bin):
         return f"({show_e(e.a)} {e.op} {show_e(e.b)})"
     return "?"
@@ -590,7 +840,7 @@ class Asm:
             f"# pipeline: parse, fold_constants, contract_inc_loops, amd64, g++",
             f"# contract_inc_loops fired {self.contracted} time(s)",
         ]
-        return "\n".join(note + ro + bss + head + body + extra + tail) + "\n"
+        return "\n".join(note + ro + bss + head + body + extra + tail) + "\n    .section .note.GNU-stack,\"\",@progbits\n"
 
 
 def slots_of(stmts, acc):
@@ -600,12 +850,343 @@ def slots_of(stmts, acc):
                 acc.append(s.name)
         elif isinstance(s, Do):
             slots_of(s.body, acc)
+        elif isinstance(s, If):
+            slots_of(s.body, acc)
+            slots_of(s.els, acc)
+        elif isinstance(s, Loop):
+            slots_of(s.body, acc)
+
+
+def expr_mem(e):
+    if isinstance(e, (StrLit, Index, SizeOf, Call, Cmp, Logic, Not)):
+        return True
+    if isinstance(e, Bin):
+        return expr_mem(e.a) or expr_mem(e.b)
+    return False
+
+
+def uses_mem(stmts):
+    for s in stmts:
+        if isinstance(s, (If, Loop, Leave, CallStmt, DeclStr, DeclMap)):
+            return True
+        if isinstance(s, (Decl, Store, Print, Do, Inc)) and expr_mem(getattr(s, "expr", None) or getattr(s, "count", None) or 0):
+            return True
+        if isinstance(s, Do) and uses_mem(s.body):
+            return True
+    return False
+
+
+def collect_slots(stmts, order, kinds):
+    for s in stmts:
+        if isinstance(s, Decl):
+            if s.name not in kinds:
+                kinds[s.name] = "i32"
+                order.append(s.name)
+        elif isinstance(s, DeclStr):
+            if s.name not in kinds:
+                kinds[s.name] = "str"
+                order.append(s.name)
+        elif isinstance(s, DeclMap):
+            if s.name not in kinds:
+                kinds[s.name] = "map"
+                order.append(s.name)
+        elif isinstance(s, If):
+            collect_slots(s.body, order, kinds)
+            collect_slots(s.els, order, kinds)
+        elif isinstance(s, (Loop, Do)):
+            collect_slots(s.body, order, kinds)
+
+
+class MemAsm:
+    """Stack slots. Used when the program has strings, maps, or loops.
+    The i32 register path stays untouched for the increment benchmark."""
+
+    def __init__(self, order, kinds):
+        self.kinds = kinds
+        self.off = {}
+        cursor = 32
+        for name in order:
+            if kinds[name] == "str":
+                cursor += 16
+            else:
+                cursor += 8
+            self.off[name] = -cursor
+        self.frame = (cursor + 15) & ~15
+        self.o = []
+        self.nlab = 0
+        self.lits = []
+        self.loops = []
+        self.needs_bounds = False
+        self.needs_rt = False
+        self.needs_printf = False
+
+    def lab(self):
+        self.nlab += 1
+        return f".L{self.nlab}"
+
+    def w(self, s):
+        self.o.append(s)
+
+    def lit(self, s):
+        lab = f".LS{len(self.lits)}"
+        self.lits.append((lab, s))
+        return lab
+
+    def gen_i32(self, e):
+        if isinstance(e, Const):
+            self.w(f"    mov ${i32(e.v)}, %eax")
+            return
+        if isinstance(e, Name):
+            if self.kinds.get(e.n) != "i32":
+                raise CompileError(f"'{e.n}' is not an i32")
+            self.w(f"    mov {self.off[e.n]}(%rbp), %eax")
+            return
+        if isinstance(e, Bin):
+            self.gen_i32(e.a)
+            self.w("    mov %eax, -8(%rbp)")
+            self.gen_i32(e.b)
+            self.w("    mov %eax, %ecx")
+            self.w("    mov -8(%rbp), %eax")
+            if e.op == "+":
+                self.w("    add %ecx, %eax")
+            elif e.op == "-":
+                self.w("    sub %ecx, %eax")
+            elif e.op == "*":
+                self.w("    imul %ecx, %eax")
+            elif e.op in ("/", "%"):
+                nz = self.lab()
+                self.w("    test %ecx, %ecx")
+                self.w(f"    jnz {nz}")
+                self.w("    jmp .Ldiv0")
+                self.w(nz + ":")
+                self.w("    cdq")
+                self.w("    idiv %ecx")
+                if e.op == "%":
+                    self.w("    mov %edx, %eax")
+            else:
+                raise CompileError(f"bad op {e.op}")
+            return
+        if isinstance(e, Index):
+            self.gen_i32(e.idx)
+            self.w("    mov %eax, -16(%rbp)")
+            self.gen_str(e.base)
+            self.w("    movslq -16(%rbp), %rcx")
+            self.w("    test %rcx, %rcx")
+            self.w("    jl .Lbounds")
+            self.w("    cmp %rdx, %rcx")
+            self.w("    jae .Lbounds")
+            self.w("    movzbl (%rax, %rcx), %eax")
+            self.needs_bounds = True
+            return
+        if isinstance(e, SizeOf):
+            self.gen_str(e.expr)
+            self.w("    mov %edx, %eax")
+            return
+        if isinstance(e, Cmp):
+            self.gen_i32(e.a)
+            self.w("    mov %eax, -8(%rbp)")
+            self.gen_i32(e.b)
+            self.w("    mov %eax, %ecx")
+            self.w("    mov -8(%rbp), %eax")
+            self.w("    cmp %ecx, %eax")
+            setcc = {"<": "setl", ">": "setg", "<=": "setle", ">=": "setge", "==": "sete", "!=": "setne"}
+            self.w(f"    {setcc[e.op]} %al")
+            self.w("    movzbl %al, %eax")
+            return
+        if isinstance(e, Not):
+            self.gen_i32(e.a)
+            self.w("    test %eax, %eax")
+            self.w("    setz %al")
+            self.w("    movzbl %al, %eax")
+            return
+        if isinstance(e, Logic):
+            no = self.lab()
+            end = self.lab()
+            self.gen_i32(e.a)
+            self.w("    test %eax, %eax")
+            if e.op == "&&":
+                self.w(f"    jz {no}")
+                self.gen_i32(e.b)
+                self.w("    test %eax, %eax")
+                self.w(f"    jz {no}")
+                self.w("    mov $1, %eax")
+                self.w(f"    jmp {end}")
+                self.w(no + ":")
+                self.w("    xor %eax, %eax")
+                self.w(end + ":")
+            else:
+                self.w(f"    jnz {no}")
+                self.gen_i32(e.b)
+                self.w("    test %eax, %eax")
+                self.w(f"    jnz {no}")
+                self.w("    xor %eax, %eax")
+                self.w(f"    jmp {end}")
+                self.w(no + ":")
+                self.w("    mov $1, %eax")
+                self.w(end + ":")
+            return
+        raise CompileError("expected an i32")
+
+    def gen_str(self, e):
+        if isinstance(e, StrLit):
+            lab = self.lit(e.s)
+            self.w(f"    lea {lab}(%rip), %rax")
+            self.w(f"    mov ${len(e.s.encode())}, %rdx")
+            return
+        if isinstance(e, Name):
+            if self.kinds.get(e.n) != "str":
+                raise CompileError(f"'{e.n}' is not a string")
+            off = self.off[e.n]
+            self.w(f"    mov {off}(%rbp), %rax")
+            self.w(f"    mov {off + 8}(%rbp), %rdx")
+            return
+        if isinstance(e, Call) and e.name == "readfile":
+            if len(e.args) != 1:
+                raise CompileError("readfile in[path]")
+            self.gen_str(e.args[0])
+            self.w("    mov %rax, %rdi")
+            self.w("    call tp_readfile@PLT")
+            self.needs_rt = True
+            return
+        raise CompileError("expected a string")
+
+    def gen_stmts(self, stmts):
+        for s in stmts:
+            if isinstance(s, Decl) or isinstance(s, Store):
+                self.gen_i32(s.expr)
+                self.w(f"    mov %eax, {self.off[s.name]}(%rbp)")
+            elif isinstance(s, DeclStr):
+                self.gen_str(s.expr)
+                off = self.off[s.name]
+                self.w(f"    mov %rax, {off}(%rbp)")
+                self.w(f"    mov %rdx, {off + 8}(%rbp)")
+            elif isinstance(s, DeclMap):
+                self.w("    call tp_map_new@PLT")
+                self.w(f"    mov %rax, {self.off[s.name]}(%rbp)")
+                self.needs_rt = True
+            elif isinstance(s, Print):
+                if isinstance(s.expr, StrLit):
+                    lab = self.lit(s.expr.s)
+                    self.w(f"    lea {lab}(%rip), %rdi")
+                    self.w("    call puts@PLT")
+                else:
+                    self.needs_printf = True
+                    self.gen_i32(s.expr)
+                    self.w("    mov %eax, %esi")
+                    self.w("    lea fmt(%rip), %rdi")
+                    self.w("    xor %eax, %eax")
+                    self.w("    call printf@PLT")
+            elif isinstance(s, If):
+                no = self.lab()
+                end = self.lab()
+                self.gen_i32(s.cond)
+                self.w("    test %eax, %eax")
+                self.w(f"    jz {no}")
+                self.gen_stmts(s.body)
+                self.w(f"    jmp {end}")
+                self.w(no + ":")
+                self.gen_stmts(s.els)
+                self.w(end + ":")
+            elif isinstance(s, Loop):
+                top, end = self.lab(), self.lab()
+                self.loops.append(end)
+                self.w(top + ":")
+                self.gen_stmts(s.body)
+                self.w(f"    jmp {top}")
+                self.w(end + ":")
+                self.loops.pop()
+            elif isinstance(s, Leave):
+                if not self.loops:
+                    raise CompileError(f"{s.line}: leave outside loop")
+                self.w(f"    jmp {self.loops[-1]}")
+            elif isinstance(s, CallStmt):
+                self.gen_call(s)
+            else:
+                raise CompileError(f"cannot lower {type(s).__name__} in this program")
+
+    def gen_call(self, s):
+        self.needs_rt = True
+        if s.name == "map_print":
+            if len(s.args) != 1 or not isinstance(s.args[0], Name):
+                raise CompileError("map_print in[map]")
+            self.w(f"    mov {self.off[s.args[0].n]}(%rbp), %rdi")
+            self.w("    call tp_map_print@PLT")
+            return
+        if s.name == "map_add":
+            if len(s.args) != 4:
+                raise CompileError("map_add in[map, text, start, end]")
+            self.gen_i32(s.args[2])
+            self.w("    mov %eax, -16(%rbp)")
+            self.gen_i32(s.args[3])
+            self.w("    mov %eax, -24(%rbp)")
+            self.gen_str(s.args[1])
+            self.w("    mov %rax, -32(%rbp)")
+            if not isinstance(s.args[0], Name) or self.kinds.get(s.args[0].n) != "map":
+                raise CompileError("map_add needs a map")
+            self.w(f"    mov {self.off[s.args[0].n]}(%rbp), %rdi")
+            self.w("    mov -32(%rbp), %rsi")
+            self.w("    movslq -16(%rbp), %rdx")
+            self.w("    movslq -24(%rbp), %rcx")
+            self.w("    call tp_map_add@PLT")
+            return
+        raise CompileError(f"unknown call {s.name}")
+
+    def render(self, stmts):
+        self.gen_stmts(stmts)
+        body = self.o
+        ro = ["    .section .rodata"]
+        if self.needs_printf:
+            ro.append('fmt: .string "%d\\n"')
+        if self.needs_bounds:
+            ro.append('bmsg: .ascii "bounds\\n"')
+        for lab, s in self.lits:
+            data = ",".join(str(b) for b in s.encode()) + ",0"
+            ro.append(f"{lab}: .byte {data}")
+        head = [
+            "    .text",
+            "    .globl main",
+            "main:",
+            "    push %rbp",
+            "    mov %rsp, %rbp",
+            f"    sub ${self.frame}, %rsp",
+        ]
+        if self.frame:
+            head += [
+                f"    lea -{self.frame}(%rbp), %rdi",
+                f"    mov ${self.frame}, %ecx",
+                "    xor %eax, %eax",
+                "    rep stosb",
+            ]
+        tail = ["    xor %eax, %eax", "    leave", "    ret"]
+        extra = []
+        if self.needs_bounds:
+            extra += [
+                "    jmp .Lret",
+                ".Lbounds:",
+                "    mov $1, %eax",
+                "    mov $1, %edi",
+                "    lea bmsg(%rip), %rsi",
+                "    mov $7, %edx",
+                "    syscall",
+                "    mov $60, %eax",
+                "    mov $1, %edi",
+                "    syscall",
+                ".Lret:",
+            ]
+        note = ["# pipeline: parse, fold_constants, contract_inc_loops, amd64, g++"]
+        return "\n".join(note + ro + head + body + extra + tail) + "\n    .section .note.GNU-stack,\"\",@progbits\n", self.needs_rt
 
 
 def compile_source(src):
     prog = Parser(src).program()
     folded = fold_stmts(prog)
     contracted = contract_inc_loops(folded)
+    if uses_mem(contracted):
+        order, kinds = [], {}
+        collect_slots(contracted, order, kinds)
+        asm = MemAsm(order, kinds)
+        text, needs_rt = asm.render(contracted)
+        return contracted, text, needs_rt
     names = []
     slots_of(contracted, names)
     if len(names) > len(REGS):
@@ -615,7 +1196,8 @@ def compile_source(src):
     slot = {name: REGS[i][0] for i, name in enumerate(names)}
     asm = Asm(slot)
     text = asm.render(contracted)
-    return contracted, text
+    return contracted, text, False
+
 
 
 def main(argv):
@@ -632,7 +1214,7 @@ def main(argv):
         print(f"tpc: {e}", file=sys.stderr)
         return 1
     try:
-        ir, text = compile_source(src)
+        ir, text, needs_rt = compile_source(src)
     except (ParseError, CompileError) as e:
         print(f"tpc: {args.source}: {e}", file=sys.stderr)
         return 1
@@ -649,6 +1231,8 @@ def main(argv):
         print(asm_path)
         return 0
     cmd = ["g++", "-o", args.o, asm_path]
+    if needs_rt:
+        cmd = ["g++", "-O2", "-o", args.o, asm_path, str(Path(__file__).with_name("wordrt.c"))]
     print(" ".join(cmd), file=sys.stderr)
     g = subprocess.run(cmd, text=True, capture_output=True)
     if g.returncode != 0:

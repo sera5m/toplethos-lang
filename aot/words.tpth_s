@@ -1,0 +1,26 @@
+// Unique words in first-seen order.
+// A word is a run of ASCII letters. map_add folds A-Z to a-z.
+string path = "/home/ash/Downloads/lipsum-cicero.txt";
+string text = readfile in[path];
+map counts;
+
+i32 i = 0;
+i32 n = size in[text];
+loop {
+  if !(i < n) { leave; }
+  i32 c = text[i];
+  if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+    i32 start = i;
+    loop {
+      if !(i < n) { leave; }
+      i32 d = text[i];
+      if !((d >= 'A' && d <= 'Z') || (d >= 'a' && d <= 'z')) { leave; }
+      i = i + 1;
+    }
+    map_add in[counts, text, start, i];
+  } else {
+    i = i + 1;
+  }
+}
+print("words, instances");
+map_print in[counts];
