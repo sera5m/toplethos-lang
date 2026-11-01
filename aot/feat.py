@@ -649,6 +649,10 @@ class Asm:
                 elif name == "tp_end":
                     self.gen_f64(args[0], env)
                     self.w("    call tp_end@PLT")
+                elif name == "tp_threads":
+                    self.gen_i32(args[0], env)
+                    self.w("    mov %eax, %edi")
+                    self.w("    call tp_threads@PLT")
                 else:
                     raise CompileError(f"unknown call {name}")
             else:

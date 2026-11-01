@@ -8,6 +8,7 @@
 //
 // g++ -O2 -ffp-contract=off -pthread -o /tmp/battery_cpp aot/battery.cpp
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <future>
 #include <mutex>
@@ -119,18 +120,51 @@ int main() {
     row("raw", std::chrono::duration<double>(clock_::now() - t).count(), s);
 
     t = clock_::now();
-    std::vector<double> part(T);
+    std::vector<double> part(T, 0.0);
     std::vector<std::thread> th;
+    std::mutex start_gate;
+    std::condition_variable wake;
+    int ready = 0;
+    int finished = 0;
+    bool go = false;
     int chunk = N / T;
     for (int k = 0; k < T; ++k) {
         int lo = k * chunk;
         int hi = (k == T - 1) ? N : lo + chunk;
-        th.emplace_back([&, k, lo, hi]() { part[k] = sum_range(lo, hi); });
+        th.emplace_back([&, k, lo, hi]() {
+            {
+                std::unique_lock<std::mutex> hold(start_gate);
+                ready += 1;
+                wake.notify_all();
+                wake.wait(hold, [&]() { return go; });
+            }
+            part[k] = sum_range(lo, hi);
+            std::lock_guard<std::mutex> hold(start_gate);
+            finished += 1;
+            wake.notify_all();
+        });
     }
-    for (auto &h : th) h.join();
+    {
+        std::unique_lock<std::mutex> hold(start_gate);
+        wake.wait(hold, [&]() { return ready == T; });
+    }
+    row("threads_init", std::chrono::duration<double>(clock_::now() - t).count(), 0.0);
+    t = clock_::now();
+    {
+        std::lock_guard<std::mutex> hold(start_gate);
+        go = true;
+    }
+    wake.notify_all();
+    {
+        std::unique_lock<std::mutex> hold(start_gate);
+        wake.wait(hold, [&]() { return finished == T; });
+    }
     s = 0.0;
     for (double v : part) s += v;
-    row("threads", std::chrono::duration<double>(clock_::now() - t).count(), s);
+    row("threads_work", std::chrono::duration<double>(clock_::now() - t).count(), s);
+    t = clock_::now();
+    for (auto &h : th) h.join();
+    row("threads_join", std::chrono::duration<double>(clock_::now() - t).count(), s);
 
     t = clock_::now();
     std::vector<std::future<double>> fut;

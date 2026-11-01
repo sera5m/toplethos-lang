@@ -1239,7 +1239,7 @@ def main(argv):
         return 0
     cmd = ["g++", "-o", args.o, asm_path]
     if needs_rt == "battery":
-        cmd = ["g++", "-O2", "-o", args.o, asm_path, str(Path(__file__).with_name("batteryrt.c"))]
+        cmd = ["g++", "-O2", "-pthread", "-o", args.o, asm_path, str(Path(__file__).with_name("batteryrt.c"))]
     elif needs_rt:
         cmd = ["g++", "-O2", "-o", args.o, asm_path, str(Path(__file__).with_name("wordrt.c"))]
     print(" ".join(cmd), file=sys.stderr)

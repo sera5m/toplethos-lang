@@ -1,6 +1,6 @@
 // Same battery as battery.cpp. No crates: rustc can build this one file.
 // rustc -C opt-level=3 -C llvm-args=-ffp-contract=off -o /tmp/battery_rs aot/battery.rs
-use std::sync::{Mutex, Arc};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Instant;
 
@@ -153,17 +153,56 @@ fn main() {
 
     let t = Instant::now();
     let chunk = N / T;
+    let gate = Arc::new((Mutex::new((0, 0, false)), Condvar::new()));
+    let parts = Arc::new(Mutex::new(vec![0.0; T as usize]));
     let mut handles = Vec::new();
     for k in 0..T {
         let lo = k * chunk;
         let hi = if k == T - 1 { N } else { lo + chunk };
-        handles.push(thread::spawn(move || sum_range(lo, hi)));
+        let gate = Arc::clone(&gate);
+        let parts = Arc::clone(&parts);
+        handles.push(thread::spawn(move || {
+            let (lock, cv) = &*gate;
+            {
+                let mut g = lock.lock().unwrap();
+                g.0 += 1;
+                cv.notify_all();
+                while !g.2 {
+                    g = cv.wait(g).unwrap();
+                }
+            }
+            let part = sum_range(lo, hi);
+            parts.lock().unwrap()[k as usize] = part;
+            let mut g = lock.lock().unwrap();
+            g.1 += 1;
+            cv.notify_all();
+        }));
     }
-    s = 0.0;
+    {
+        let (lock, cv) = &*gate;
+        let mut g = lock.lock().unwrap();
+        while g.0 < T {
+            g = cv.wait(g).unwrap();
+        }
+    }
+    row("threads_init", t, 0.0);
+    let t = Instant::now();
+    {
+        let (lock, cv) = &*gate;
+        let mut g = lock.lock().unwrap();
+        g.2 = true;
+        cv.notify_all();
+        while g.1 < T {
+            g = cv.wait(g).unwrap();
+        }
+    }
+    s = parts.lock().unwrap().iter().sum();
+    row("threads_work", t, s);
+    let t = Instant::now();
     for h in handles {
-        s += h.join().unwrap();
+        h.join().unwrap();
     }
-    row("threads", t, s);
+    row("threads_join", t, s);
 
     // Rust std has no async executor. These are the same four tasks as `threads`,
     // started the same way. C++ `async` is std::async. Do not read this row as tokio.
