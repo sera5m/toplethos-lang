@@ -127,6 +127,216 @@ class Front:
     def later(self, what):
         self.fail(f"'{what}' is in USE.md and is not implemented on either host")
 
+    def quoted(self):
+        self.skip()
+        if self.peek() != '"':
+            self.fail("expected a string")
+        self.get()
+        buf = []
+        while self.peek() not in ('"', ""):
+            buf.append(self.get())
+        if self.peek() != '"':
+            self.fail("unclosed string")
+        self.get()
+        return "".join(buf)
+
+    def skip_bracket_body(self):
+        depth = 1
+        while depth:
+            c = self.peek()
+            if not c:
+                self.fail("unclosed '['")
+            if c == "[":
+                depth += 1
+            elif c == "]":
+                depth -= 1
+            self.get()
+
+    def mark_arg(self, name):
+        if name == "divzero":
+            if self.eat("0"):
+                return "0"
+            if self.eat("max"):
+                return "max"
+            self.fail("@divzero with an argument other than 0 or max")
+        if name == "childof":
+            parent = self.ident()
+            if parent not in self.objects:
+                self.fail("a parent that is not an object")
+            return parent
+        if name == "ismutationof":
+            self.expect("getfuncidbyname")
+            self.expect("[")
+            text = self.quoted()
+            self.expect("]")
+            return text
+        e = self.expr(("bool",))
+        if e["ty"] != ("bool",):
+            self.fail(f"@{name} condition is not bool")
+        return e
+
+    def marks(self, where):
+        out = {}
+        needs = ("divzero", "ismutationof", "require", "ensure", "childof")
+        live = {
+            "public", "private", "protected", "mut", "val", "xor",
+            "ephemeral", "static", "config", "divzero", "ismutationof",
+            "require", "ensure", "childof",
+        }
+        while True:
+            self.skip()
+            if not self.eat("@"):
+                break
+            name = self.ident()
+            if name == "NoFailTolerance":
+                self.fail("@NoFailTolerance")
+            if name in ("ptr", "ref"):
+                self.fail(f"@{name} is not a mark")
+            arg = True
+            if self.eat("["):
+                if name not in needs:
+                    self.skip_bracket_body()
+                    self.later(f"@{name}")
+                arg = self.mark_arg(name)
+                self.expect("]")
+            elif name in needs:
+                self.fail(f"@{name} needs an argument")
+            if name in out:
+                self.fail(f"a second @{name}")
+            if name not in live:
+                self.later(f"@{name}")
+            if name == "childof" and where != "object":
+                self.fail("@childof is for an object")
+            if name in ("divzero", "ismutationof", "require", "ensure") and where != "fn":
+                self.fail(f"@{name} is for a function")
+            if name in ("val", "xor", "ephemeral", "static", "config") and where not in ("bind", "field"):
+                self.fail(f"@{name} is for a binding")
+            out[name] = arg
+        times = [t for t in ("ephemeral", "static", "config") if t in out]
+        if len(times) > 1:
+            self.fail("two time marks")
+        if "mut" in out and ("val" in out or "config" in out):
+            self.fail("@mut written on @val or @config")
+        return out
+
+    def paint(self, info, ms):
+        if "val" in ms or "config" in ms:
+            info["freeze"] = True
+        if "config" in ms:
+            info["time"] = "config"
+        elif "static" in ms:
+            info["time"] = "static"
+        elif "ephemeral" in ms:
+            info["time"] = "ephemeral"
+            info["ephemeral"] = True
+        if "xor" in ms:
+            info["xor"] = True
+        if "mut" in ms:
+            info["mut"] = True
+        if "private" in ms:
+            info["scope"] = "private"
+        elif "protected" in ms:
+            info["scope"] = "protected"
+        elif "public" in ms:
+            info["scope"] = "public"
+        return info
+
+    def find_method(self, objname, mname):
+        while objname:
+            obj = self.objects[objname]
+            if mname in obj["methods"]:
+                return objname, obj["methods"][mname]
+            objname = obj.get("parent")
+        return None, None
+
+    def link_mutations(self):
+        table = {}
+        for name, fn in self.fns.items():
+            table[name] = fn
+        for oname, obj in self.objects.items():
+            for mname, fn in obj["methods"].items():
+                table[f"{oname}.{mname}"] = fn
+        for key, fn in table.items():
+            target = fn.get("mutation_of")
+            if not target:
+                continue
+            if target not in table:
+                self.fail("@ismutationof a missing id")
+            seen = {key}
+            cur = target
+            while table[cur].get("mutation_of"):
+                if cur in seen:
+                    self.fail("a mutation cycle")
+                seen.add(cur)
+                nxt = table[cur]["mutation_of"]
+                if nxt not in table:
+                    self.fail("@ismutationof a missing id")
+                cur = nxt
+
+    def note_uses(self, e):
+        if not isinstance(e, dict):
+            return
+        if e.get("k") == "name":
+            info = self.ids[e["id"]]
+            if info.get("ephemeral"):
+                info["uses"] = info.get("uses", 0) + 1
+                if info["uses"] > 1:
+                    self.fail("a second use of @ephemeral")
+        for key in ("a", "b", "i"):
+            if isinstance(e.get(key), dict):
+                self.note_uses(e[key])
+        for arg in e.get("args") or []:
+            self.note_uses(arg)
+
+    def note_store(self, info, depth):
+        if not info or not info.get("freeze"):
+            return
+        if depth or info.get("stores"):
+            self.fail("a later store to @val or @config")
+        info["stores"] = 1
+
+    def store_info(self, expr):
+        while expr.get("k") in ("field", "index", "deref"):
+            expr = expr["a"]
+        if expr.get("k") == "name":
+            return self.ids[expr["id"]]
+        return None
+
+    def audit(self, fn):
+        def walk(body, depth):
+            for st in body:
+                op = st[0]
+                if op == "decl" and st[3] is not None:
+                    self.note_store(self.ids[st[1]], depth)
+                    self.note_uses(st[3])
+                elif op == "store":
+                    info = self.store_info(st[1])
+                    self.note_store(info, depth)
+                    if st[1].get("k") == "name" and self.ids[st[1]["id"]].get("ephemeral"):
+                        self.ids[st[1]["id"]]["uses"] = self.ids[st[1]["id"]].get("uses", 0) + 1
+                        if self.ids[st[1]["id"]]["uses"] > 1:
+                            self.fail("a second use of @ephemeral")
+                    self.note_uses(st[2])
+                elif op == "expr":
+                    self.note_uses(st[1])
+                elif op == "return" and st[1] is not None:
+                    self.note_uses(st[1])
+                elif op == "if":
+                    self.note_uses(st[1])
+                    walk(st[2], depth)
+                    walk(st[3], depth)
+                elif op == "loop":
+                    walk(st[1], depth + 1)
+                elif op == "do":
+                    self.note_uses(st[1])
+                    walk(st[3], depth + 1)
+                    walk(st[4], depth)
+        walk(fn["body"], 0)
+        if isinstance(fn.get("require"), dict):
+            self.note_uses(fn["require"])
+        if isinstance(fn.get("ensure"), dict):
+            self.note_uses(fn["ensure"])
+
     def at_word(self, words):
         self.skip()
         return any(self.starts(w) for w in words)
@@ -147,6 +357,7 @@ class Front:
                 w = self.ident()
                 self.later(w)
             self.fail("expected fn or object")
+        self.link_mutations()
         if "main" not in self.fns:
             raise CompileError("a program with no main")
         fn = self.fns["main"]
@@ -172,8 +383,7 @@ class Front:
     def function(self, method_of):
         line = self.line
         name = self.ident()
-        if self.eat("@"):
-            self.later("attribute on fn")
+        early = self.marks("fn")
         self.expect("in")
         self.expect("[")
         params = []
@@ -202,8 +412,12 @@ class Front:
         else:
             out = self.type_name()
             self.expect("]")
-        if self.eat("@"):
-            self.later("attribute on fn")
+        late = self.marks("fn")
+        for key in early:
+            if key in late:
+                self.fail(f"a second @{key}")
+        ms = dict(early)
+        ms.update(late)
         if name in self.fns or name in self.objects:
             self.fail(f"a second member with the short name {name}")
         prev = self.cur_fn
@@ -221,8 +435,16 @@ class Front:
             "line": line,
             "method": method_of,
             "here": hid if method_of else None,
+            "divzero": ms.get("divzero"),
+            "mutation_of": ms.get("ismutationof"),
+            "require": ms["require"] if isinstance(ms.get("require"), dict) else None,
+            "ensure": ms["ensure"] if isinstance(ms.get("ensure"), dict) else None,
+            "scope": "private" if "private" in ms else "protected" if "protected" in ms else "public",
         }
+        if ms.get("divzero") is True:
+            self.fail("@divzero with an argument other than 0 or max")
         self.cur_fn = prev
+        self.audit(fn)
         self.returned_all(fn)
         if method_of:
             return fn
@@ -247,14 +469,32 @@ class Front:
 
     def object(self):
         name = self.ident()
-        if self.eat("@"):
-            self.later("attribute on object")
+        ms = self.marks("object")
+        parent = ms.get("childof")
+        if parent:
+            seen = set()
+            cur = parent
+            while cur:
+                if cur == name or cur in seen:
+                    self.fail("a cycle")
+                seen.add(cur)
+                cur = self.objects[cur].get("parent")
         if name in self.objects or name in self.fns:
             self.fail(f"a second member with the short name {name}")
         self.expect("{")
         mark = (self.i, self.line, self.col)
         fields = []
-        self.objects[name] = {"fields": fields, "methods": {}}
+        owners = {}
+        fmarks = {}
+        if parent:
+            p = self.objects[parent]
+            fields = list(p["fields"])
+            owners = dict(p.get("field_owner", {}))
+            fmarks = dict(p.get("field_marks", {}))
+        self.objects[name] = {
+            "fields": fields, "methods": {}, "parent": parent,
+            "field_owner": owners, "field_marks": fmarks,
+        }
         depth = 1
         while depth:
             self.skip()
@@ -275,10 +515,18 @@ class Front:
             if depth == 1:
                 ty = self.type_name()
                 fname = self.ident()
+                fm = self.marks("field")
+                for t in ("ephemeral", "static", "config"):
+                    if t in fm:
+                        self.fail("a field cannot carry @ephemeral, @static, or @config")
                 self.expect(";")
                 if any(f[0] == fname for f in fields):
+                    if parent and any(f[0] == fname for f in self.objects[parent]["fields"]):
+                        self.fail("a child must not declare a field name the parent already has")
                     self.fail(f"a second member with the short name {fname}")
                 fields.append((fname, ty))
+                owners[fname] = name
+                fmarks[fname] = fm
                 continue
             self.get()
         self.i, self.line, self.col = mark
@@ -293,10 +541,14 @@ class Front:
                 fn = self.function(name)
                 if fn["name"] in methods or any(f[0] == fn["name"] for f in fields):
                     self.fail(f"a second member with the short name {fn['name']}")
+                owner, _ = self.find_method(parent, fn["name"])
+                if owner and fn.get("mutation_of") != f"{owner}.{fn['name']}":
+                    self.fail("a child method reusing a short name without @ismutationof of that parent method")
                 methods[fn["name"]] = fn
                 continue
             self.type_name()
             self.ident()
+            self.marks("field")
             self.expect(";")
         self.objects[name]["methods"] = methods
 
@@ -331,8 +583,7 @@ class Front:
         if self.eat("if"):
             return self.if_stmt(line)
         if self.eat("loop"):
-            if self.eat("@"):
-                self.later("attribute on loop")
+            self.marks("loop")
             self.loop += 1
             body = self.block()
             self.loop -= 1
@@ -394,6 +645,7 @@ class Front:
         if count["k"] == "int" and count["n"] < 0:
             self.fail("do n[k] when k is a constant and k < 0")
         self.expect("]")
+        self.marks("loop")
         self.loop += 1
         self.do_depth += 1
         self.expect("{")
@@ -422,6 +674,7 @@ class Front:
         name = self.ident()
         if self.eat("["):
             return self.array_decl(ty, name, line)
+        ms = self.marks("bind")
         if self.do_depth and name == "i":
             self.fail("writing i in a do")
         if self.eat("@"):
@@ -433,7 +686,9 @@ class Front:
                 self.fail(f"cannot store {self.show(expr['ty'])} in {self.show(ty)}")
         self.expect(";")
         iid = self.fresh(name)
-        self.bind(name, {"id": iid, "ty": ty, "ro": False, "name": name})
+        info = {"id": iid, "ty": ty, "ro": False, "name": name}
+        self.paint(info, ms)
+        self.bind(name, info)
         return ("decl", iid, ty, expr, line)
 
     def array_decl(self, ty, name, line):
@@ -627,6 +882,8 @@ class Front:
             e = self.unary(None)
             if e["k"] not in ("name", "field", "index", "deref"):
                 self.fail("& of a value that is not a cell")
+            if e["k"] == "name" and self.ids[e["id"]].get("xor"):
+                self.fail("a pointer to an @xor cell")
             return {"k": "addr", "a": e, "ty": ("ptr", e["ty"])}
         return self.primary(expect)
 
@@ -708,10 +965,12 @@ class Front:
                 obj = self.objects[node["ty"][1]]
                 self.skip()
                 if self.eat("in"):
-                    if field not in obj["methods"]:
+                    owner, fn = self.find_method(node["ty"][1], field)
+                    if fn is None:
                         self.fail(f"no method {field}")
+                    if fn.get("scope") == "private" and owner != node["ty"][1]:
+                        self.fail("a subclass calling a private method")
                     args = self.arglist()
-                    fn = obj["methods"][field]
                     if len(args) != len(fn["params"]):
                         self.fail(f"{field} argument count")
                     fitted = []
@@ -720,12 +979,15 @@ class Front:
                         if arg["ty"] != param["ty"]:
                             self.fail(f"{field} argument type")
                         fitted.append(arg)
-                    node = {"k": "method", "a": node, "name": field, "obj": node["ty"][1], "args": fitted, "ty": fn["out"]}
+                    node = {"k": "method", "a": node, "name": field, "obj": owner, "args": fitted, "ty": fn["out"]}
                     continue
                 names = [f[0] for f in obj["fields"]]
                 if field not in names:
                     self.fail(f"no field {field}")
                 fty = obj["fields"][names.index(field)][1]
+                owner = obj.get("field_owner", {}).get(field, node["ty"][1])
+                if obj.get("field_marks", {}).get(field, {}).get("private") and owner != node["ty"][1]:
+                    self.fail("a subclass naming a private field")
                 node = {"k": "field", "a": node, "field": field, "ty": fty}
                 continue
             return node

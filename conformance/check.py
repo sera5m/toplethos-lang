@@ -83,6 +83,80 @@ fn main in[] out[i32] {
   return 0;
 }
 """),
+    ("divzero", "0\n", """
+fn z in[i32 a] out[i32] @divzero[0] { return a / 0; }
+fn main in[] out[i32] {
+  print in[z in[5]];
+  return 0;
+}
+"""),
+    ("divzero max", "2147483647\n", """
+fn z in[i32 a] out[i32] @divzero[max] { return a / 0; }
+fn main in[] out[i32] {
+  print in[z in[5]];
+  return 0;
+}
+"""),
+    ("static", "1\n2\n", """
+fn tick in[] out[i32] {
+  i32 n @static = 0;
+  n = n + 1;
+  return n;
+}
+fn main in[] out[i32] {
+  print in[tick in[]];
+  print in[tick in[]];
+  return 0;
+}
+"""),
+    ("config", "7\n7\n", """
+fn tick in[] out[i32] {
+  i32 n @config = 7;
+  return n;
+}
+fn main in[] out[i32] {
+  print in[tick in[]];
+  print in[tick in[]];
+  return 0;
+}
+"""),
+    ("xor", "5\n", """
+fn main in[] out[i32] {
+  i32 a @xor = 5;
+  i32 b @xor = a;
+  print in[b];
+  return 0;
+}
+"""),
+    ("child", "4\n0\n", """
+object Point {
+  i32 x;
+  fn move in[i32 dx] out[] { HERE.x = HERE.x + dx; }
+}
+object Colored @childof[Point] {
+  i32 rgb;
+  fn move in[i32 dx] out[] @ismutationof[getfuncidbyname["Point.move"]] {
+    HERE.x = HERE.x + dx;
+    HERE.rgb = 0;
+  }
+}
+fn main in[] out[i32] {
+  Colored c;
+  c.x = 1;
+  c.rgb = 2;
+  c.move in[3];
+  print in[c.x];
+  print in[c.rgb];
+  return 0;
+}
+"""),
+    ("require", "3\n", """
+fn f in[i32 a] out[i32] @require[a > 0] { return a; }
+fn main in[] out[i32] {
+  print in[f in[3]];
+  return 0;
+}
+"""),
 ]
 
 BAD = [
@@ -118,6 +192,51 @@ fn main in[] out[i32] {
     ("namespace", "not implemented on either host", """
 namespace Draw { }
 fn main in[] out[i32] { return 0; }
+"""),
+    ("val", "a later store", """
+fn main in[] out[i32] {
+  i32 y @val = 1;
+  y = 2;
+  return y;
+}
+"""),
+    ("mut val", "@mut written on @val", """
+fn main in[] out[i32] {
+  i32 y @mut @val = 1;
+  return y;
+}
+"""),
+    ("ephemeral", "a second use of @ephemeral", """
+fn main in[] out[i32] {
+  i32 p @ephemeral = 4;
+  print in[p];
+  print in[p];
+  return 0;
+}
+"""),
+    ("nofail", "@NoFailTolerance", """
+fn main in[] out[i32] @NoFailTolerance { return 0; }
+"""),
+    ("gpu", "@gpuparallel", """
+fn main in[] out[i32] @gpuparallel { return 0; }
+"""),
+    ("reuse", "without @ismutationof", """
+object Point {
+  i32 x;
+  fn move in[i32 dx] out[] { HERE.x = HERE.x + dx; }
+}
+object Colored @childof[Point] {
+  i32 rgb;
+  fn move in[i32 dx] out[] { HERE.rgb = 0; }
+}
+fn main in[] out[i32] { return 0; }
+"""),
+    ("require fail", "require", """
+fn f in[i32 a] out[i32] @require[a > 0] { return a; }
+fn main in[] out[i32] {
+  print in[f in[0]];
+  return 0;
+}
 """),
 ]
 

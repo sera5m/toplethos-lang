@@ -24,6 +24,8 @@ class Interp:
         self.out = []
         self.frames = []
         self.returned = False
+        self.statics = {}
+        self.fn_stack = []
 
     def run(self):
         self.call(self.prog["fns"]["main"], [])
@@ -43,11 +45,38 @@ class Interp:
             frame[fn["here"]] = box
         self.frames.append(frame)
         saved = self.returned
+        self.fn_stack.append(fn)
         try:
+            if fn.get("require") is not None and not self.eval(fn["require"]):
+                raise Failure("require")
             return self.stmts(fn["body"])
         finally:
+            self.fn_stack.pop()
             self.returned = saved
             self.frames.pop()
+
+    def div_standin(self, row):
+        mode = self.fn_stack[-1].get("divzero") if self.fn_stack else None
+        if mode == "0":
+            return 0.0 if row == ("f64",) else 0
+        if mode == "max":
+            if row == ("f64",):
+                return 1.7976931348623157e308
+            if row == ("i32",):
+                return 2147483647
+            return 9223372036854775807
+        return None
+
+    def xor_clear(self, dest, rhs):
+        if dest.get("k") != "name" or rhs.get("k") != "name":
+            return
+        d = self.prog["ids"].get(dest["id"], {})
+        s = self.prog["ids"].get(rhs["id"], {})
+        if not (d.get("xor") and s.get("xor")) or dest["id"] == rhs["id"]:
+            return
+        slot = self.cell_of(rhs)
+        slot["present"] = False
+        slot["v"] = 0
 
     def block(self, body):
         self.returned = False
@@ -66,6 +95,9 @@ class Interp:
         for st in body:
             op = st[0]
             if op == "return":
+                if self.fn_stack and self.fn_stack[-1].get("ensure") is not None:
+                    if not self.eval(self.fn_stack[-1]["ensure"]):
+                        raise Failure("ensure")
                 self.returned = True
                 if st[1] is None:
                     return None
@@ -76,6 +108,20 @@ class Interp:
                 raise _Continue()
             if op == "decl":
                 _, iid, ty, expr, _ = st
+                info = self.prog["ids"].get(iid, {})
+                if info.get("time") in ("static", "config"):
+                    if iid not in self.statics:
+                        slot = cell(ty)
+                        if ty[0] == "obj":
+                            slot["present"] = True
+                            slot["v"] = self.fresh_obj(ty[1])
+                        elif expr is not None:
+                            slot["v"] = self.eval(expr)
+                            slot["present"] = True
+                            self.xor_clear({"k": "name", "id": iid}, expr)
+                        self.statics[iid] = slot
+                    self.frames[-1][iid] = self.statics[iid]
+                    continue
                 slot = cell(ty)
                 if ty[0] == "obj":
                     slot["present"] = True
@@ -83,6 +129,7 @@ class Interp:
                 elif expr is not None:
                     slot["v"] = self.eval(expr)
                     slot["present"] = True
+                    self.xor_clear({"k": "name", "id": iid}, expr)
                 self.frames[-1][iid] = slot
                 continue
             if op == "adecl":
@@ -104,6 +151,7 @@ class Interp:
                 slot = self.cell_of(st[1])
                 slot["v"] = self.eval(st[2])
                 slot["present"] = True
+                self.xor_clear(st[1], st[2])
                 continue
             if op == "expr":
                 self.eval(st[1])
@@ -211,7 +259,11 @@ class Interp:
             slot = self.cell_of(e)
             if not slot["present"]:
                 raise Failure("absent")
-            return slot["v"]
+            v = slot["v"]
+            if self.prog["ids"].get(e["id"], {}).get("ephemeral"):
+                slot["present"] = False
+                slot["v"] = 0
+            return v
         if k == "field":
             slot = self.cell_of(e)
             if not slot["present"]:
@@ -275,7 +327,10 @@ class Interp:
             return {"==": a == b, "!=": a != b, "<": a < b, ">": a > b, "<=": a <= b, ">=": a >= b}[op]
         if row == ("f64",):
             if op == "/" and b == 0.0:
-                raise Failure("division by zero")
+                stood = self.div_standin(row)
+                if stood is None:
+                    raise Failure("division by zero")
+                return stood
             if op == "+":
                 return a + b
             if op == "-":
@@ -286,7 +341,10 @@ class Interp:
         bits = 32 if row == ("i32",) else 64
         if op == "/":
             if b == 0:
-                raise Failure("division by zero")
+                stood = self.div_standin(row)
+                if stood is None:
+                    raise Failure("division by zero")
+                return stood
             if a == (MIN32 if bits == 32 else MIN64) and b == -1:
                 raise Failure("division overflow")
             sign = -1 if (a < 0) ^ (b < 0) else 1

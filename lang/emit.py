@@ -13,6 +13,9 @@ class Emit:
         self.slot = {}
         self.loops = []
         self.fails = []
+        self.static_ids = []
+        self.static_size = {}
+        self.cur = None
 
     def w(self, s):
         self.o.append(s)
@@ -55,9 +58,15 @@ class Emit:
             nonlocal cursor
             if iid in self.slot or iid == fn.get("here"):
                 return
+            info = self.prog["ids"].get(iid, {})
+            self.kind[iid] = ty
+            if info.get("time") in ("static", "config"):
+                if iid not in self.static_ids:
+                    self.static_ids.append(iid)
+                    self.static_size[iid] = self.cell_size(ty)
+                return
             cursor += self.cell_size(ty)
             self.slot[iid] = -cursor
-            self.kind[iid] = ty
 
         for p in fn["params"]:
             add(p["id"], p["ty"])
@@ -80,6 +89,9 @@ class Emit:
                 add(st[2], ("i32",))
                 self.walk_decls(st[3], add)
                 self.walk_decls(st[4], add)
+
+    def sym(self, iid):
+        return "st_" + iid.replace("#", "_")
 
     def prologue(self, fn, public):
         self.w(f"    .globl {public}")
@@ -106,6 +118,16 @@ class Emit:
                 self.w(f"    mov {ints[ni]}, {off}(%rbp)")
                 ni += 1
             self.w(f"    movb $1, {off + 8}(%rbp)")
+        if fn.get("require"):
+            self.guard(fn["require"], "require")
+
+    def guard(self, expr, msg):
+        ok = self.lab()
+        self.gen(expr)
+        self.w("    test %eax, %eax")
+        self.w(f"    jnz {ok}")
+        self.fail(msg)
+        self.w(f"{ok}:")
 
     def epilogue(self, name):
         self.w(f".Lret_{name}:")
@@ -173,6 +195,11 @@ class Emit:
             self.w("    mov (%rax), %rax")
         else:
             self.w("    mov (%rax), %eax")
+        info = self.prog["ids"].get(e.get("id"), {}) if e["k"] == "name" else {}
+        if info.get("ephemeral"):
+            self.w("    mov (%rsp), %rcx")
+            self.w("    movq $0, (%rcx)")
+            self.w("    movb $0, 8(%rcx)")
         self.w("    add $16, %rsp")
 
     def addr(self, e):
@@ -181,6 +208,9 @@ class Emit:
             info = self.prog["ids"][e["id"]]
             if info["name"] == "HERE":
                 self.w("    mov %rbx, %rax")
+                return
+            if info.get("time") in ("static", "config"):
+                self.w(f"    lea {self.sym(e['id'])}(%rip), %rax")
                 return
             off = self.slot[e["id"]]
             self.w(f"    lea {off}(%rbp), %rax")
@@ -228,6 +258,18 @@ class Emit:
             self.w("    mov %rcx, (%rax)")
         self.w("    movb $1, 8(%rax)")
         self.w("    add $16, %rsp")
+        self.xor_move(dest, rhs)
+
+    def xor_move(self, dest, rhs):
+        if dest.get("k") != "name" or rhs.get("k") != "name":
+            return
+        d = self.prog["ids"].get(dest["id"], {})
+        s = self.prog["ids"].get(rhs["id"], {})
+        if not (d.get("xor") and s.get("xor")) or dest["id"] == rhs["id"]:
+            return
+        self.addr(rhs)
+        self.w("    movq $0, (%rax)")
+        self.w("    movb $0, 8(%rax)")
 
     def unary(self, e):
         if e["op"] == "!":
@@ -301,11 +343,24 @@ class Emit:
                 self.fcmp(op)
                 return
             if op == "/":
+                zero = self.lab()
+                done = self.lab()
                 self.w("    xorpd %xmm2, %xmm2")
                 self.w("    ucomisd %xmm2, %xmm0")
-                self.w("    jne 1f")
-                self.fail("division by zero")
-                self.w("1:")
+                self.w(f"    jne {zero}")
+                mode = self.cur.get("divzero")
+                if mode == "0":
+                    self.w("    xorpd %xmm0, %xmm0")
+                elif mode == "max":
+                    self.w(f"    movsd {self.dub(1.7976931348623157e+308)}(%rip), %xmm0")
+                else:
+                    self.fail("division by zero")
+                self.w(f"    jmp {done}")
+                self.w(f"{zero}:")
+                self.w("    divsd %xmm0, %xmm1")
+                self.w("    movapd %xmm1, %xmm0")
+                self.w(f"{done}:")
+                return
             asm = {"+": "addsd", "-": "subsd", "*": "mulsd", "/": "divsd"}[op]
             self.w(f"    {asm} %xmm0, %xmm1")
             self.w("    movapd %xmm1, %xmm0")
@@ -344,11 +399,24 @@ class Emit:
         self.w(f"{end}:")
 
     def idiv(self, bits):
-        if bits == 32:
-            self.w("    test %ecx, %ecx")
-            self.w("    jne 1f")
+        reg = "%ecx" if bits == 32 else "%rcx"
+        zero = self.lab()
+        done = self.lab()
+        self.w(f"    test {reg}, {reg}")
+        self.w(f"    jne {zero}")
+        mode = self.cur.get("divzero")
+        if mode == "0":
+            self.w("    xor %eax, %eax")
+        elif mode == "max":
+            if bits == 32:
+                self.w("    mov $2147483647, %eax")
+            else:
+                self.w("    movabs $9223372036854775807, %rax")
+        else:
             self.fail("division by zero")
-            self.w("1:")
+        self.w(f"    jmp {done}")
+        self.w(f"{zero}:")
+        if bits == 32:
             self.w("    cmp $-1, %ecx")
             self.w("    jne 2f")
             self.w("    cmp $0x80000000, %eax")
@@ -358,12 +426,9 @@ class Emit:
             self.w("    cdq")
             self.w("    idiv %ecx")
         else:
-            self.w("    test %rcx, %rcx")
-            self.w("    jne 1f")
-            self.fail("division by zero")
-            self.w("1:")
             self.w("    cqto")
             self.w("    idiv %rcx")
+        self.w(f"{done}:")
 
     def call(self, e):
         if e["name"] == "print":
@@ -447,7 +512,16 @@ class Emit:
             op = st[0]
             if op == "decl":
                 if st[3] is not None:
-                    self.store({"k": "name", "id": st[1], "ty": st[2]}, st[3])
+                    info = self.prog["ids"].get(st[1], {})
+                    if info.get("time") in ("static", "config"):
+                        skip = self.lab()
+                        self.w(f"    lea {self.sym(st[1])}(%rip), %rax")
+                        self.w("    cmpb $0, 8(%rax)")
+                        self.w(f"    jne {skip}")
+                        self.store({"k": "name", "id": st[1], "ty": st[2]}, st[3])
+                        self.w(f"{skip}:")
+                    else:
+                        self.store({"k": "name", "id": st[1], "ty": st[2]}, st[3])
             elif op == "adecl":
                 base = self.slot[st[1]]
                 items = st[3]
@@ -464,6 +538,8 @@ class Emit:
             elif op == "expr":
                 self.gen(st[1])
             elif op == "return":
+                if self.cur.get("ensure"):
+                    self.guard(self.cur["ensure"], "ensure")
                 if st[1] is not None:
                     self.gen(st[1])
                 self.w("    jmp .Lret_PLACE")
@@ -527,6 +603,7 @@ class Emit:
 
     def emit_fn(self, fn, public):
         self.o = []
+        self.cur = fn
         self.layout(fn)
         self.prologue(fn, public)
         self.stmts(fn["body"])
@@ -577,12 +654,17 @@ class Emit:
             tail.append("    call fputs@PLT")
             tail.append("    mov $1, %edi")
             tail.append("    call exit@PLT")
+        bss = ["    .bss"]
+        for iid in self.static_ids:
+            bss.append("    .align 16")
+            bss.append(f"{self.sym(iid)}: .zero {self.static_size[iid]}")
         return "\n".join(
             ["# pipeline: USE.md core, one front end, amd64"]
             + ro
             + ["    .text"]
             + parts
             + tail
+            + (bss if self.static_ids else [])
             + ['    .section .note.GNU-stack,"",@progbits', ""]
         )
 
