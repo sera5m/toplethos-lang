@@ -1178,6 +1178,10 @@ class MemAsm:
 
 
 def compile_source(src):
+    head = "\n" + src
+    if "\nfn " in head or "\nobject " in head or "\nf64 " in head:
+        import feat
+        return feat.compile_feat(src)
     prog = Parser(src).program()
     folded = fold_stmts(prog)
     contracted = contract_inc_loops(folded)
@@ -1219,7 +1223,10 @@ def main(argv):
         print(f"tpc: {args.source}: {e}", file=sys.stderr)
         return 1
     if args.dump:
-        print("\n".join(show(ir)), file=sys.stderr)
+        if isinstance(ir, list) and ir and isinstance(ir[0], str):
+            print("\n".join(ir), file=sys.stderr)
+        else:
+            print("\n".join(show(ir)), file=sys.stderr)
     asm_path = args.o + ".s"
     try:
         with open(asm_path, "w", encoding="utf-8") as f:
@@ -1231,7 +1238,9 @@ def main(argv):
         print(asm_path)
         return 0
     cmd = ["g++", "-o", args.o, asm_path]
-    if needs_rt:
+    if needs_rt == "battery":
+        cmd = ["g++", "-O2", "-o", args.o, asm_path, str(Path(__file__).with_name("batteryrt.c"))]
+    elif needs_rt:
         cmd = ["g++", "-O2", "-o", args.o, asm_path, str(Path(__file__).with_name("wordrt.c"))]
     print(" ".join(cmd), file=sys.stderr)
     g = subprocess.run(cmd, text=True, capture_output=True)
