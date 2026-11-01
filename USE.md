@@ -99,8 +99,8 @@ Geometry is not a type. On a function it chooses the device. On a large cell it 
 | `@parallel[n]` | n CPU threads. Not a GPU launch. |
 | `@gpuparallel` | GPU. The geometry is the device's. No thread count. |
 | `@npuparallel` | NPU. The same crossing rule as the GPU. |
-| `@paged` | Only the locked sector is present. |
-| `@memory_hard` | A file. The location is fixed at program start. |
+| `@paged` | Only the locked sector is present. A read or a store while it is unlocked is a failure. |
+| `@memory_hard` | A file. The location is fixed at program start. The file is created before `main`. If it cannot be created, the host halts. A later read or write that fails is a failure. Multi-byte integers in the file are little-endian. |
 
 The scheduler does not pick a device. You write the mark. A call through an instance uses the instance's geometry when a transform has set one, and the definition's geometry otherwise.
 
@@ -133,12 +133,11 @@ Colored c;
 c.x = 1;
 c.rgb = 2;
 Point* parent = as[Point, &c];
-Colored* back = as[Colored, parent];
 ```
 
 The parent is a prefix at offset 0. The child's own fields follow it. `c.x` names the parent's field. The parent is written the way you name that object, so another namespace is `@childof[Draw::Point]`. A second `@childof`, a cycle, or a parent that is not an object is a compile error. A child must not declare a field name the parent already has.
 
-`as[Parent, &child]` is a pointer to that prefix. It is the only upcast. `as[Child, parentPtr]` is the downcast. It is legal only when `Child` is that parent or a descendant, and it is not checked at run time, because there is no vptr. `as` of a value copies the parent prefix and nothing else. A downcast of a value is a compile error: the child fields are not there. Passing a `Colored` where a `Point` is required does not convert. A function that takes `Point*` does not accept `Colored*` until the caller writes `as`.
+`as[Parent, &child]` is a pointer to that prefix. It is the only upcast. A downcast is a compile error, of a value or of a pointer. There is no vptr, so the compiler cannot check one later, and an unchecked downcast would be undefined. Keep the child pointer if you still need the child. `as` of a value copies the parent prefix and nothing else. Passing a `Colored` where a `Point` is required does not convert. A function that takes `Point*` does not accept `Colored*` until the caller writes `as`.
 
 There is still composition. An embedded field is not a parent.
 
@@ -388,7 +387,7 @@ hold[buf] @exclusive { }
 | mode | who may be inside |
 |---|---|
 | `@read` | Many readers. No writer. |
-| `@write` | One writer. Readers may be inside. |
+| `@write` | One writer. No reader. |
 | `@exclusive` | One holder. Nobody else. |
 
 `hold` acquires on entry and releases on every exit, including failure. A store without a write or exclusive hold is a compile error. A read without a hold is a compile error.
@@ -418,7 +417,7 @@ push[link, item];
 pop[link];
 ```
 
-`push` is a failure when the pipe is full or the item is dropped. A filter on a pipe may only find, swap, replace, or remove bytes. It may not call a function. No filter means the bytes are copied unchanged. Unit conversion stays at `formatconvert`, not inside the pipe.
+`push` is a failure when the pipe is full or the item is dropped. `pop` of an empty pipe is absent. `flush` on a pipe that is not `@device` is a compile error. A `@device` flush appends a CRC-32/ISO-HDLC of the batch: polynomial `0x04C11DB7`, initial value `0xFFFFFFFF`, final xor `0xFFFFFFFF`. A filter on a pipe may only find, swap, replace, or remove bytes. It may not call a function. No filter means the bytes are copied unchanged. Unit conversion stays at `formatconvert`, not inside the pipe.
 
 ## Link table
 
@@ -512,13 +511,13 @@ typeprimitive { ptr_to_elem, size, kind }
 | two `string` values | Append the bytes of the right to the left. | `string` |
 | anything else | No row, until you add one. | Compile error. |
 
-`-`, `*`, and `/` are `submagnitude`, `mulmagnitude`, and `divmagnitude`. They use the same row rules, except `uf` subtraction has no built-in row: a negative result does not fit. `/` by zero is a failure.
+`-`, `*`, and `/` are `submagnitude`, `mulmagnitude`, and `divmagnitude`. They use the same row rules, except `uf` subtraction has no built-in row: a negative result does not fit. Integer `/` truncates toward zero. `/` by zero is a failure. Dividing the lowest signed value by `-1` is a failure. Unary `-` of that same value is a failure. Integer `+` and `-` wrap. That wrap is the result, and an optimizer may not delete it.
 
 A product of small factors resolves to a wider atom. `i4`, `ui4`, `i8`, and `ui8` multiply to `i32`. `f8e4m3`, `f8e5m2`, `uf8e4m3`, `uf8e5m2`, `f16`, and `bf16` multiply to `f32`. The `+` of two equal atoms stays that atom. `onfail` runs.
 
 `@divzero[0]` on a function makes a zero divisor return `0` of the result type instead. `@divzero[max]` returns the largest finite positive value of that atom. A negative dividend does not flip it. This is risky: the failure does not happen, so `onfail` does not run, and a zero divisor looks like a normal result. The mark is off unless you write it. It does not apply to any other failure.
 
-`==`, `!=`, `<`, `>`, `<=`, and `>=` result in `bool`. They accept two of the same atom, or an integer and a float under the same conversion as `+`. Pointer `==` and `!=` compare the address. An ordered compare of pointers is a compile error. `bool` and `string` have no arithmetic row.
+`==`, `!=`, `<`, `>`, `<=`, and `>=` result in `bool`. They accept two of the same atom, or an integer and a float under the same conversion as `+`. Pointer `==` and `!=` compare the address. An ordered compare of pointers is a compile error. `bool` and `string` have no arithmetic row. Float operations are IEEE 754, round-to-nearest, ties to even. A compare with `NaN` is false, except `!=`, which is true. The host may not flush subnormals or turn a failure into `NaN`.
 
 A new row is compile time. Its types are definite atoms. The body may call a row that already exists. It may not call the functor and hit itself.
 
@@ -633,7 +632,7 @@ The right-hand value is resolved into the left-hand cell's kind, then stored. Tw
 | no `@comptime` and no `@compeval` | The function runs when called. |
 | no `@structuredConcurrency` | A failed sibling keeps going. The run may outlive the caller. |
 | `@topology[fanin]` or `[barrier]` | Wait for every participant. A failure does not cancel that wait. |
-| `@topology[race]` or `select` | The first present result. The other arms of that race are cancelled. |
+| `@topology[race]` or `select` | The first present result. If two are present in the same step, the one written first wins. The other arms of that race are cancelled. |
 | no `@stream` | The function runs to one result. |
 | `@stream` with no n | A queue of one. The producer waits when it is full. |
 | a missing `else` or match arm | No-op, unless `@total` or the project switch `total` is on. |
@@ -657,7 +656,15 @@ hold[tape] {
 }
 ```
 
-`hold` on a `@mutex` cell is `lock` plus `unlock` on every exit. A store outside the pair is a compile error. Every path that locks must unlock.
+`hold` on a `@mutex` cell is `lock` plus `unlock` on every exit. A read or a store outside the pair is a compile error. Every path that locks must unlock.
+
+A cell that no run stores may be read by any number of runs. A cell that a run stores may be read or stored by another run only if it is `@mutex`, `@xor`, or `@accum`. Otherwise that second run is a compile error. `@accum` allows only an atomic add. Any other store to it is a compile error. In one run, stores happen in source order and the last store wins.
+
+Arguments of a call are evaluated left to right, then the call runs. `a = b = c` evaluates `c`, stores it in `b`, then stores that value in `a`. A `@static` local is initialized once. Concurrent first calls wait for that one initialization.
+
+An object or an array with no initializer is absent: the atom, every element, and every field. A read of it is a failure. `= {}` stores zero in every atom and leaves every pointer absent. A short array brace zero-fills the tail. A short object brace does not. An omitted field stays absent.
+
+A namespace initializer may not call a function. It may be a constant or an earlier namespace variable. A pointer may not be stored into a cell that outlives its target. `as` does not turn a pointer to one atom into a pointer to another. A call past the host's call-stack limit is a failure, not a crash. `do n[k]` with `k < 0` is a failure, and a constant `k < 0` is a compile error. `k = 0` runs the body zero times. A `window` that does not fit in its array is a failure. `if` and `&&` require `bool`. `match` is a statement. Using it as a value is a compile error.
 
 | how you leave | order |
 |---|---|
@@ -694,7 +701,7 @@ A failure has no payload. `STOP[THIS]` ends it. It does not produce a value, and
 | `out[ ]` | The designated result. `out[]` means none. `out[i32]` means an `i32`. `out[here]` uses the input function's `out` type. |
 | `return` | Yields the designated result and leaves. `return` with a value in `out[]` is a compile error. |
 | `HERE` | The running function's own context. |
-| `THIS` | The value in hand. Not a context. |
+| `THIS` | The failure in `onfail`, or the instance in `transform`. Not a value, and not a context. |
 | `context` | Published cells of another function. |
 | `links` | The two-way pointer record for one pair of function ids. |
 | `instance` | Makes a cell from a definition. Frozen unless the cell says `@mut`. |
@@ -758,9 +765,13 @@ A failure has no payload. `STOP[THIS]` ends it. It does not produce a value, and
 
 `@name` is allowed on `loop` and `do`. `@total` on a `match` makes a missing arm a compile error.
 
-If a wait has already lasted 15 minutes, a coroutine stack may leave live memory. The host picks disk or other memory.
+If a wait has already lasted 15 minutes, the host moves that coroutine stack to disk or to other memory. The program cannot tell which. If the move fails, the coroutine stays paused and the wait is a failure.
 
 An unknown `@` is a compile error. `@` sits after a function, after a binding, or after `loop` and `do` when the mark is `@name`.
+
+## Nothing is undefined
+
+A program that compiles has one meaning. A violation is a compile error or a failure. It is not undefined, and it is not left to the host. Two hosts that accept the same program produce the same result, apart from scheduling, and the rules above already decide a tie.
 
 ## Compile errors
 
@@ -789,7 +800,6 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - `@mut` written on `@val` or `@config`
 - a pointer to an `@xor` cell, or a second reader of one
 - a second use of `@ephemeral`
-- a store to a `@mutex` cell outside `lock` and `unlock`
 - a path that locks and does not unlock
 - a pool read or store without the matching `hold`
 - a second `@mutex` on a pool
@@ -807,7 +817,6 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - a subclass calling or mutating a `@private` method
 - an implicit conversion between a child and its parent
 - `as` between objects that are not parent and descendant, or between atoms with no `convert` row
-- a downcast of a value
 - `struct` used as a type
 - an object embedding itself by value
 - a time mark on a field
@@ -832,7 +841,21 @@ An unknown `@` is a compile error. `@` sits after a function, after a binding, o
 - a `match` arm that is not a value of the scrutinee's type
 - `min`, `max`, or `clamp` of two different atoms
 - `rand` with `lo > hi`
+- a downcast, of a value or of a pointer
+- a read or a store of a `@mutex` cell outside `lock` or `hold`
+- a second run touching a cell that another run stores, unless the cell is `@mutex`, `@xor`, or `@accum`
+- a store to `@accum` that is not an add
+- `&`, `|`, `^`, `~`, `<<`, or `>>` used as an operator. `&` as the address, and `&&` and `||`, stay
+- `%`
+- `as` from a pointer to one atom into a pointer to another
+- a namespace initializer that calls a function
+- a pointer stored into a cell that outlives its target
+- `do n[k]` when `k` is a constant and `k < 0`
+- `if` with a condition that is not `bool`
+- `match` used as a value
+- `flush` of a pipe that is not `@device`
+- a `@compeval` or any other function compiled with flush-to-zero or a mode that drops IEEE rounding
 
 ## Not in the language
 
-No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtual dispatch. No vptr. A child method is a mutation, not an override. No inferred result types. No runtime polymorphic number. No `using`. No argument-dependent lookup. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. A missing arm is not an error unless `@total` or the project switch `total` says so.
+No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtual dispatch. No vptr. No downcast. A child method is a mutation, not an override. No inferred result types. No runtime polymorphic number. No `using`. No argument-dependent lookup. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. No bitwise operators. No `%`. No type punning. No undefined behavior. A missing arm is not an error unless `@total` or the project switch `total` says so.
