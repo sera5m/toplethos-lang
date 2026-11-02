@@ -1,0 +1,11 @@
+name: x86-op-table
+status: required
+why: phase 1 and phase 3 may only add a rule for an operation that is scored in notes/x86-op-table.md
+satisfies:
+  - lang/passes.py
+not_deps:
+  - sera5m/ikitaku
+  - 7etsuo/x86
+phase4: researched, not implemented
+loop_opcode: forbidden
+fma_contract: forbidden

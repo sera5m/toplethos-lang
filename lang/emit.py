@@ -224,6 +224,9 @@ class Emit:
         raise RuntimeError(k)
 
     def load_cell(self, e):
+        if e["k"] == "name" and e.get("fast"):
+            self.load_fast(e)
+            return
         self.addr(e)
         self.w("    sub $16, %rsp")
         self.w("    mov %rax, (%rsp)")
@@ -244,6 +247,41 @@ class Emit:
             self.w("    movq $0, (%rcx)")
             self.w("    movb $0, 8(%rcx)")
         self.w("    add $16, %rsp")
+
+    def load_fast(self, e):
+        info = self.prog["ids"][e["id"]]
+        ty = e["ty"]
+        if info.get("time") in ("static", "config"):
+            sym = self.sym(e["id"])
+            if ty == ("f64",):
+                self.w(f"    movsd {sym}(%rip), %xmm0")
+            else:
+                self.w(f"    mov {sym}(%rip), %rax")
+            return
+        off = self.slot[e["id"]]
+        if ty == ("f64",):
+            self.w(f"    movsd {off}(%rbp), %xmm0")
+        elif ty == ("i64",) or ty[0] == "ptr":
+            self.w(f"    mov {off}(%rbp), %rax")
+        else:
+            self.w(f"    mov {off}(%rbp), %eax")
+
+    def place(self, dest, ty):
+        info = self.prog["ids"][dest["id"]]
+        if info.get("time") in ("static", "config"):
+            sym = self.sym(dest["id"])
+            if ty == ("f64",):
+                self.w(f"    movsd %xmm0, {sym}(%rip)")
+            else:
+                self.w(f"    mov %rax, {sym}(%rip)")
+            self.w(f"    movb $1, {sym}+8(%rip)")
+            return
+        off = self.slot[dest["id"]]
+        if ty == ("f64",):
+            self.w(f"    movsd %xmm0, {off}(%rbp)")
+        else:
+            self.w(f"    mov %rax, {off}(%rbp)")
+        self.w(f"    movb $1, {off + 8}(%rbp)")
 
     def addr(self, e):
         k = e["k"]
@@ -287,6 +325,10 @@ class Emit:
 
     def store(self, dest, rhs):
         self.gen(rhs)
+        if dest["k"] == "name":
+            self.place(dest, rhs["ty"])
+            self.xor_move(dest, rhs)
+            return
         self.w("    sub $16, %rsp")
         if rhs["ty"] == ("f64",):
             self.w("    movsd %xmm0, (%rsp)")
@@ -580,6 +622,8 @@ class Emit:
                 self.lock_cell(st[1], st[2], False)
             elif op == "unlock":
                 self.lock_cell(st[1], st[2], True)
+            elif op == "fchain":
+                self.fchain(st)
             elif op == "decl":
                 if st[3] is not None:
                     info = self.prog["ids"].get(st[1], {})
@@ -662,6 +706,36 @@ class Emit:
             elif op == "continue":
                 self.w(f"    jmp {self.loops[-1][0]}")
 
+    def fchain(self, st):
+        # y = c + x * y, repeated. mul then add, two roundings. Not vfmadd.
+        dest, init, factor, coeffs = st[1], st[2], st[3], st[4]
+        self.gen(init)
+        self.w("    sub $16, %rsp")
+        self.w("    movsd %xmm0, (%rsp)")
+        self.gen(factor)
+        self.w("    movapd %xmm0, %xmm1")
+        self.w("    movsd (%rsp), %xmm0")
+        self.w("    add $16, %rsp")
+        risky = init.get("k") != "f64" or any(a.get("k") != "f64" for a in coeffs)
+        if risky:
+            self.place(dest, ("f64",))
+        for addend in coeffs:
+            if addend.get("k") == "f64":
+                lab = self.dub(addend["n"])
+                self.w(f"    movsd {lab}(%rip), %xmm2")
+                self.w("    mulsd %xmm1, %xmm0")
+                self.w("    addsd %xmm0, %xmm2")
+                self.w("    movapd %xmm2, %xmm0")
+            else:
+                self.w("    movapd %xmm0, %xmm3")
+                self.gen(addend)
+                self.w("    mulsd %xmm1, %xmm3")
+                self.w("    addsd %xmm3, %xmm0")
+            if risky:
+                self.place(dest, ("f64",))
+        if not risky:
+            self.place(dest, ("f64",))
+
     def store_elem(self, base, k, item):
         self.gen(item)
         off = base + k * 16
@@ -729,7 +803,7 @@ class Emit:
             bss.append("    .align 16")
             bss.append(f"{self.sym(iid)}: .zero {self.static_size[iid]}")
         return "\n".join(
-            ["# pipeline: USE.md core, one front end, amd64"]
+            ["# pipeline: phase1 fold, phase3 fchain, amd64"]
             + ro
             + ["    .text"]
             + parts
@@ -740,4 +814,6 @@ class Emit:
 
 
 def assemble(prog):
+    from passes import optimize
+    optimize(prog)
     return Emit(prog).render()
