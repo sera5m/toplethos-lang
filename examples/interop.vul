@@ -1,2 +1,0 @@
-print(py("math.sqrt", 16));
-print(native("strlen", "toplethos"));

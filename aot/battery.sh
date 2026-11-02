@@ -21,8 +21,8 @@ python3 aot/tpc.py aot/smart.tpth_s -o /tmp/battery_smart || exit 1
 
 echo "--- toplethos naive interpreted, N=20000 ---"
 sed 's/2000000/20000/g' aot/naive.tpth_s > /tmp/battery_interp.tpth_s
-/usr/bin/time -f 'naive interp %e sec' python3 toplethos_run.py /tmp/battery_interp.tpth_s
+/usr/bin/time -f 'naive interp %e sec' python3 -c 'import sys; sys.path.insert(0, "lang"); from host import run_text; sys.stdout.write(run_text(open(sys.argv[1], encoding="utf-8").read()))' /tmp/battery_interp.tpth_s
 
 echo "--- toplethos smart interpreted, N=20000 ---"
 sed 's/2000000/20000/g' aot/smart.tpth_s > /tmp/battery_smart_interp.tpth_s
-/usr/bin/time -f 'smart interp %e sec' python3 toplethos_run.py /tmp/battery_smart_interp.tpth_s
+/usr/bin/time -f 'smart interp %e sec' python3 -c 'import sys; sys.path.insert(0, "lang"); from host import run_text; sys.stdout.write(run_text(open(sys.argv[1], encoding="utf-8").read()))' /tmp/battery_smart_interp.tpth_s

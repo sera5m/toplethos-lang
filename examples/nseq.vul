@@ -1,6 +1,0 @@
-// One trapdoor, not N native() translates.
-print(native_seq(
-  native("wave", 1, 1000, 50, 4, 80),
-  native("delay", 10),
-  native("wave_stop")
-));

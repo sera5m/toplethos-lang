@@ -1,4 +1,0 @@
-print(1 + 2 * 3);
-i32 x = 4;
-print(x * x);
-print("ok");

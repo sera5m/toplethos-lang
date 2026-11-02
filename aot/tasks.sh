@@ -89,20 +89,6 @@ tpc "$REAL/rdp.tpth_s" /tmp/rdp_tp
 /usr/bin/time -f 'tp   %e' /tmp/rdp_tp
 echo "butterfly picture: $REAL/out/butterfly.ppm"
 
-echo "--- words (skipped if the text file is absent) ---"
-if [ -f /home/ash/Downloads/lipsum-cicero.txt ]; then
-  cxx "$ROOT/aot/words.cpp" /tmp/words_cpp
-  rsc "$ROOT/aot/words.rs" /tmp/words_rs
-  python3 aot/tpc.py "$ROOT/aot/words.tpth_s" -o /tmp/words_tp || exit 1
-  /usr/bin/time -f 'cpp  %e' /tmp/words_cpp > /tmp/words_cpp.txt
-  /usr/bin/time -f 'rs   %e' /tmp/words_rs > /tmp/words_rs.txt
-  /usr/bin/time -f 'tp   %e' /tmp/words_tp > /tmp/words_tp.txt
-  diff -q /tmp/words_cpp.txt /tmp/words_rs.txt
-  diff -q /tmp/words_cpp.txt /tmp/words_tp.txt
-else
-  echo "no /home/ash/Downloads/lipsum-cicero.txt"
-fi
-
 echo "--- walk, read only. tpth has no directory calls. ---"
 echo "Default is / for 30 seconds. Pass a root and a second count to override."
 echo "A live root can disagree between the two runs: each keeps its own 30 seconds."

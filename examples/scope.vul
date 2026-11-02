@@ -1,7 +1,0 @@
-// Normal oscilloscope: read ADC pin, print millivolts.
-// Pair with wave.vul on another pin + a wire (or the RC node).
-
-do 32 {
-  print(native("adc", 1));
-  delay_ms(50);
-}

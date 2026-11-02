@@ -1,9 +1,0 @@
-fn tone in[t] out[here] @latex_internal @sig_gen_graph_preview {
-  \sin t
-}
-
-fn chirp in[t] out[here] @sig_gen_graph_preview @latex_internal {
-  \sin (2 t)
-}
-
-print(tone in[90] out[here]);
