@@ -1,6 +1,6 @@
-// The photo is examples/street.jpg. This program reads the raw frame, not the jpeg.
+// The photo is examples/street.bmp. 24-bit, uncompressed.
 // Sort by luminance, paint rings around the lamp, tear channels, shift every 17th row.
-//   glitch <file.rgb> <w> <h> [out.ppm]
+//   glitch <file.bmp> [out.ppm]
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -131,32 +131,72 @@ static long long run(std::vector<int> &pix, int w, int h, std::vector<unsigned c
     return sum;
 }
 
-int main(int argc, char **argv) {
-    if (argc < 4) {
-        std::fprintf(stderr, "glitch <file.rgb> <w> <h> [out.ppm]\n");
-        return 1;
-    }
-    int w = std::atoi(argv[2]), h = std::atoi(argv[3]);
-    FILE *f = std::fopen(argv[1], "rb");
+static int load_bmp(const char *path, std::vector<int> &pix, int &w, int &h) {
+    FILE *f = std::fopen(path, "rb");
     if (!f) {
-        std::fprintf(stderr, "cannot read %s\n", argv[1]);
+        std::fprintf(stderr, "cannot read %s\n", path);
         return 1;
     }
-    std::vector<unsigned char> raw(w * h * 3);
-    if (std::fread(raw.data(), 1, raw.size(), f) != raw.size()) {
-        std::fprintf(stderr, "short read\n");
+    unsigned char hdr[54];
+    if (std::fread(hdr, 1, 54, f) != 54 || hdr[0] != 'B' || hdr[1] != 'M') {
+        std::fprintf(stderr, "bitmap\n");
+        std::fclose(f);
         return 1;
+    }
+    auto u32 = [](unsigned char *p) {
+        return (unsigned)p[0] | ((unsigned)p[1] << 8) | ((unsigned)p[2] << 16) | ((unsigned)p[3] << 24);
+    };
+    auto u16 = [](unsigned char *p) { return (unsigned)p[0] | ((unsigned)p[1] << 8); };
+    unsigned off = u32(hdr + 10);
+    int ww = (int)u32(hdr + 18);
+    int hh = (int)u32(hdr + 22);
+    int top = hh < 0;
+    if (top) hh = -hh;
+    if (u16(hdr + 28) != 24 || u32(hdr + 30) != 0 || ww < 1 || hh < 1) {
+        std::fprintf(stderr, "bitmap\n");
+        std::fclose(f);
+        return 1;
+    }
+    if (std::fseek(f, (long)off, SEEK_SET) != 0) {
+        std::fprintf(stderr, "bitmap\n");
+        std::fclose(f);
+        return 1;
+    }
+    int stride = (ww * 3 + 3) & ~3;
+    std::vector<unsigned char> row(stride);
+    pix.assign(ww * hh, 0);
+    for (int y = 0; y < hh; y++) {
+        if (std::fread(row.data(), 1, stride, f) != (size_t)stride) {
+            std::fprintf(stderr, "bitmap\n");
+            std::fclose(f);
+            return 1;
+        }
+        int desty = top ? y : hh - 1 - y;
+        for (int x = 0; x < ww; x++) {
+            int b = row[x * 3], g = row[x * 3 + 1], r = row[x * 3 + 2];
+            pix[desty * ww + x] = (r << 16) | (g << 8) | b;
+        }
     }
     std::fclose(f);
-    std::vector<int> pix(w * h);
-    for (int i = 0; i < w * h; i++)
-        pix[i] = (raw[i * 3] << 16) | (raw[i * 3 + 1] << 8) | raw[i * 3 + 2];
+    w = ww;
+    h = hh;
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        std::fprintf(stderr, "glitch <file.bmp> [out.ppm]\n");
+        return 1;
+    }
+    int w = 0, h = 0;
+    std::vector<int> pix;
+    if (load_bmp(argv[1], pix, w, h)) return 1;
     std::vector<unsigned char> ppm;
-    long long sum = run(pix, w, h, argc > 4 ? &ppm : nullptr);
-    if (argc > 4) {
-        FILE *o = std::fopen(argv[4], "wb");
+    long long sum = run(pix, w, h, argc > 2 ? &ppm : nullptr);
+    if (argc > 2) {
+        FILE *o = std::fopen(argv[2], "wb");
         if (!o) {
-            std::fprintf(stderr, "cannot write %s\n", argv[4]);
+            std::fprintf(stderr, "cannot write %s\n", argv[2]);
             return 1;
         }
         std::fprintf(o, "P6\n%d %d\n255\n", w, h);

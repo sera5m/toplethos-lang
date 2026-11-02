@@ -210,6 +210,9 @@ class Emit:
         if k == "call":
             self.call(e)
             return
+        if k == "loadbmp":
+            self.loadbmp(e)
+            return
         if k == "start":
             self.w("    call tp_start@PLT")
             return
@@ -526,6 +529,17 @@ class Emit:
             self.w("    idiv %rcx")
         self.w(f"{done}:")
 
+    def loadbmp(self, e):
+        lab = self.lit(e["path"])
+        info = self.prog["ids"][e["id"]]
+        self.w(f"    lea {lab}(%rip), %rdi")
+        if info.get("time") in ("static", "config"):
+            self.w(f"    lea {self.sym(e['id'])}(%rip), %rsi")
+        else:
+            self.w(f"    lea {self.slot[e['id']]}(%rbp), %rsi")
+        self.w(f"    mov ${e['n']}, %edx")
+        self.w("    call tp_loadbmp@PLT")
+
     def call(self, e):
         if e["name"] == "print":
             self.gen(e["args"][0])
@@ -648,13 +662,13 @@ class Emit:
                     else:
                         self.store({"k": "name", "id": st[1], "ty": st[2]}, st[3])
             elif op == "adecl":
-                base = self.slot[st[1]]
                 items = st[3]
+                if items is None:
+                    continue
+                base = self.slot[st[1]]
                 n = st[2][2]
                 et = st[2][1]
                 zero = {"k": "f64", "n": 0.0, "ty": ("f64",)} if et == ("f64",) else {"k": "bool", "v": False, "ty": ("bool",)} if et == ("bool",) else {"k": "int", "n": 0, "ty": et}
-                if items is None:
-                    continue
                 for k in range(n):
                     item = items[k] if k < len(items) else zero
                     self.store_elem(base, k, item)

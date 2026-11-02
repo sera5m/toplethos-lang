@@ -114,6 +114,61 @@ double tp_run(int n, tp_fn fn, void *extra) {
     tp_finish();
     return s;
 }
+
+static uint32_t tp_u32(const unsigned char *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static uint16_t tp_u16(const unsigned char *p) {
+    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+/* 24-bit BI_RGB bitmap into i32 cells. A cell is 16 bytes: the value, then a present flag. */
+void tp_loadbmp(const char *path, void *cells, int n) {
+    FILE *f;
+    unsigned char hdr[54];
+    unsigned char *base, *row;
+    uint32_t off, comp;
+    int32_t w, h;
+    int top, stride, y, x;
+    uint16_t bpp;
+    f = fopen(path, "rb");
+    if (!f)
+        tp_fail(path);
+    if (fread(hdr, 1, 54, f) != 54 || hdr[0] != 'B' || hdr[1] != 'M')
+        tp_fail("bitmap");
+    off = tp_u32(hdr + 10);
+    w = (int32_t)tp_u32(hdr + 18);
+    h = (int32_t)tp_u32(hdr + 22);
+    bpp = tp_u16(hdr + 28);
+    comp = tp_u32(hdr + 30);
+    top = h < 0;
+    if (top)
+        h = -h;
+    if (bpp != 24 || comp != 0 || w < 1 || h < 1 || (long long)w * h != n)
+        tp_fail("bitmap");
+    if (fseek(f, (long)off, SEEK_SET) != 0)
+        tp_fail("bitmap");
+    stride = (w * 3 + 3) & ~3;
+    row = (unsigned char *)malloc((size_t)stride);
+    if (!row)
+        tp_fail("bitmap");
+    base = (unsigned char *)cells;
+    for (y = 0; y < h; y++) {
+        int desty = top ? y : h - 1 - y;
+        if (fread(row, 1, (size_t)stride, f) != (size_t)stride)
+            tp_fail("bitmap");
+        for (x = 0; x < w; x++) {
+            unsigned char *cell = base + ((size_t)(desty * w + x) << 4);
+            int b = row[x * 3], g = row[x * 3 + 1], r = row[x * 3 + 2];
+            int32_t p = (r << 16) | (g << 8) | b;
+            *(int64_t *)cell = p;
+            cell[8] = 1;
+        }
+    }
+    free(row);
+    fclose(f);
+}
 #ifdef __cplusplus
 }
 #endif

@@ -1,8 +1,8 @@
-// Same rings as examples/glitch.cpp. The photo is examples/street.jpg.
-//   glitch <file.rgb> <w> <h> [out.ppm]
+// Same rings as examples/glitch.cpp. The photo is examples/street.bmp.
+//   glitch <file.bmp> [out.ppm]
 use std::env;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::process::ExitCode;
 
 fn lum(p: i32) -> i32 {
@@ -70,31 +70,56 @@ fn heapsort(a: &mut [i32]) {
     }
 }
 
+fn load_bmp(path: &str) -> Option<(Vec<i32>, i32, i32)> {
+    let data = std::fs::read(path).ok()?;
+    if data.len() < 54 || data[0] != b'B' || data[1] != b'M' {
+        return None;
+    }
+    let u32_at = |o: usize| u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
+    let u16_at = |o: usize| u16::from_le_bytes([data[o], data[o + 1]]);
+    let off = u32_at(10) as usize;
+    let w = u32_at(18) as i32;
+    let mut h = u32_at(22) as i32;
+    let top = h < 0;
+    if top {
+        h = -h;
+    }
+    if u16_at(28) != 24 || u32_at(30) != 0 || w < 1 || h < 1 {
+        return None;
+    }
+    let stride = ((w * 3 + 3) & !3) as usize;
+    if off + stride * (h as usize) > data.len() {
+        return None;
+    }
+    let mut pix = vec![0i32; (w * h) as usize];
+    for y in 0..h {
+        let desty = if top { y } else { h - 1 - y };
+        let row = off + (y as usize) * stride;
+        for x in 0..w {
+            let i = row + (x as usize) * 3;
+            let b = data[i] as i32;
+            let g = data[i + 1] as i32;
+            let r = data[i + 2] as i32;
+            pix[(desty * w + x) as usize] = (r << 16) | (g << 8) | b;
+        }
+    }
+    Some((pix, w, h))
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 4 {
-        eprintln!("glitch <file.rgb> <w> <h> [out.ppm]");
+    if args.len() < 2 {
+        eprintln!("glitch <file.bmp> [out.ppm]");
         return ExitCode::from(1);
     }
-    let w: i32 = args[2].parse().unwrap_or(0);
-    let h: i32 = args[3].parse().unwrap_or(0);
-    let mut f = match File::open(&args[1]) {
-        Ok(f) => f,
-        Err(_) => {
-            eprintln!("cannot read {}", args[1]);
+    let (mut pix, w, h) = match load_bmp(&args[1]) {
+        Some(v) => v,
+        None => {
+            eprintln!("bitmap");
             return ExitCode::from(1);
         }
     };
-    let mut raw = vec![0u8; (w * h * 3) as usize];
-    if f.read_exact(&mut raw).is_err() {
-        eprintln!("short read");
-        return ExitCode::from(1);
-    }
-    let n = (w * h) as usize;
-    let mut pix = vec![0i32; n];
-    for i in 0..n {
-        pix[i] = ((raw[i * 3] as i32) << 16) | ((raw[i * 3 + 1] as i32) << 8) | (raw[i * 3 + 2] as i32);
-    }
+    let n = pix.len();
     heapsort(&mut pix);
     let mut out = vec![0i32; n];
     let cx = w / 2;
@@ -186,17 +211,17 @@ fn main() -> ExitCode {
     for p in &out {
         sum += *p as i64;
     }
-    if args.len() > 4 {
+    if args.len() > 2 {
         let mut rgb = Vec::with_capacity(n * 3);
         for p in &out {
             rgb.push((*p / 65536) as u8);
             rgb.push((*p / 256 - (*p / 65536) * 256) as u8);
             rgb.push((*p - (*p / 256) * 256) as u8);
         }
-        let mut o = match File::create(&args[4]) {
+        let mut o = match File::create(&args[2]) {
             Ok(o) => o,
             Err(_) => {
-                eprintln!("cannot write {}", args[4]);
+                eprintln!("cannot write {}", args[2]);
                 return ExitCode::from(1);
             }
         };

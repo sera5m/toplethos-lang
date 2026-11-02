@@ -27,20 +27,15 @@ tpc "$REAL/table.tpth_s" /tmp/table_tp
 /usr/bin/time -f 'rs   %e' /tmp/table_rs
 /usr/bin/time -f 'tp   %e' /tmp/table_tp
 
-echo "--- glitch 40x30 ---"
+echo "--- glitch, street.bmp ---"
 cxx "$EX/glitch.cpp" /tmp/glitch_cpp
 rsc "$EX/glitch.rs" /tmp/glitch_rs
 tpc "$EX/glitch.tpth_s" /tmp/glitch_tp
-/usr/bin/time -f 'cpp  %e' /tmp/glitch_cpp "$EX/street40.rgb" 40 30
-/usr/bin/time -f 'rs   %e' /tmp/glitch_rs "$EX/street40.rgb" 40 30
-/usr/bin/time -f 'tp   %e' /tmp/glitch_tp
-
-echo "--- glitch 160x120 (cpp, rust) ---"
 mkdir -p "$EX/out" "$REAL/out"
-/usr/bin/time -f 'cpp  %e' /tmp/glitch_cpp "$EX/street160.rgb" 160 120 "$EX/out/glitch.ppm"
-/usr/bin/time -f 'rs   %e' /tmp/glitch_rs "$EX/street160.rgb" 160 120 "$EX/out/glitch_rs.ppm"
+/usr/bin/time -f 'cpp  %e' /tmp/glitch_cpp "$EX/street.bmp" "$EX/out/glitch.ppm"
+/usr/bin/time -f 'rs   %e' /tmp/glitch_rs "$EX/street.bmp" "$EX/out/glitch_rs.ppm"
+/usr/bin/time -f 'tp   %e' /tmp/glitch_tp
 cmp -s "$EX/out/glitch.ppm" "$EX/out/glitch_rs.ppm" && echo "glitch ppm match"
-cp "$EX/out/glitch.ppm" "$REAL/out/glitch.ppm"
 
 echo "--- blur 40x30 ---"
 cxx "$REAL/blur.cpp" /tmp/blur_cpp
@@ -66,11 +61,16 @@ except Exception:
     print("pictures are ppm in", ex / "out")
     raise SystemExit(0)
 
-def load(path):
-    data = Path(path).read_bytes().split(b"\n", 3)[3]
-    return Image.frombytes("RGB", (160, 120), data)
+def load(path, wh=None):
+    raw = Path(path).read_bytes()
+    if wh is None:
+        dims = raw.split(b"\n", 2)[1].split()
+        wh = (int(dims[0]), int(dims[1]))
+        pixels = raw.split(b"\n", 3)[3]
+        return Image.frombytes("RGB", wh, pixels)
+    return Image.frombytes("RGB", wh, raw)
 
-src = Image.frombytes("RGB", (160, 120), (ex / "street160.rgb").read_bytes())
+src = load(ex / "street160.rgb", (160, 120))
 frames = [src, load(ex / "out" / "glitch.ppm"), load(out / "blur.ppm")]
 big = [f.resize((640, 480), Image.Resampling.NEAREST) for f in frames]
 sheet = Image.new("RGB", (640 * 3, 480))

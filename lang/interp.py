@@ -67,6 +67,46 @@ class Interp:
         self.call(self.prog["fns"]["main"], [])
         return "".join(self.out)
 
+    def load_bmp(self, e):
+        import struct
+        path = e["path"]
+        n = e["n"]
+        slot = None
+        for frame in reversed(self.frames):
+            if e["id"] in frame:
+                slot = frame[e["id"]]
+                break
+        if slot is None or not slot["present"]:
+            raise Failure("absent")
+        cells = slot["v"]
+        try:
+            data = open(path, "rb").read()
+        except OSError:
+            raise Failure(path)
+        if len(data) < 54 or data[0:2] != b"BM":
+            raise Failure("bitmap")
+        off = struct.unpack_from("<I", data, 10)[0]
+        w = struct.unpack_from("<i", data, 18)[0]
+        h = struct.unpack_from("<i", data, 22)[0]
+        bpp = struct.unpack_from("<H", data, 28)[0]
+        comp = struct.unpack_from("<I", data, 30)[0]
+        top = h < 0
+        if top:
+            h = -h
+        if bpp != 24 or comp != 0 or w < 1 or h < 1 or w * h != n:
+            raise Failure("bitmap")
+        stride = (w * 3 + 3) & ~3
+        if off + stride * h > len(data):
+            raise Failure("bitmap")
+        for y in range(h):
+            desty = y if top else h - 1 - y
+            row = off + y * stride
+            for x in range(w):
+                b, g, r = data[row + x * 3 : row + x * 3 + 3]
+                cell = cells[desty * w + x]
+                cell["v"] = (r << 16) | (g << 8) | b
+                cell["present"] = True
+
     def call(self, fn, args):
         frame = {}
         for param, arg in zip(fn["params"], args):
@@ -443,6 +483,9 @@ class Interp:
                 return None
             args = [self.eval(a) for a in e["args"]]
             return self.call(self.prog["fns"][e["name"]], args)
+        if k == "loadbmp":
+            self.load_bmp(e)
+            return None
         if k == "method":
             args = [self.eval(a) for a in e["args"]]
             box = self.obj_of(e["a"])

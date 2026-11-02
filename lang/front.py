@@ -834,7 +834,7 @@ class Front:
                 self.fail(f"cannot store {self.show(rhs['ty'])} in {self.show(expr['ty'])}")
             self.expect(";")
             return ("store", expr, rhs, line)
-        if expr["k"] == "call" or expr["k"] == "method":
+        if expr["k"] == "call" or expr["k"] == "method" or expr["k"] == "loadbmp":
             self.expect(";")
             return ("expr", expr, line)
         self.fail("a statement, other than a brace block, that does not end with ;")
@@ -1024,6 +1024,8 @@ class Front:
         if self.peek() == "(":
             self.fail("name() is not a call")
         if self.eat("in"):
+            if name == "loadbmp":
+                return self.loadbmp()
             args = self.arglist()
             if name == "print":
                 if len(args) != 1:
@@ -1101,6 +1103,16 @@ class Front:
                 node = {"k": "field", "a": node, "field": field, "ty": fty}
                 continue
             return node
+
+    def loadbmp(self):
+        self.expect("[")
+        path = self.quoted()
+        self.expect(",")
+        arr = self.expr(None)
+        self.expect("]")
+        if arr["k"] != "name" or arr["ty"][0] != "arr" or arr["ty"][1] != ("i32",):
+            self.fail("loadbmp takes a string and an i32 array")
+        return {"k": "loadbmp", "path": path, "id": arr["id"], "n": arr["ty"][2], "ty": None}
 
     def arglist(self):
         self.expect("[")

@@ -711,6 +711,13 @@ f64 unit = randf in[engine];
 
 `randf` takes the next word, keeps its high 53 bits, and multiplies by `2^-53`. The result is an `f64` in `[0, 1)`. It is never `1`.
 
+`loadbmp` reads one 24-bit uncompressed bitmap into an `i32` array. The path is a string literal. The array's length must be the file's width times its height. A pixel is stored as `r * 65536 + g * 256 + b`. A file that is missing, compressed, or a different size is a failure. A negative height in the file is a top-down bitmap.
+
+```text
+i32 pix[2249868] @static;
+loadbmp in["examples/street.bmp", pix];
+```
+
 ## Flow
 
 `Hz` and `Pin` do not match because both store an integer. Nothing converts implicitly.
