@@ -4,6 +4,62 @@
 // t = 0, span/360, ... 12*pi. 361 points. Epsilon 0.5.
 // sin, cos, and exp are the same short series in every language, not libm.
 #include <cstdio>
+#include <vector>
+
+static void plot(const char *path, const double *xs, const double *ys, const int *keep, int n) {
+    const int W = 640, H = 480;
+    double minx = xs[0], maxx = xs[0], miny = ys[0], maxy = ys[0];
+    for (int i = 1; i < n; i++) {
+        if (xs[i] < minx) minx = xs[i];
+        if (xs[i] > maxx) maxx = xs[i];
+        if (ys[i] < miny) miny = ys[i];
+        if (ys[i] > maxy) maxy = ys[i];
+    }
+    double dx = maxx - minx, dy = maxy - miny;
+    if (dx < 1e-9) dx = 1;
+    if (dy < 1e-9) dy = 1;
+    std::vector<unsigned char> img(W * H * 3, 8);
+    auto px = [&](double x) { return 24 + (int)((x - minx) / dx * (W - 48)); };
+    auto py = [&](double y) { return H - 24 - (int)((y - miny) / dy * (H - 48)); };
+    auto put = [&](int x, int y, unsigned char r, unsigned char g, unsigned char b) {
+        if (x < 0 || y < 0 || x >= W || y >= H) return;
+        int i = (y * W + x) * 3;
+        img[i] = r; img[i + 1] = g; img[i + 2] = b;
+    };
+    auto line = [&](int x0, int y0, int x1, int y1, unsigned char r, unsigned char g, unsigned char b) {
+        int dx = x1 - x0, dy = y1 - y0;
+        int sx = dx < 0 ? -1 : 1, sy = dy < 0 ? -1 : 1;
+        if (dx < 0) dx = -dx;
+        if (dy < 0) dy = -dy;
+        int err = dx - dy, x = x0, y = y0;
+        while (true) {
+            put(x, y, r, g, b);
+            if (x == x1 && y == y1) break;
+            int e2 = err * 2;
+            if (e2 > -dy) { err -= dy; x += sx; }
+            if (e2 < dx) { err += dx; y += sy; }
+        }
+    };
+    for (int i = 1; i < n; i++)
+        line(px(xs[i - 1]), py(ys[i - 1]), px(xs[i]), py(ys[i]), 70, 55, 30);
+    int prev = -1;
+    for (int i = 0; i < n; i++) {
+        if (keep[i] != 1) continue;
+        int x = px(xs[i]), y = py(ys[i]);
+        if (prev >= 0) line(prev & 0xffff, prev >> 16, x, y, 235, 190, 70);
+        prev = x | (y << 16);
+        for (int oy = -1; oy <= 1; oy++)
+            for (int ox = -1; ox <= 1; ox++) put(x + ox, y + oy, 255, 230, 160);
+    }
+    FILE *o = std::fopen(path, "wb");
+    if (!o) {
+        std::fprintf(stderr, "cannot write %s\n", path);
+        return;
+    }
+    std::fprintf(o, "P6\n%d %d\n255\n", W, H);
+    std::fwrite(img.data(), 1, img.size(), o);
+    std::fclose(o);
+}
 
 static const double PI = 3.141592653589793;
 static const double TW = 6.283185307179586;
@@ -38,7 +94,7 @@ static double ex(double z) {
     return s;
 }
 
-int main() {
+int main(int argc, char **argv) {
     const int N = 361;
     double xs[361], ys[361];
     int keep[361];
@@ -92,5 +148,6 @@ int main() {
         }
     }
     std::printf("%d\n%.9f\n", kept, sm);
+    if (argc > 1) plot(argv[1], xs, ys, keep, N);
     return 0;
 }

@@ -1288,6 +1288,26 @@ fn main in[] out[i32] {
   i32 h = 30;
   i32 cx = w / 2;
   i32 cy = h / 2;
+  i32 maxr = 1;
+  do n[30] {
+    i32 y = i;
+    do n[40] {
+      i32 x = i;
+      i32 dx = x - cx;
+      i32 dy = y - cy;
+      i32 ax = dx;
+      i32 ay = dy;
+      if ax < 0 { ax = 0 - ax; }
+      if ay < 0 { ay = 0 - ay; }
+      i32 rad = 0;
+      if ax > ay { rad = ax + ay / 2; } else { rad = ay + ax / 2; }
+      if rad > maxr { maxr = rad; }
+    }
+  }
+  i32 lo = lum in[ord[0]];
+  i32 hi = lum in[ord[n - 1]];
+  if hi <= lo { hi = lo + 1; }
+  i32 span = hi - lo;
   do n[30] {
     i32 y = i;
     do n[40] {
@@ -1301,8 +1321,18 @@ fn main in[] out[i32] {
       i32 rad = 0;
       if ax > ay { rad = ax + ay / 2; } else { rad = ay + ax / 2; }
       i32 ang = iatan2 in[dy, dx];
-      i32 idx = rad * 3 + ang;
-      idx = idx - (idx / n) * n;
+      i32 target = hi - rad * span / maxr;
+      target = target - ang * span / 2048;
+      if target < lo { target = lo; }
+      if target > hi { target = hi; }
+      i32 a = 0;
+      i32 right = n - 1;
+      loop {
+        if !(a < right) { leave; }
+        i32 mid = (a + right + 1) / 2;
+        if lum in[ord[mid]] <= target { a = mid; } else { right = mid - 1; }
+      }
+      i32 idx = a;
       i32 p = ord[idx];
       i32 r = p / 65536;
       i32 g = p / 256 - r * 256;

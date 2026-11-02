@@ -35,8 +35,10 @@ tpc "$REAL/glitch.tpth_s" /tmp/glitch_tp
 /usr/bin/time -f 'tp   %e' /tmp/glitch_tp
 
 echo "--- glitch 160x120 (cpp, rust) ---"
-/usr/bin/time -f 'cpp  %e' /tmp/glitch_cpp "$REAL/street160.rgb" 160 120 /tmp/glitch.ppm
-/usr/bin/time -f 'rs   %e' /tmp/glitch_rs "$REAL/street160.rgb" 160 120 /tmp/glitch_rs.ppm
+mkdir -p "$REAL/out"
+/usr/bin/time -f 'cpp  %e' /tmp/glitch_cpp "$REAL/street160.rgb" 160 120 "$REAL/out/glitch.ppm"
+/usr/bin/time -f 'rs   %e' /tmp/glitch_rs "$REAL/street160.rgb" 160 120 "$REAL/out/glitch_rs.ppm"
+cmp -s "$REAL/out/glitch.ppm" "$REAL/out/glitch_rs.ppm" && echo "glitch ppm match"
 
 echo "--- blur 40x30 ---"
 cxx "$REAL/blur.cpp" /tmp/blur_cpp
@@ -47,16 +49,42 @@ tpc "$REAL/blur.tpth_s" /tmp/blur_tp
 /usr/bin/time -f 'tp   %e' /tmp/blur_tp
 
 echo "--- blur 160x120 (cpp, rust) ---"
-/usr/bin/time -f 'cpp  %e' /tmp/blur_cpp "$REAL/street160.rgb" 160 120 /tmp/blur.ppm
-/usr/bin/time -f 'rs   %e' /tmp/blur_rs "$REAL/street160.rgb" 160 120 /tmp/blur_rs.ppm
+/usr/bin/time -f 'cpp  %e' /tmp/blur_cpp "$REAL/street160.rgb" 160 120 "$REAL/out/blur.ppm"
+/usr/bin/time -f 'rs   %e' /tmp/blur_rs "$REAL/street160.rgb" 160 120 "$REAL/out/blur_rs.ppm"
+cmp -s "$REAL/out/blur.ppm" "$REAL/out/blur_rs.ppm" && echo "blur ppm match"
+python3 - "$REAL" << 'PY'
+import sys
+from pathlib import Path
+real = Path(sys.argv[1])
+out = real / "out"
+try:
+    from PIL import Image
+except Exception:
+    print("pictures are ppm in", out)
+    raise SystemExit(0)
+
+def load(path):
+    data = Path(path).read_bytes().split(b"\n", 3)[3]
+    return Image.frombytes("RGB", (160, 120), data)
+
+src = Image.frombytes("RGB", (160, 120), (real / "street160.rgb").read_bytes())
+frames = [src, load(out / "glitch.ppm"), load(out / "blur.ppm")]
+big = [f.resize((640, 480), Image.Resampling.NEAREST) for f in frames]
+sheet = Image.new("RGB", (640 * 3, 480))
+for i, f in enumerate(big):
+    sheet.paste(f, (i * 640, 0))
+sheet.save(out / "street.png")
+print("wrote", out / "street.png")
+PY
 
 echo "--- rdp ---"
 cxx "$REAL/rdp.cpp" /tmp/rdp_cpp
 rsc "$REAL/rdp.rs" /tmp/rdp_rs
 tpc "$REAL/rdp.tpth_s" /tmp/rdp_tp
-/usr/bin/time -f 'cpp  %e' /tmp/rdp_cpp
+/usr/bin/time -f 'cpp  %e' /tmp/rdp_cpp "$REAL/out/butterfly.ppm"
 /usr/bin/time -f 'rs   %e' /tmp/rdp_rs
 /usr/bin/time -f 'tp   %e' /tmp/rdp_tp
+echo "butterfly picture: $REAL/out/butterfly.ppm"
 
 echo "--- words (skipped if the text file is absent) ---"
 if [ -f /home/ash/Downloads/lipsum-cicero.txt ]; then

@@ -63,6 +63,20 @@ static long long run(std::vector<int> &pix, int w, int h, std::vector<unsigned c
     int n = w * h;
     std::vector<int> out(n);
     int cx = w / 2, cy = h / 2;
+    int maxr = 1;
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            int dx = x - cx, dy = y - cy;
+            int ax = dx < 0 ? -dx : dx;
+            int ay = dy < 0 ? -dy : dy;
+            int rad = ax > ay ? ax + ay / 2 : ay + ax / 2;
+            if (rad > maxr) maxr = rad;
+        }
+    }
+    int lo = lum(pix[0]);
+    int hi = lum(pix[n - 1]);
+    if (hi <= lo) hi = lo + 1;
+    int span = hi - lo;
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
             int dx = x - cx, dy = y - cy;
@@ -70,9 +84,17 @@ static long long run(std::vector<int> &pix, int w, int h, std::vector<unsigned c
             int ay = dy < 0 ? -dy : dy;
             int rad = ax > ay ? ax + ay / 2 : ay + ax / 2;
             int ang = iatan2(dy, dx);
-            int idx = rad * 3 + ang;
-            idx = idx - (idx / n) * n;
-            int p = pix[idx];
+            int target = hi - rad * span / maxr;
+            target = target - ang * span / 2048;
+            if (target < lo) target = lo;
+            if (target > hi) target = hi;
+            int a = 0, right = n - 1;
+            while (a < right) {
+                int mid = (a + right + 1) / 2;
+                if (lum(pix[mid]) <= target) a = mid;
+                else right = mid - 1;
+            }
+            int p = pix[a];
             int r = p / 65536;
             int g = p / 256 - r * 256;
             int b = p - (p / 256) * 256;

@@ -99,6 +99,25 @@ fn main() -> ExitCode {
     let mut out = vec![0i32; n];
     let cx = w / 2;
     let cy = h / 2;
+    let mut maxr = 1i32;
+    for y in 0..h {
+        for x in 0..w {
+            let dx = x - cx;
+            let dy = y - cy;
+            let ax = if dx < 0 { -dx } else { dx };
+            let ay = if dy < 0 { -dy } else { dy };
+            let rad = if ax > ay { ax + ay / 2 } else { ay + ax / 2 };
+            if rad > maxr {
+                maxr = rad;
+            }
+        }
+    }
+    let lo = lum(pix[0]);
+    let mut hi = lum(pix[n - 1]);
+    if hi <= lo {
+        hi = lo + 1;
+    }
+    let span = hi - lo;
     for y in 0..h {
         for x in 0..w {
             let dx = x - cx;
@@ -107,9 +126,25 @@ fn main() -> ExitCode {
             let ay = if dy < 0 { -dy } else { dy };
             let rad = if ax > ay { ax + ay / 2 } else { ay + ax / 2 };
             let ang = iatan2(dy, dx);
-            let mut idx = rad * 3 + ang;
-            idx = idx - (idx / (n as i32)) * (n as i32);
-            let p = pix[idx as usize];
+            let mut target = hi - rad * span / maxr;
+            target -= ang * span / 2048;
+            if target < lo {
+                target = lo;
+            }
+            if target > hi {
+                target = hi;
+            }
+            let mut a = 0i32;
+            let mut b = (n as i32) - 1;
+            while a < b {
+                let mid = (a + b + 1) / 2;
+                if lum(pix[mid as usize]) <= target {
+                    a = mid;
+                } else {
+                    b = mid - 1;
+                }
+            }
+            let p = pix[a as usize];
             let mut r = p / 65536;
             let mut g = p / 256 - r * 256;
             let mut b = p - (p / 256) * 256;
