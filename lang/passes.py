@@ -316,6 +316,7 @@ UNROLL_MAX = 16
 
 
 def _phase2(stmts, ids):
+    _fold_vals(stmts, ids)
     consts = _const_arrays(stmts, ids)
     _fold_stmts(stmts, consts)
     _unroll_stmts(stmts, consts)
@@ -380,6 +381,74 @@ def _walk(stmts, fn):
             _walk(st[4], fn)
         elif op == "time":
             _walk(st[3], fn)
+
+
+def _fold_vals(stmts, ids):
+    # A frozen f64 whose initializer is a constant is that constant.
+    # The chain rule only sees literals, not names.
+    found = {}
+    killed = set()
+
+    def see(st):
+        if st[0] == "decl" and isinstance(st[3], dict) and st[3].get("k") == "f64":
+            info = ids.get(st[1], {})
+            if info.get("freeze") and info.get("ty") == ("f64",):
+                found[st[1]] = st[3]
+        _kill_addr(st, killed)
+
+    _walk(stmts, see)
+    found = {i: v for i, v in found.items() if i not in killed}
+    if found:
+        _swap_names(stmts, found)
+
+
+def _swap_names(stmts, found):
+    def rec(e):
+        if not isinstance(e, dict):
+            return e
+        if e.get("k") == "name" and e.get("id") in found:
+            return dict(found[e["id"]])
+        e = dict(e)
+        for key, val in list(e.items()):
+            if isinstance(val, dict):
+                e[key] = rec(val)
+            elif isinstance(val, list):
+                e[key] = [rec(x) if isinstance(x, dict) else x for x in val]
+        return e
+
+    def one(st):
+        op = st[0]
+        if op == "decl":
+            expr = rec(st[3]) if isinstance(st[3], dict) else st[3]
+            return (op, st[1], st[2], expr, st[4])
+        if op == "store":
+            return (op, rec(st[1]), rec(st[2]), st[3])
+        if op == "expr":
+            return (op, rec(st[1]), st[2])
+        if op == "return":
+            return (op, rec(st[1]) if isinstance(st[1], dict) else st[1], st[2])
+        if op == "if":
+            _swap_names(st[2], found)
+            _swap_names(st[3], found)
+            return (op, rec(st[1]), st[2], st[3], st[4])
+        if op == "loop":
+            _swap_names(st[1], found)
+            return st
+        if op == "do":
+            _swap_names(st[3], found)
+            _swap_names(st[4], found)
+            count = rec(st[1]) if isinstance(st[1], dict) else st[1]
+            out = (op, count, st[2], st[3], st[4], st[5])
+            return out + (st[6],) if len(st) > 6 else out
+        if op == "time":
+            _swap_names(st[3], found)
+            return (op, st[1], rec(st[2]), st[3], st[4])
+        if op == "adecl" and st[3]:
+            return (op, st[1], st[2], [rec(it) for it in st[3]], st[4])
+        return st
+
+    for i, st in enumerate(list(stmts)):
+        stmts[i] = one(st)
 
 
 def _const_arrays(stmts, ids):

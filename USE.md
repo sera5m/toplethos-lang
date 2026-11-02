@@ -680,6 +680,7 @@ The choice is made while compiling. A constant array, a constant coefficient, an
 | slow form | the proof | the rewrite |
 |---|---|---|
 | a constant array rebuilt on every call, then loaded by a constant index | every element is a constant, nothing stores into it later, nothing takes its address | the load is the element. The array is not built |
+| a `@val` or `@config` `f64` used where a coefficient is written | the initializer is a constant, nothing stores it later, nothing takes its address | the use is that constant, so the chain rule can see it |
 | `k = N` then a loop that leaves when `k < 0`, indexes that array by `k`, and does `k = k - 1`, with `N` at most 16 | `k` is only that index, that compare, and that decrement | the loop is the `N + 1` straight stores. The chain rule then applies |
 | `do n[constant]` whose body is `x = as[f64, i] * scale`, then `y = c + x * y` with constant `c`, then `s = s + y` | the same proof, and there are at most eight constants | `i` is in `%eax`, `x` `y` `s` and every `c` stay in xmm for the loop. Nothing is spilled. `mul` then `add`, not `vfmadd` |
 | a present-flag check on a cell stored on every path to the load | phase 1 | the load is the value. No flag check |

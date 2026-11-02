@@ -794,6 +794,7 @@ class Front:
         if n == 0:
             self.fail("i32[0]" if ty == ("i32",) else "an array size that is not a constant")
         self.expect("]")
+        ms = self.marks("bind")
         items = None
         if self.eat("="):
             self.expect("{")
@@ -815,7 +816,11 @@ class Front:
         self.expect(";")
         iid = self.fresh(name)
         aty = ("arr", ty, n)
-        self.bind(name, {"id": iid, "ty": aty, "ro": False, "name": name})
+        info = {"id": iid, "ty": aty, "ro": False, "name": name}
+        self.paint(info, ms)
+        if info.get("mutex"):
+            self.fail("@mutex on this type")
+        self.bind(name, info)
         return ("adecl", iid, aty, items, line)
 
     def assign_or_call(self, line):

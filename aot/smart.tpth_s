@@ -1,0 +1,117 @@
+// smart.tpth_s — the same Horner and the same N as naive.tpth_s.
+// Coefficients are @val or a @static @val array, so they are constants.
+// The hot loops are the straight chain, not a call.
+// x = i * 0.000001.
+//
+// sh aot/battery.sh
+
+fn worker in[i32 lane] out[f64] {
+  i32 chunk = 2000000 / 4;
+  i32 lo = lane * chunk;
+  f64 s = 0.0;
+  f64 x = 0.0;
+  f64 y = 0.0;
+  do n[chunk] {
+    i32 j = lo + i;
+    x = as[f64, j] * 0.000001;
+    y = 8.0;
+    y = 7.0 + x * y;
+    y = 6.0 + x * y;
+    y = 5.0 + x * y;
+    y = 4.0 + x * y;
+    y = 3.0 + x * y;
+    y = 2.0 + x * y;
+    y = 1.0 + x * y;
+    s = s + y;
+  }
+  return s;
+}
+
+fn locked in[i32 lane, f64* p] out[f64] {
+  do n[50000] {
+    lock[p];
+    *p = *p + 1.0;
+    unlock[p];
+  }
+  return 0.0;
+}
+
+fn main in[] out[i32] {
+  f64 c8 @val = 8.0;
+  f64 c7 @val = 7.0;
+  f64 c6 @val = 6.0;
+  f64 c5 @val = 5.0;
+  f64 c4 @val = 4.0;
+  f64 c3 @val = 3.0;
+  f64 c2 @val = 2.0;
+  f64 c1 @val = 1.0;
+  f64 coeff[8] @static @val = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0};
+  f64 s = 0.0;
+  f64 z = 0.0;
+  f64 x = 0.0;
+  f64 y = 0.0;
+  f64 shared @mutex = 0.0;
+
+  @time["direct"] watch s {
+    s = 0.0;
+    do n[2000000] {
+      x = as[f64, i] * 0.000001;
+      y = 8.0;
+      y = 7.0 + x * y;
+      y = 6.0 + x * y;
+      y = 5.0 + x * y;
+      y = 4.0 + x * y;
+      y = 3.0 + x * y;
+      y = 2.0 + x * y;
+      y = 1.0 + x * y;
+      s = s + y;
+    }
+  }
+  @time["val"] watch s {
+    s = 0.0;
+    do n[2000000] {
+      x = as[f64, i] * 0.000001;
+      y = c8;
+      y = c7 + x * y;
+      y = c6 + x * y;
+      y = c5 + x * y;
+      y = c4 + x * y;
+      y = c3 + x * y;
+      y = c2 + x * y;
+      y = c1 + x * y;
+      s = s + y;
+    }
+  }
+  @time["static"] watch s {
+    s = 0.0;
+    do n[2000000] {
+      x = as[f64, i] * 0.000001;
+      y = coeff[7];
+      i32 k = 6;
+      loop {
+        if !(k >= 0) { leave; }
+        y = coeff[k] + x * y;
+        k = k - 1;
+      }
+      s = s + y;
+    }
+  }
+  @time["threads_init"] watch z {
+    fork worker in[4];
+  }
+  @time["threads_work"] watch s {
+    s = start worker;
+  }
+  @time["threads_join"] watch s {
+    finish worker;
+  }
+  @time["async"] watch s {
+    s = run worker in[4];
+  }
+  @time["mutex"] watch shared {
+    fork locked in[4] with[shared];
+    f64 ignore = start locked;
+    finish locked;
+  }
+  return 0;
+}

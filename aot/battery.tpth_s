@@ -1,4 +1,5 @@
 // Each trial prints: name seconds sum
+// Same program as aot/naive.tpth_s. smart.tpth_s is the marked version.
 // Same Horner and same N as battery.cpp. x = i * 0.000001.
 //
 // sh aot/battery.sh
