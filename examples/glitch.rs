@@ -1,4 +1,4 @@
-// Same rings as glitch.cpp. Integer math, so the checksum can match.
+// Same rings as examples/glitch.cpp. The photo is examples/street.jpg.
 //   glitch <file.rgb> <w> <h> [out.ppm]
 use std::env;
 use std::fs::File;

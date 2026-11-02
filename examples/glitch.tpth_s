@@ -1,5 +1,7 @@
-// 40x30 of the night photo. Sort by luminance, paint rings, tear channels.
-// Same integer steps as glitch.cpp. The frame is in the source because this host cannot read a file.
+// Night street, examples/street.jpg, reduced to 40x30.
+// Sort by luminance, paint rings around the lamp, tear channels, shift every 17th row.
+// The frame is baked in below. This host cannot open the jpeg.
+// Same integer steps as examples/glitch.cpp. Run: sh examples/glitch.sh
 fn lum in[i32 p] out[i32] {
   i32 r = p / 65536;
   i32 g = p / 256 - r * 256;

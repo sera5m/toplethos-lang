@@ -1,6 +1,5 @@
-// Sort the frame by luminance, then paint concentric rings around the lamp.
-// A ring also tears the channels, and every 17th row shifts. Integer math only.
-// The blur is a separate program: this host has no FFT, and one frame fits.
+// The photo is examples/street.jpg. This program reads the raw frame, not the jpeg.
+// Sort by luminance, paint rings around the lamp, tear channels, shift every 17th row.
 //   glitch <file.rgb> <w> <h> [out.ppm]
 #include <cstdio>
 #include <cstdlib>
