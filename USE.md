@@ -630,6 +630,25 @@ Odd cases, all of which follow the table and are not exceptions to it:
 
 One atom load crossing a page is a compiler bug when the value's laid-out size is 4096 or less. A larger object may cross. A field whose alignment was honored does not itself cross: an `f64` stays on an 8-byte boundary, so it cannot sit on the last 4 bytes of a page.
 
+## Known rewrites
+
+These are the slow forms the compiler rewrites when it can prove the row. The interpreter does not rewrite them. Both compute the same value. A row that is not proved is left as written.
+
+`@mutex` and `@xor` are not in this table. An interlock is the cost of a shared cell, the same way a Rust mutex is. A locked cell is not moved into a register that another run could miss.
+
+The choice is made while compiling. A constant array, a constant coefficient, and a constant trip count are known before the call. They are not rebuilt on the hot path.
+
+| slow form | the proof | the rewrite |
+|---|---|---|
+| a constant array rebuilt on every call, then loaded by a constant index | every element is a constant, nothing stores into it later, nothing takes its address | the load is the element. The array is not built |
+| `k = N` then a loop that leaves when `k < 0`, indexes that array by `k`, and does `k = k - 1`, with `N` at most 16 | `k` is only that index, that compare, and that decrement | the loop is the `N + 1` straight stores. The chain rule then applies |
+| `do n[constant]` whose body is only scalar locals | no call, no index, no field, no address taken, and the locals are `f64` or `i32` | `i` and those locals stay in registers for the loop, and are stored back after it |
+| a present-flag check on a cell stored on every path to the load | phase 1 | the load is the value. No flag check |
+| `y = c + x * y` with `c` a constant or a pure addend | phase 3 | one `mulsd` and one `addsd`. `x` is held. Not `vfmadd`. Not `loop` |
+| `do n[constant]` that did not get the register row | the count is a constant | the trip count is an immediate. It is not spilled and reloaded |
+
+A straight-line function whose live locals fit in one page still follows the Pages rule. These rewrites do not move a live object, and they do not page-align a small one.
+
 ## Utilities
 
 `min`, `max`, `clamp`, and `abs` take one atom. The arguments of `min`, `max`, and `clamp` are that same atom. `abs` of the lowest signed value is a failure. `swap` takes two pointers to the same type.

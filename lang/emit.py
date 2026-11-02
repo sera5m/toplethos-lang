@@ -5,6 +5,7 @@ import struct
 
 class Emit:
     def __init__(self, prog):
+        self.regmap = {}
         self.prog = prog
         self.o = []
         self.lits = []
@@ -249,6 +250,11 @@ class Emit:
         self.w("    add $16, %rsp")
 
     def load_fast(self, e):
+        reg = self.regmap.get(e["id"]) if getattr(self, "regmap", None) else None
+        if reg:
+            kind, r = reg
+            self.w(f"    movapd %{r}, %xmm0" if kind == "xmm" else f"    mov %{r}, %eax")
+            return
         info = self.prog["ids"][e["id"]]
         ty = e["ty"]
         if info.get("time") in ("static", "config"):
@@ -267,6 +273,11 @@ class Emit:
             self.w(f"    mov {off}(%rbp), %eax")
 
     def place(self, dest, ty):
+        reg = self.regmap.get(dest["id"]) if getattr(self, "regmap", None) else None
+        if reg:
+            kind, r = reg
+            self.w(f"    movapd %xmm0, %{r}" if kind == "xmm" else f"    mov %eax, %{r}")
+            return
         info = self.prog["ids"][dest["id"]]
         if info.get("time") in ("static", "config"):
             sym = self.sym(dest["id"])
@@ -677,20 +688,27 @@ class Emit:
                 self.w(f"{end}:")
                 self.loops.pop()
             elif op == "do":
+                if len(st) > 6 and st[6].get("reg") and self.regloop(st):
+                    continue
                 top, cont, end = self.lab(), self.lab(), self.lab()
-                self.gen(st[1])
-                self.w("    test %eax, %eax")
-                self.w("    jns 1f")
-                self.fail("do n[k] with k < 0")
-                self.w("1:")
-                self.w("    sub $16, %rsp")
-                self.w("    mov %rax, (%rsp)")
+                const = st[1].get("k") == "int"
+                if not const:
+                    self.gen(st[1])
+                    self.w("    test %eax, %eax")
+                    self.w("    jns 1f")
+                    self.fail("do n[k] with k < 0")
+                    self.w("1:")
+                    self.w("    sub $16, %rsp")
+                    self.w("    mov %rax, (%rsp)")
                 off = self.slot[st[2]]
                 self.w(f"    movl $0, {off}(%rbp)")
                 self.w(f"    movb $1, {off + 8}(%rbp)")
                 self.w(f"{top}:")
                 self.w(f"    mov {off}(%rbp), %eax")
-                self.w("    cmp (%rsp), %eax")
+                if const:
+                    self.w(f"    cmpl ${st[1]['n']}, %eax")
+                else:
+                    self.w("    cmp (%rsp), %eax")
                 self.w(f"    jge {end}")
                 self.loops.append((cont, end))
                 self.stmts(st[3])
@@ -699,12 +717,70 @@ class Emit:
                 self.w(f"    incl {off}(%rbp)")
                 self.w(f"    jmp {top}")
                 self.w(f"{end}:")
-                self.w("    add $16, %rsp")
+                if not const:
+                    self.w("    add $16, %rsp")
                 self.stmts(st[4])
             elif op == "leave":
                 self.w(f"    jmp {self.loops[-1][1]}")
             elif op == "continue":
                 self.w(f"    jmp {self.loops[-1][0]}")
+
+    def regloop(self, st):
+        # i and the scalar locals stay in registers. Interlocks never get here.
+        count, iid, body = st[1]["n"], st[2], st[3]
+        f64s, i32s = [], []
+        def rec(e):
+            if not isinstance(e, dict):
+                return
+            if e.get("k") == "name" and e["id"] != iid:
+                (f64s if e.get("ty") == ("f64",) else i32s).append(e["id"])
+            for v in e.values():
+                if isinstance(v, dict):
+                    rec(v)
+        for inner in body:
+            for part in inner[1:]:
+                rec(part)
+        f64s = list(dict.fromkeys(f64s))
+        i32s = list(dict.fromkeys(i32s))
+        xmm = [f"xmm{n}" for n in range(4, 16)]
+        gpr = ["r8d", "r9d", "r10d", "r11d"]
+        if len(f64s) > len(xmm) or len(i32s) > len(gpr):
+            return False
+        regmap = {iid: ("gpr", "ecx")}
+        for n, i in enumerate(f64s):
+            regmap[i] = ("xmm", xmm[n])
+        for n, i in enumerate(i32s):
+            regmap[i] = ("gpr", gpr[n])
+        top, end = self.lab(), self.lab()
+        for i, (kind, r) in ((i, regmap[i]) for i in f64s + i32s):
+            off = self.slot[i]
+            if kind == "xmm":
+                self.w(f"    movsd {off}(%rbp), %{r}")
+            else:
+                self.w(f"    mov {off}(%rbp), %{r}")
+        self.w("    xor %ecx, %ecx")
+        self.w(f"{top}:")
+        self.w(f"    cmpl ${count}, %ecx")
+        self.w(f"    jge {end}")
+        self.regmap = regmap
+        self.stmts(body)
+        self.regmap = {}
+        self.w("    incl %ecx")
+        self.w(f"    jmp {top}")
+        self.w(f"{end}:")
+        off = self.slot[iid]
+        self.w(f"    mov %ecx, {off}(%rbp)")
+        self.w(f"    movb $1, {off + 8}(%rbp)")
+        for i in f64s + i32s:
+            kind, r = regmap[i]
+            off = self.slot[i]
+            if kind == "xmm":
+                self.w(f"    movsd %{r}, {off}(%rbp)")
+            else:
+                self.w(f"    mov %{r}, {off}(%rbp)")
+            self.w(f"    movb $1, {off + 8}(%rbp)")
+        self.stmts(st[4])
+        return True
 
     def fchain(self, st):
         # y = c + x * y, repeated. mul then add, two roundings. Not vfmadd.

@@ -241,7 +241,8 @@ def _nest(st, ids):
     if op == "loop":
         return (op, _fuse(st[1], ids), st[2])
     if op == "do":
-        return (op, st[1], st[2], _fuse(st[3], ids), _fuse(st[4], ids), st[5])
+        fused = (op, st[1], st[2], _fuse(st[3], ids), _fuse(st[4], ids), st[5])
+        return fused + (st[6],) if len(st) > 6 else fused
     if op == "time":
         return (op, st[1], st[2], _fuse(st[3], ids), st[4])
     return st
@@ -304,5 +305,321 @@ def _fn(fn, ids):
         if _scalar(p["ty"]):
             present.add(p["id"])
     _phase1(fn["body"], present, ids)
+    _phase2(fn["body"], ids)
     _phase3.ids = ids
     fn["body"] = _phase3(fn["body"])
+
+
+# USE.md, section "Known rewrites". A row fires only when its proof holds.
+# The value is the one the interpreter computes. Interlocks are not here.
+UNROLL_MAX = 16
+
+
+def _phase2(stmts, ids):
+    consts = _const_arrays(stmts, ids)
+    _fold_stmts(stmts, consts)
+    _unroll_stmts(stmts, consts)
+    # The unrolled stores still say c[6]. Fold those now.
+    _fold_stmts(stmts, consts)
+    _drop_dead_arrays(stmts)
+    _mark_regloops(stmts, ids)
+    return stmts
+
+
+def _drop_dead_arrays(stmts):
+    used = set()
+    def see(e):
+        if not isinstance(e, dict):
+            return
+        if e.get("k") == "name":
+            used.add(e["id"])
+        for v in e.values():
+            if isinstance(v, dict):
+                see(v)
+            elif isinstance(v, list):
+                for x in v:
+                    see(x)
+    def walk(body):
+        for st in body:
+            for part in st[1:]:
+                see(part)
+            op = st[0]
+            if op == "if":
+                walk(st[2]); walk(st[3])
+            elif op == "loop":
+                walk(st[1])
+            elif op == "do":
+                walk(st[3]); walk(st[4])
+            elif op == "time":
+                walk(st[3])
+    walk(stmts)
+    stmts[:] = [st for st in stmts if not (st[0] == "adecl" and st[1] not in used)]
+    for st in stmts:
+        op = st[0]
+        if op == "if":
+            _drop_dead_arrays(st[2]); _drop_dead_arrays(st[3])
+        elif op == "loop":
+            _drop_dead_arrays(st[1])
+        elif op == "do":
+            _drop_dead_arrays(st[3]); _drop_dead_arrays(st[4])
+        elif op == "time":
+            _drop_dead_arrays(st[3])
+
+
+def _walk(stmts, fn):
+    for st in stmts:
+        fn(st)
+        op = st[0]
+        if op == "if":
+            _walk(st[2], fn)
+            _walk(st[3], fn)
+        elif op == "loop":
+            _walk(st[1], fn)
+        elif op == "do":
+            _walk(st[3], fn)
+            _walk(st[4], fn)
+        elif op == "time":
+            _walk(st[3], fn)
+
+
+def _const_arrays(stmts, ids):
+    found = {}
+    killed = set()
+
+    def see(st):
+        if st[0] == "adecl" and st[3]:
+            items = st[3]
+            if all(isinstance(it, dict) and it.get("k") in ("f64", "int") for it in items):
+                found[st[1]] = list(items)
+                # A short brace zero-fills. Record the zeros too.
+                n = st[2][2]
+                et = st[2][1]
+                zero = {"k": "f64", "n": 0.0, "ty": ("f64",)} if et == ("f64",) else {"k": "int", "n": 0, "ty": et}
+                while len(found[st[1]]) < n:
+                    found[st[1]].append(dict(zero))
+        if st[0] == "store":
+            dest = st[1]
+            if dest.get("k") == "name":
+                killed.add(dest["id"])
+            if dest.get("k") == "index" and dest.get("a", {}).get("k") == "name":
+                killed.add(dest["a"]["id"])
+        _kill_addr(st, killed)
+
+    _walk(stmts, see)
+    return {i: items for i, items in found.items() if i not in killed}
+
+
+def _kill_addr(st, killed):
+    def rec(e):
+        if not isinstance(e, dict):
+            return
+        if e.get("k") == "addr" and e.get("a", {}).get("k") == "name":
+            killed.add(e["a"]["id"])
+        for v in e.values():
+            if isinstance(v, dict):
+                rec(v)
+            elif isinstance(v, list):
+                for x in v:
+                    rec(x)
+    for part in st[1:]:
+        rec(part)
+
+
+def _fold_stmts(stmts, consts):
+    if not consts:
+        return
+
+    def rec(e):
+        if not isinstance(e, dict):
+            return e
+        e = dict(e)
+        for key in ("a", "b", "i"):
+            if isinstance(e.get(key), dict):
+                e[key] = rec(e[key])
+        if e.get("k") == "index" and e.get("a", {}).get("k") == "name":
+            if e["a"]["id"] in consts and e.get("i", {}).get("k") == "int":
+                n = e["i"]["n"]
+                items = consts[e["a"]["id"]]
+                if 0 <= n < len(items):
+                    return dict(items[n])
+        return e
+
+    for i, st in enumerate(list(stmts)):
+        op = st[0]
+        if op == "decl" and st[3] is not None:
+            stmts[i] = (op, st[1], st[2], rec(st[3]), st[4])
+        elif op == "store":
+            stmts[i] = (op, rec(st[1]), rec(st[2]), st[3])
+        elif op == "expr":
+            stmts[i] = (op, rec(st[1]), st[2])
+        elif op == "return" and st[1] is not None:
+            stmts[i] = (op, rec(st[1]), st[2])
+        elif op == "if":
+            _fold_stmts(st[2], consts)
+            _fold_stmts(st[3], consts)
+            stmts[i] = (op, rec(st[1]), st[2], st[3], st[4])
+        elif op == "loop":
+            _fold_stmts(st[1], consts)
+        elif op == "do":
+            _fold_stmts(st[3], consts)
+            _fold_stmts(st[4], consts)
+        elif op == "time":
+            _fold_stmts(st[3], consts)
+
+
+def _unroll_stmts(stmts, consts):
+    i = 0
+    while i < len(stmts):
+        st = stmts[i]
+        op = st[0]
+        if op == "if":
+            _unroll_stmts(st[2], consts)
+            _unroll_stmts(st[3], consts)
+        elif op == "loop":
+            _unroll_stmts(st[1], consts)
+        elif op == "do":
+            _unroll_stmts(st[3], consts)
+            _unroll_stmts(st[4], consts)
+        elif op == "time":
+            _unroll_stmts(st[3], consts)
+        if (op == "decl" and st[2] == ("i32",) and isinstance(st[3], dict)
+                and st[3].get("k") == "int"):
+            nxt = _countdown(stmts, i, st, consts)
+            if nxt is not None:
+                stmts[i:i + 2] = nxt
+                i += len(nxt)
+                continue
+        i += 1
+
+
+def _countdown(stmts, i, decl, consts):
+    if i + 1 >= len(stmts) or stmts[i + 1][0] != "loop":
+        return None
+    n = decl[3]["n"]
+    if not (0 <= n <= UNROLL_MAX):
+        return None
+    kid = decl[1]
+    body = stmts[i + 1][1]
+    if len(body) != 3:
+        return None
+    guard, step, dec = body
+    if not _is_leave_when_neg(guard, kid) or not _is_dec(dec, kid):
+        return None
+    if step[0] != "store" or not _indexes_only(step, kid, consts):
+        return None
+    # Drop the decl of k. It would sit between y's initializer and the
+    # steps, and the chain rule only sees adjacent stores.
+    out = []
+    for v in range(n, -1, -1):
+        out.append(_subst_k(step, kid, v))
+    return out
+
+
+def _is_leave_when_neg(st, kid):
+    if st[0] != "if" or st[3]:
+        return False
+    cond = st[1]
+    if cond.get("k") != "unary" or cond.get("op") != "!":
+        return False
+    inner = cond.get("a", {})
+    if inner.get("k") != "bin" or inner.get("op") != ">=":
+        return False
+    a, b = inner.get("a", {}), inner.get("b", {})
+    if a.get("k") != "name" or a.get("id") != kid:
+        return False
+    if not (b.get("k") == "int" and b.get("n") == 0):
+        return False
+    return bool(st[2]) and st[2][0][0] == "leave"
+
+
+def _is_dec(st, kid):
+    if st[0] != "store":
+        return False
+    dest = st[1]
+    if dest.get("k") != "name" or dest.get("id") != kid:
+        return False
+    rhs = st[2]
+    return (rhs.get("k") == "bin" and rhs.get("op") == "-"
+            and rhs.get("a", {}).get("k") == "name" and rhs["a"].get("id") == kid
+            and rhs.get("b", {}).get("k") == "int" and rhs["b"].get("n") == 1)
+
+
+def _indexes_only(st, kid, consts):
+    bad = [False]
+
+    def rec(e, as_index_of_k=False):
+        if not isinstance(e, dict) or bad[0]:
+            return
+        if e.get("k") == "index":
+            base, idx = e.get("a", {}), e.get("i", {})
+            if base.get("k") != "name" or base.get("id") not in consts:
+                bad[0] = True
+            if not (idx.get("k") == "name" and idx.get("id") == kid):
+                bad[0] = True
+            rec(base)
+            return
+        if e.get("k") == "name" and e.get("id") == kid:
+            bad[0] = True
+            return
+        for v in e.values():
+            if isinstance(v, dict):
+                rec(v)
+    rec(st[1])
+    rec(st[2])
+    return not bad[0]
+
+
+def _subst_k(st, kid, v):
+    def rec(e):
+        if not isinstance(e, dict):
+            return e
+        e = {key: rec(val) if isinstance(val, dict) else val for key, val in e.items()}
+        if e.get("k") == "name" and e.get("id") == kid:
+            return {"k": "int", "n": v, "ty": ("i32",)}
+        return e
+    return ("store", rec(st[1]), rec(st[2]), st[3])
+
+
+def _mark_regloops(stmts, ids):
+    for i, st in enumerate(stmts):
+        op = st[0]
+        if op == "if":
+            _mark_regloops(st[2], ids)
+            _mark_regloops(st[3], ids)
+        elif op == "loop":
+            _mark_regloops(st[1], ids)
+        elif op == "do":
+            _mark_regloops(st[3], ids)
+            _mark_regloops(st[4], ids)
+            if _regloop_ok(st, ids):
+                mark = dict(st[6]) if len(st) > 6 else {}
+                mark["reg"] = True
+                stmts[i] = st[:6] + (mark,)
+        elif op == "time":
+            _mark_regloops(st[3], ids)
+
+
+def _regloop_ok(st, ids):
+    if st[1].get("k") != "int":
+        return False
+    banned = {"call", "method", "index", "field", "deref", "addr", "start", "run"}
+
+    def rec(e):
+        if not isinstance(e, dict):
+            return True
+        if e.get("k") in banned:
+            return False
+        if e.get("k") == "name":
+            info = ids.get(e["id"], {})
+            if e.get("ty") not in (("f64",), ("i32",)):
+                return False
+            if info.get("mutex") or info.get("xor") or info.get("time") in ("static", "config"):
+                return False
+        return all(rec(v) for v in e.values() if isinstance(v, dict))
+
+    for inner in st[3]:
+        if inner[0] not in ("store", "expr"):
+            return False
+        if any(isinstance(p, dict) and not rec(p) for p in inner[1:]):
+            return False
+    return True
