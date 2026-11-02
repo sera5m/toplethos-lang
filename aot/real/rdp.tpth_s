@@ -1,0 +1,134 @@
+// Butterfly, then Ramer-Douglas-Peucker. Epsilon 0.5.
+// The series is the same one rdp.cpp uses. Not libm.
+fn tsin in[f64 x] out[f64] {
+  f64 y = x;
+  f64 tw = 6.283185307179586;
+  loop {
+    if !(y >= tw) { leave; }
+    y = y - tw;
+  }
+  f64 half = 1.5707963267948966;
+  i32 q = 0;
+  loop {
+    if !(y >= half) { leave; }
+    y = y - half;
+    q = q + 1;
+  }
+  f64 x2 = y * y;
+  f64 s = y * (1.0 - x2 / 6.0 * (1.0 - x2 / 20.0 * (1.0 - x2 / 42.0 * (1.0 - x2 / 72.0))));
+  f64 c = 1.0 - x2 / 2.0 * (1.0 - x2 / 12.0 * (1.0 - x2 / 30.0 * (1.0 - x2 / 56.0)));
+  if q == 0 { return s; }
+  if q == 1 { return c; }
+  if q == 2 { return 0.0 - s; }
+  return 0.0 - c;
+}
+
+fn tcos in[f64 x] out[f64] {
+  f64 y = x;
+  f64 tw = 6.283185307179586;
+  loop {
+    if !(y >= tw) { leave; }
+    y = y - tw;
+  }
+  f64 half = 1.5707963267948966;
+  i32 q = 0;
+  loop {
+    if !(y >= half) { leave; }
+    y = y - half;
+    q = q + 1;
+  }
+  f64 x2 = y * y;
+  f64 s = y * (1.0 - x2 / 6.0 * (1.0 - x2 / 20.0 * (1.0 - x2 / 42.0 * (1.0 - x2 / 72.0))));
+  f64 c = 1.0 - x2 / 2.0 * (1.0 - x2 / 12.0 * (1.0 - x2 / 30.0 * (1.0 - x2 / 56.0)));
+  if q == 0 { return c; }
+  if q == 1 { return 0.0 - s; }
+  if q == 2 { return 0.0 - c; }
+  return s;
+}
+
+fn ex in[f64 z] out[f64] {
+  f64 term = 1.0;
+  f64 s = 1.0;
+  f64 k = 1.0;
+  do n[16] {
+    term = term * z / k;
+    s = s + term;
+    k = k + 1.0;
+  }
+  return s;
+}
+
+fn main in[] out[i32] {
+  f64 xs[361];
+  f64 ys[361];
+  i32 keep[361];
+  f64 span = 12.0 * 3.141592653589793;
+  do n[361] {
+    f64 t = span * as[f64, i] / 360.0;
+    f64 s = tsin in[t];
+    f64 c = tcos in[t];
+    f64 c4 = tcos in[4.0 * t];
+    f64 s12 = tsin in[t / 12.0];
+    f64 s5 = s12 * s12 * s12 * s12 * s12;
+    f64 core = ex in[c] - 2.0 * c4 - s5;
+    xs[i] = s * core;
+    ys[i] = c * core;
+    keep[i] = 1;
+  }
+  i32 sa[800];
+  i32 sb[800];
+  i32 sp = 1;
+  sa[0] = 0;
+  sb[0] = 360;
+  f64 eps2 = 0.25;
+  loop {
+    if !(sp > 0) { leave; }
+    sp = sp - 1;
+    i32 a = sa[sp];
+    i32 b = sb[sp];
+    if b < a + 2 { continue; }
+    f64 best = -1.0;
+    i32 besti = -1;
+    f64 dx = xs[b] - xs[a];
+    f64 dy = ys[b] - ys[a];
+    f64 den2 = dx * dx + dy * dy;
+    i32 k = a + 1;
+    loop {
+      if !(k < b) { leave; }
+      f64 num = (ys[a] - ys[k]) * dx - (xs[a] - xs[k]) * dy;
+      if num < 0.0 { num = 0.0 - num; }
+      f64 cross2 = num * num;
+      if (cross2 > best) || (cross2 == best && k > besti) {
+        best = cross2;
+        besti = k;
+      }
+      k = k + 1;
+    }
+    if best > eps2 * den2 {
+      sa[sp] = besti;
+      sb[sp] = b;
+      sp = sp + 1;
+      sa[sp] = a;
+      sb[sp] = besti;
+      sp = sp + 1;
+    } else {
+      i32 j = a + 1;
+      loop {
+        if !(j < b) { leave; }
+        keep[j] = 0;
+        j = j + 1;
+      }
+    }
+  }
+  i32 kept = 0;
+  f64 sm = 0.0;
+  do n[361] {
+    if keep[i] == 1 {
+      kept = kept + 1;
+      sm = sm + xs[i] + ys[i];
+    }
+  }
+  print in[kept];
+  print in[sm];
+  return 0;
+}

@@ -1,0 +1,86 @@
+#!/bin/sh
+# Real-world rows. The Horner battery stays in aot/battery.sh.
+# The directory walk only reads. It does not create or edit anything.
+# Toplethos has no directory calls, so that row is C++ and Rust only.
+cd "$(dirname "$0")/.." || exit 1
+ROOT="$(pwd)"
+REAL="$ROOT/aot/real"
+
+cxx() { g++ -O2 -std=c++20 -ffp-contract=off -pthread -o "$2" "$1" || exit 1; }
+rsc() { rustc -C opt-level=3 -C target-feature=-fma -o "$2" "$1" || exit 1; }
+tpc() { python3 aot/tpc.py "$1" -o "$2" || exit 1; }
+
+echo "--- dict ---"
+cxx "$REAL/dict.cpp" /tmp/dict_cpp
+rsc "$REAL/dict.rs" /tmp/dict_rs
+tpc "$REAL/dict.tpth_s" /tmp/dict_tp
+/usr/bin/time -f 'cpp  %e' /tmp/dict_cpp
+/usr/bin/time -f 'rs   %e' /tmp/dict_rs
+/usr/bin/time -f 'tp   %e' /tmp/dict_tp
+
+echo "--- table ---"
+cxx "$REAL/table.cpp" /tmp/table_cpp
+rsc "$REAL/table.rs" /tmp/table_rs
+tpc "$REAL/table.tpth_s" /tmp/table_tp
+/usr/bin/time -f 'cpp  %e' /tmp/table_cpp
+/usr/bin/time -f 'rs   %e' /tmp/table_rs
+/usr/bin/time -f 'tp   %e' /tmp/table_tp
+
+echo "--- glitch 40x30 ---"
+cxx "$REAL/glitch.cpp" /tmp/glitch_cpp
+rsc "$REAL/glitch.rs" /tmp/glitch_rs
+tpc "$REAL/glitch.tpth_s" /tmp/glitch_tp
+/usr/bin/time -f 'cpp  %e' /tmp/glitch_cpp "$REAL/street40.rgb" 40 30
+/usr/bin/time -f 'rs   %e' /tmp/glitch_rs "$REAL/street40.rgb" 40 30
+/usr/bin/time -f 'tp   %e' /tmp/glitch_tp
+
+echo "--- glitch 160x120 (cpp, rust) ---"
+/usr/bin/time -f 'cpp  %e' /tmp/glitch_cpp "$REAL/street160.rgb" 160 120 /tmp/glitch.ppm
+/usr/bin/time -f 'rs   %e' /tmp/glitch_rs "$REAL/street160.rgb" 160 120 /tmp/glitch_rs.ppm
+
+echo "--- blur 40x30 ---"
+cxx "$REAL/blur.cpp" /tmp/blur_cpp
+rsc "$REAL/blur.rs" /tmp/blur_rs
+tpc "$REAL/blur.tpth_s" /tmp/blur_tp
+/usr/bin/time -f 'cpp  %e' /tmp/blur_cpp "$REAL/street40.rgb" 40 30
+/usr/bin/time -f 'rs   %e' /tmp/blur_rs "$REAL/street40.rgb" 40 30
+/usr/bin/time -f 'tp   %e' /tmp/blur_tp
+
+echo "--- blur 160x120 (cpp, rust) ---"
+/usr/bin/time -f 'cpp  %e' /tmp/blur_cpp "$REAL/street160.rgb" 160 120 /tmp/blur.ppm
+/usr/bin/time -f 'rs   %e' /tmp/blur_rs "$REAL/street160.rgb" 160 120 /tmp/blur_rs.ppm
+
+echo "--- rdp ---"
+cxx "$REAL/rdp.cpp" /tmp/rdp_cpp
+rsc "$REAL/rdp.rs" /tmp/rdp_rs
+tpc "$REAL/rdp.tpth_s" /tmp/rdp_tp
+/usr/bin/time -f 'cpp  %e' /tmp/rdp_cpp
+/usr/bin/time -f 'rs   %e' /tmp/rdp_rs
+/usr/bin/time -f 'tp   %e' /tmp/rdp_tp
+
+echo "--- words (skipped if the text file is absent) ---"
+if [ -f /home/ash/Downloads/lipsum-cicero.txt ]; then
+  cxx "$ROOT/aot/words.cpp" /tmp/words_cpp
+  rsc "$ROOT/aot/words.rs" /tmp/words_rs
+  python3 aot/tpc.py "$ROOT/aot/words.tpth_s" -o /tmp/words_tp || exit 1
+  /usr/bin/time -f 'cpp  %e' /tmp/words_cpp > /tmp/words_cpp.txt
+  /usr/bin/time -f 'rs   %e' /tmp/words_rs > /tmp/words_rs.txt
+  /usr/bin/time -f 'tp   %e' /tmp/words_tp > /tmp/words_tp.txt
+  diff -q /tmp/words_cpp.txt /tmp/words_rs.txt
+  diff -q /tmp/words_cpp.txt /tmp/words_tp.txt
+else
+  echo "no /home/ash/Downloads/lipsum-cicero.txt"
+fi
+
+echo "--- walk, read only. tpth has no directory calls. ---"
+echo "Default is / for 30 seconds. Pass a root and a second count to override."
+echo "A live root can disagree between the two runs: each keeps its own 30 seconds."
+cxx "$REAL/walk.cpp" /tmp/walk_cpp
+rsc "$REAL/walk.rs" /tmp/walk_rs
+if [ $# -ge 1 ]; then
+  /usr/bin/time -f 'cpp  %e' /tmp/walk_cpp "$@"
+  /usr/bin/time -f 'rs   %e' /tmp/walk_rs "$@"
+else
+  /usr/bin/time -f 'cpp  %e' /tmp/walk_cpp / 30
+  /usr/bin/time -f 'rs   %e' /tmp/walk_rs / 30
+fi

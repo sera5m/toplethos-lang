@@ -1,0 +1,27 @@
+// Four lanes, each owns 256 cells. 64 ticks of a decay and a small Hebb step.
+// No shared write. The checksum is the sum of the weights, lane 0 first.
+fn worker in[i32 lane] out[f64] {
+  i32 base = lane * 256;
+  f64 w[256];
+  f64 a[256];
+  do n[256] {
+    w[i] = 1.0;
+    a[i] = 0.0;
+  }
+  do n[64] {
+    do n[256] {
+      i32 id = base + i;
+      a[i] = a[i] * 0.97 + as[f64, id] * 0.001;
+      w[i] = w[i] + a[i] * 0.0001;
+    }
+  }
+  f64 s = 0.0;
+  do n[256] { s = s + w[i]; }
+  return s;
+}
+
+fn main in[] out[i32] {
+  f64 s = run worker in[4];
+  print in[s];
+  return 0;
+}

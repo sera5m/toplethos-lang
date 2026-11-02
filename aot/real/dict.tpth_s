@@ -1,0 +1,35 @@
+// Open-address counts. Same keys as dict.cpp: (i * 17 + 3) wrapped to 0..499.
+fn main in[] out[i32] {
+  i32 key[1024];
+  i32 cnt[1024];
+  do n[1024] {
+    key[i] = -1;
+    cnt[i] = 0;
+  }
+  do n[20000] {
+    i32 k = i * 17 + 3;
+    k = k - (k / 500) * 500;
+    i32 slot = k;
+    loop {
+      if key[slot] == -1 {
+        key[slot] = k;
+        cnt[slot] = 1;
+        leave;
+      }
+      if key[slot] == k {
+        cnt[slot] = cnt[slot] + 1;
+        leave;
+      }
+      slot = slot + 1;
+      if slot == 1024 { slot = 0; }
+    }
+  }
+  i64 sum = 0;
+  do n[1024] {
+    if key[i] != -1 {
+      sum = sum + as[i64, key[i]] * as[i64, cnt[i]];
+    }
+  }
+  print in[sum];
+  return 0;
+}
