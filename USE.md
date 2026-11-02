@@ -34,8 +34,8 @@ A variable is one cell. Every mark on it belongs to one of four groups. A mark d
 |---|---|---|
 | scope | Who can name it? | `@private` `@protected` `@public` |
 | time | When does the cell exist? | unmarked `@ephemeral` `@static` `@config` |
-| type and value | What are the bits, and how do you name them? | `i8` `i16` `i32` `i64` `ui8` `ui16` `ui32` `ui64` `size` `f32` `f64` `bool` `char` `string` `object` `T*` `fn in[] out[T]` `fnid` `@val` `@xor` |
-| geometry | Where do the bytes live, and where does a fn run? | `@paged` `@memory_hard` `@with[name]` `@parallel[n]` `@gpuparallel` `@npuparallel` |
+| type and value | What are the bits, and how do you name them? | `i8` `i16` `i32` `i64` `ui8` `ui16` `ui32` `ui64` `size` `f32` `f64` `bool` `char` `string` `object` `T*` `fn in[] out[T]` `fnid` `blockid` `@val` `@xor` |
+| geometry | Where do the bytes live, and where does a fn run? | `@paged` `@memory_hard` `@blockpack[name]` `@parallel[n]` `@gpuparallel` `@npuparallel` |
 
 Ordinary cell: mutable, `@private`, freed when the function returns, on the CPU. `@mut` on an ordinary cell changes nothing. It is not a scope. A function instance is not an ordinary cell. Its default is frozen. See Functions.
 
@@ -101,11 +101,11 @@ Geometry is not a type. On a function it chooses the device. On a large cell it 
 | `@npuparallel` | NPU. The same crossing rule as the GPU. |
 | `@paged` | Only the locked sector is present. A read or a store while it is unlocked is a failure. |
 | `@memory_hard` | A file. The location is fixed at program start. The file is created before `main`. If it cannot be created, the host halts. A later read or write that fails is a failure. Multi-byte integers in the file are little-endian. |
-| `@with[name]` | Sit in the spare of `name`, because you use them together. The compiler does not infer this. |
+| `@blockpack[name]` | The next occupant of the load block `name`. `@blockinit` declares that block. |
 
 The scheduler does not pick a device. You write the mark. A call through an instance uses the instance's geometry when a transform has set one, and the definition's geometry otherwise.
 
-A `@gpuparallel` or `@npuparallel` parameter or result must be an atom, an `enum`, or an array or object made only of those. An `enum` crosses as its underlying atom. An object crosses only when it contains no pointer. A pointer, `string`, `rng`, `fn`, `fnid`, `pool`, or `pipe` is a compile error. The host copies the inputs to the device and copies the results back. The device does not keep a pointer after the call.
+A `@gpuparallel` or `@npuparallel` parameter or result must be an atom, an `enum`, or an array or object made only of those. An `enum` crosses as its underlying atom. An object crosses only when it contains no pointer. A pointer, `string`, `rng`, `fn`, `fnid`, `blockid`, `pool`, or `pipe` is a compile error. The host copies the inputs to the device and copies the results back. The device does not keep a pointer after the call.
 
 ## Objects
 An object is a struct in memory. `struct` is not a second keyword. Fields are in the order written, with that target's C++ alignment. There is no virtual function and no vptr. `@ismutationof` does not make a subclass. A `flow` converts two layouts that are not parent and child.
@@ -578,7 +578,7 @@ A `string` is a sequence of `char`, like `std::string`. `"text"` is a `string`, 
 
 ## Pages
 
-A page is 4096 bytes. This is where an object, an array, or a function frame is placed. It is not a type. The size table is not a mark. `@paged` is still only residency. `@memory_hard` is still a file, and a file is not packed into a RAM page. `@with[name]` is the only mark that chooses a spare, and it chooses the one you named.
+A page is 4096 bytes. This is where an object, an array, or a function frame is placed. It is not a type. The size table is not a mark. `@paged` is still only residency. `@memory_hard` is still a file, and a file is not packed into a RAM page. A load block is the only named slab, and only `@blockpack` puts a cell in one.
 
 The size is the laid-out size on that target. Count alignment padding, the present flag, and the extra bytes of a `@mutex` cell. Do not use the sum of the field atoms. A child counts the parent prefix. An embedded object is not placed on its own. The outer object is what is placed. An empty object occupies no page.
 
@@ -590,22 +590,46 @@ The bytes left on the current page decide.
 |---|---|
 | 0 | No page. |
 | 1 … 2048 | Pack it. 2048 fits twice, with nothing left. 1024 fits four. 512 fits eight. Do not stop at two just because the size is under 2048. |
-| 2049 … 4096 | One object on that page, starting on the boundary. A 3 KiB object cannot share the page with another object of that size. The spare stays empty unless a later cell writes `@with` of this one, and that cell fits in the spare. |
+| 2049 … 4096 | One object on that page, starting on the boundary. A 3 KiB object cannot share the page with another object of that size. The spare stays empty. It is not a load block. |
 | 4097 and up | Start on a boundary. The bytes stay contiguous and cover `ceil(size / 4096)` pages. Do not pad each page into its own slice of fields. |
 
 An array is one allocation. Elements stay contiguous, in index order. Do not page-align each element, even when an element is large. If the whole array fits in the bytes left on the page, place it there. If it fits in one page but not in the bytes left, start it on the next page. If it is larger than a page, page-align the base and keep the elements contiguous across pages. An element that itself spans a page is allowed. Inserting padding so each element starts on a page is not.
 
-`@with[name]` puts this cell in the spare of `name`. You write it when the two are used around the same time. The compiler does not look at references, and it does not guess that a page will be gone later. No mark means the spare stays empty. An empty spare and a spare you never touch cost the same. The mark is the only reason to fill it.
+A load block is a named run of pages. You declare it, then you pack cells into it. The compiler does not look at references to decide either step. Packing is an attribute because the address is fixed before the program runs. A call would be too late, and a live cell is not moved. The id functions only name a block. They do not pack one.
 
 ```text
-u8 block[3072];
-i32 note @with[block];
-i32 tag @with[block];
+@blockinit[scratch, 1];
+u8 raw[3072] @blockpack[scratch];
+i32 note @blockpack[scratch];
+i32 tag @blockpack[scratch];
 ```
 
-`name` is written first, and it lives at least as long as this cell. Its laid-out size is from 2049 to 4095, so it has a spare. Cells marked `@with` the same name are placed in source order, after that object's own bytes, at the alignment this cell already required. A cell that would cross the page does not go there. A cell that fits is not given its own page.
+`@blockinit[name, pages];` is a statement. `pages` is how many 4096-byte pages, and it is a constant of at least 1. Omitted, it is 1. The base is page-aligned. The block is not a cell. `@static` on that statement makes the block live for the program. Without it, the block lives until the enclosing function returns. `@paged` on it makes the block a locked sector. `@memory_hard` on it is a compile error. A second `@blockinit` of that name in the same namespace is a compile error. A block with nothing packed into it is a compile error.
 
-`@with` does not change residency. `@paged` is still the lock. A live cell is still not moved. The 64-byte gap between two mutable cells of different runs still applies, and that gap counts as used spare.
+`@blockpack[name]` places this cell in that block, in source order, at the alignment it already required. The cell is not placed by the size table, and it does not keep a spare. A cell that does not fit in the bytes left is a compile error. It is not placed beside the block. A second `@blockpack` on one cell is a compile error. A `@memory_hard` cell cannot be packed. A cell must not outlive the block.
+
+`@blockpush[name];` makes `name` the current block until `@blockpop[name];`. `@blockpack` with no argument packs into the current block. Pop requires that `name` be the current one, then restores the previous. This stack is compile-time. It does not load a page. A push that is not popped before the scope ends is a compile error. `@blockpack[name]` does not change the current block.
+
+```text
+@blockinit[scratch, 1];
+@blockpush[scratch];
+i32 note @blockpack;
+i32 tag @blockpack;
+@blockpop[scratch];
+```
+
+An atom that would cross a page inside the block starts at the next page of that block. If no page remains, that is a compile error. The 64-byte gap between two mutable cells of different runs still applies, and that gap counts as used bytes.
+
+A packed cell keeps its own name. The block is a separate name. You do not use the block as a pointer.
+
+```text
+blockid id = getblockidbyname["scratch"];
+string who = getnamebyblockid[id];
+```
+
+`getblockidbyname` runs at compile time. The string is the name you would write: `scratch`, or `Draw::scratch`. A short name that is not exactly one block there is a compile error. `blockid` is a value. It is not a pointer and not callable.
+
+A block that is not `@paged` is resident for its whole life. `lock` on it is a compile error. A `@paged` block is loaded by `lock` and unloaded by `unlock`, or by `hold` around a brace. Those calls take the block name or a constant `blockid`. A read or a store of one of its cells outside that pair is a compile error. Every path that locks must unlock. A `blockid` that is not a constant cannot be locked in this version.
 
 A function frame uses the same table against the stack page. A frame that fits in the bytes left stays there. A frame that fits in one page but not in the remainder starts at the next stack page. A frame bigger than a page is contiguous and its base is page-aligned. A frame of 4096 or less is not allocated with `malloc` to force a private page. The call is still the ordinary x86-64 stack.
 
@@ -627,7 +651,7 @@ Odd cases, all of which follow the table and are not exceptions to it:
 |---|---|
 | exactly 2048 | Two per page. No spare. |
 | exactly 4096 | One page. No spare. The base is the boundary. |
-| 3072, or any size from 2049 to 4095 | One on the page. The tail is spare and stays empty unless `@with` names this cell and fits. |
+| 3072, or any size from 2049 to 4095 | One on the page. The tail stays empty. It is not a load block. |
 | size just over 4096 | Two pages, contiguous, base on a boundary. One extra page is not added in front. |
 | array of 3 KiB objects | The array is contiguous. The base follows the array rule. Elements are not each given a page. |
 | array of `f64` that fits in one page | One resident page. No per-element alignment to 4096. |
@@ -637,7 +661,9 @@ Odd cases, all of which follow the table and are not exceptions to it:
 | `@memory_hard` | File. Not a RAM page. |
 | `@paged` sector | A run of these pages. Placement is this table. Residency is the lock. |
 | pointer, `pool`, `pipe`, `fn` | The cell is placed by its own size. The target is placed on its own. |
-| two size classes | Not mixed, unless the smaller one writes `@with` of the one that has the spare. |
+| two size classes | Not mixed by the size table. A load block may hold both, in pack order, if they fit. |
+| `@blockinit` with nothing packed | Compile error. |
+| `@blockpack` past the last byte | Compile error. Not placed beside the block. |
 | live object, page looks sparse | Leave it. Do not move it. |
 | interpreter | Same decisions, no hardware gaps. |
 
@@ -799,6 +825,12 @@ A failure has no payload. `STOP[THIS]` ends it. It does not produce a value, and
 | `getfuncidbyname` | Compile time. The call name becomes a `fnid`. |
 | `getnamebyfuncid` | The qualified name of that id. |
 | `getfuncbyid` | The frozen function value of that id. |
+| `blockid` | The id of one load block. A value. Not a pointer and not callable. |
+| `getblockidbyname` | Compile time. The block name becomes a `blockid`. |
+| `getnamebyblockid` | The qualified name of that id. |
+| `@blockinit[name, pages]` | Statement. Names a load block of that many pages. Omitted `pages` means 1. |
+| `@blockpack[name]` | Places this cell in that block. No argument means the current block. |
+| `@blockpush[name]` `@blockpop[name]` | Compile-time stack of the current block. Not a load. |
 | `pool` | Shared memory. The access mode is its lock. |
 | `pipe` | Moves items. Does not own their storage. |
 | `push` `pop` `flush` | Queue operations. `flush` finishes a `@device` batch. |
@@ -854,7 +886,7 @@ A failure has no payload. `STOP[THIS]` ends it. It does not produce a value, and
 
 If a wait has already lasted 15 minutes, the host moves that coroutine stack to disk or to other memory. The program cannot tell which. If the move fails, the coroutine stays paused and the wait is a failure.
 
-An unknown `@` is a compile error. `@` sits after a function, after a binding, or after `loop` and `do` when the mark is `@name`.
+An unknown `@` is a compile error. `@` sits after a function, after a binding, or after `loop` and `do` when the mark is `@name`. `@blockinit`, `@blockpush`, and `@blockpop` are statements.
 
 ## Nothing is undefined
 
@@ -914,11 +946,16 @@ A program that compiles has one meaning. A violation is a compile error or a fai
 - a `foreign` function with a body, or `@body` on one
 - `include lib` of a mangled C++ name
 - an unknown `@`
-- `@with` of a name that is not a cell, is written later, or dies sooner
-- `@with` of a cell whose size is not from 2049 to 4095, or of a `@memory_hard` cell
-- `@with` on a `@memory_hard` cell
-- a `@with` cell that does not fit in the spare left, counting alignment and a 64-byte gap owed to another run
-- a second `@with` on one cell
+- `@blockinit` whose `pages` is not a constant of at least 1, or a second block of that name in one namespace
+- a load block with nothing packed into it
+- `@blockpack` of a name that is not a block, or `@blockpack` with no argument and no current block
+- a second `@blockpack` on one cell
+- a packed cell that does not fit, counting alignment and a 64-byte gap owed to another run
+- a packed cell that outlives its block, or a `@memory_hard` cell packed into a block
+- `@memory_hard` on `@blockinit`
+- `@blockpop` of a name that is not current, or a `@blockpush` not popped before the scope ends
+- `lock` of a block that is not `@paged`, or a read or a store of a `@paged` block's cell outside `lock` or `hold`
+- `lock` or `hold` of a `blockid` that is not a constant
 - a detached pointer to a cell that dies with the caller
 - two `@public` variables with the same short name in one namespace
 - `@compeval` with an input that is not a constant
@@ -950,4 +987,4 @@ A program that compiles has one meaning. A violation is a compile error or a fai
 
 ## Not in the language
 
-No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtual dispatch. No vptr. No downcast. A child method is a mutation, not an override. No inferred result types. No runtime polymorphic number. No `using`. No argument-dependent lookup. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. No bitwise operators. No `%`. No type punning. No undefined behavior. A missing arm is not an error unless `@total` or the project switch `total` says so. No per-element page alignment inside an array. No moving a live object to compact a page. No inferred spare. The spare stays empty unless `@with` names it.
+No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtual dispatch. No vptr. No downcast. A child method is a mutation, not an override. No inferred result types. No runtime polymorphic number. No `using`. No argument-dependent lookup. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. No bitwise operators. No `%`. No type punning. No undefined behavior. A missing arm is not an error unless `@total` or the project switch `total` says so. No per-element page alignment inside an array. No moving a live object to compact a page. No inferred spare, and no `@with`. A spare on the size table stays empty. A cell joins a load block only by `@blockpack`.

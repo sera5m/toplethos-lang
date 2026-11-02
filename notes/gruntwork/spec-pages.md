@@ -12,7 +12,9 @@ Alignment is max(16, C++ alignment). A mutex cell is also 64-byte aligned. If th
 |---|---|
 | 0 | no page |
 | 1 … 2048 | pack. 2048 fits 2, 1024 fits 4, 512 fits 8 |
-| 2049 … 4096 | one per page, base on the boundary. The spare stays empty unless a later cell writes `@with` of this one and fits |
+| 2049 … 4096 | one per page, base on the boundary. The spare stays empty. It is not a load block |
+
+A load block is separate from that spare. `@blockinit[name, pages];` names `pages` pages (default 1). `@blockpack[name]` places a cell in it, in source order, or it does not fit and the compile fails. `@blockpush` / `@blockpop` only set which block a bare `@blockpack` fills. They do not load a page. A `@paged` block is loaded with `lock` and `hold`. `getblockidbyname` and `getnamebyblockid` only name it.
 | 4097+ | base on the boundary, contiguous, ceil(size/4096) pages |
 
 Arrays stay contiguous. Do not page-align elements. A frame uses the same table on the stack. A frame of 4096 or less stays on the stack. No malloc to force a page.
