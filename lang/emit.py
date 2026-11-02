@@ -17,6 +17,10 @@ class Emit:
         self.static_ids = []
         self.static_size = {}
         self.cur = None
+        self.rbx_hold = 0
+        self.vreg = {}
+        self.extra_pushes = []
+        self.stack_pad = 8
 
     def w(self, s):
         self.o.append(s)
@@ -103,9 +107,11 @@ class Emit:
         self.w("    push %rbp")
         self.w("    mov %rsp, %rbp")
         self.w("    push %rbx")
+        for reg in self.extra_pushes:
+            self.w(f"    push %{reg}")
         if fn["method"]:
             self.w("    mov %rdi, %rbx")
-        self.w(f"    sub ${self.frame + 8}, %rsp")
+        self.w(f"    sub ${self.frame + self.stack_pad}, %rsp")
         for iid, off in self.slot.items():
             info = self.prog["ids"].get(iid, {})
             if info.get("mutex"):
@@ -166,7 +172,9 @@ class Emit:
 
     def epilogue(self, name):
         self.w(f".Lret_{name}:")
-        self.w(f"    add ${self.frame + 8}, %rsp")
+        self.w(f"    add ${self.frame + self.stack_pad}, %rsp")
+        for reg in reversed(self.extra_pushes):
+            self.w(f"    pop %{reg}")
         self.w("    pop %rbx")
         self.w("    pop %rbp")
         self.w("    ret")
@@ -232,8 +240,11 @@ class Emit:
             self.load_fast(e)
             return
         self.addr(e)
-        self.w("    sub $16, %rsp")
-        self.w("    mov %rax, (%rsp)")
+        info = self.prog["ids"].get(e.get("id"), {}) if e["k"] == "name" else {}
+        ephemeral = bool(info.get("ephemeral"))
+        if ephemeral:
+            self.w("    sub $16, %rsp")
+            self.w("    mov %rax, (%rsp)")
         self.w("    cmpb $0, 8(%rax)")
         self.w("    jne 1f")
         self.fail("absent")
@@ -245,18 +256,24 @@ class Emit:
             self.w("    mov (%rax), %rax")
         else:
             self.w("    mov (%rax), %eax")
-        info = self.prog["ids"].get(e.get("id"), {}) if e["k"] == "name" else {}
-        if info.get("ephemeral"):
+        if ephemeral:
             self.w("    mov (%rsp), %rcx")
             self.w("    movq $0, (%rcx)")
             self.w("    movb $0, 8(%rcx)")
-        self.w("    add $16, %rsp")
+            self.w("    add $16, %rsp")
 
     def load_fast(self, e):
         reg = self.regmap.get(e["id"]) if getattr(self, "regmap", None) else None
         if reg:
             kind, r = reg
             self.w(f"    movapd %{r}, %xmm0" if kind == "xmm" else f"    mov %{r}, %eax")
+            return
+        home = self.vreg.get(e["id"])
+        if home:
+            if e["ty"] == ("i64",):
+                self.w(f"    mov %{home}, %rax")
+            else:
+                self.w(f"    mov %{self._r32(home)}, %eax")
             return
         info = self.prog["ids"][e["id"]]
         ty = e["ty"]
@@ -280,6 +297,13 @@ class Emit:
         if reg:
             kind, r = reg
             self.w(f"    movapd %xmm0, %{r}" if kind == "xmm" else f"    mov %eax, %{r}")
+            return
+        home = self.vreg.get(dest["id"])
+        if home:
+            if ty == ("i64",):
+                self.w(f"    mov %rax, %{home}")
+            else:
+                self.w(f"    mov %eax, %{self._r32(home)}")
             return
         info = self.prog["ids"][dest["id"]]
         if info.get("time") in ("static", "config"):
@@ -319,11 +343,16 @@ class Emit:
             return
         if k == "index":
             self.gen(e["i"])
-            self.w("    sub $16, %rsp")
-            self.w("    mov %rax, (%rsp)")
-            self.addr(e["a"])
-            self.w("    mov (%rsp), %rcx")
-            self.w("    add $16, %rsp")
+            if e["a"]["k"] == "name":
+                # The base is a lea. It does not clobber the index.
+                self.w("    mov %eax, %ecx")
+                self.addr(e["a"])
+            else:
+                self.w("    sub $16, %rsp")
+                self.w("    mov %rax, (%rsp)")
+                self.addr(e["a"])
+                self.w("    mov (%rsp), %rcx")
+                self.w("    add $16, %rsp")
             n = e["a"]["ty"][2]
             self.w(f"    cmp ${n}, %ecx")
             self.w("    jb 1f")
@@ -343,20 +372,30 @@ class Emit:
             self.place(dest, rhs["ty"])
             self.xor_move(dest, rhs)
             return
-        self.w("    sub $16, %rsp")
-        if rhs["ty"] == ("f64",):
-            self.w("    movsd %xmm0, (%rsp)")
-        else:
-            self.w("    mov %rax, (%rsp)")
+        if rhs["ty"] == ("f64",) or self.cur.get("method") or self.rbx_hold:
+            self.w("    sub $16, %rsp")
+            if rhs["ty"] == ("f64",):
+                self.w("    movsd %xmm0, (%rsp)")
+            else:
+                self.w("    mov %rax, (%rsp)")
+            self.addr(dest)
+            if rhs["ty"] == ("f64",):
+                self.w("    movsd (%rsp), %xmm0")
+                self.w("    movsd %xmm0, (%rax)")
+            else:
+                self.w("    mov (%rsp), %rcx")
+                self.w("    mov %rcx, (%rax)")
+            self.w("    movb $1, 8(%rax)")
+            self.w("    add $16, %rsp")
+            self.xor_move(dest, rhs)
+            return
+        # rbx is callee-saved and not HERE here. Nested address math sees rbx_hold and stays off it.
+        self.w("    mov %rax, %rbx")
+        self.rbx_hold += 1
         self.addr(dest)
-        if rhs["ty"] == ("f64",):
-            self.w("    movsd (%rsp), %xmm0")
-            self.w("    movsd %xmm0, (%rax)")
-        else:
-            self.w("    mov (%rsp), %rcx")
-            self.w("    mov %rcx, (%rax)")
+        self.rbx_hold -= 1
+        self.w("    mov %rbx, (%rax)")
         self.w("    movb $1, 8(%rax)")
-        self.w("    add $16, %rsp")
         self.xor_move(dest, rhs)
 
     def xor_move(self, dest, rhs):
@@ -421,6 +460,10 @@ class Emit:
             self.w(f"{done}:")
             return
         self.gen(e["a"])
+        row = e.get("row", e["ty"])
+        if row != ("f64",):
+            self._int_binop_right(e, op, row)
+            return
         self.w("    sub $16, %rsp")
         left_f = e["a"]["ty"] == ("f64",)
         if left_f:
@@ -464,11 +507,73 @@ class Emit:
             self.w(f"    {asm} %xmm0, %xmm1")
             self.w("    movapd %xmm1, %xmm0")
             return
-        # integer. left in memory, right in rax.
+
+    def _int_leaf(self, e):
+        ty = e.get("ty")
+        if ty not in (("i32",), ("i64",), ("bool",)):
+            return False
+        if e.get("k") == "int":
+            return True
+        if e.get("k") == "name" and e.get("fast"):
+            if self.regmap and e["id"] in self.regmap:
+                return False
+            return True
+        return False
+
+    def _load_rcx(self, e):
+        # Does not clobber rax. The left operand is already there.
+        wide = e.get("ty") == ("i64",)
+        if e["k"] == "int":
+            n = e["n"]
+            if wide and not (-2147483648 <= n <= 2147483647):
+                self.w(f"    movabs ${n}, %rcx")
+            elif wide:
+                self.w(f"    mov ${n}, %rcx")
+            else:
+                self.w(f"    mov ${n}, %ecx")
+            return
+        home = self.vreg.get(e["id"]) if e.get("k") == "name" else None
+        if home:
+            if wide:
+                self.w(f"    mov %{home}, %rcx")
+            else:
+                self.w(f"    mov %{self._r32(home)}, %ecx")
+            return
+        info = self.prog["ids"][e["id"]]
+        reg = "%rcx" if wide else "%ecx"
+        if info.get("time") in ("static", "config"):
+            self.w(f"    mov {self.sym(e['id'])}(%rip), {reg}")
+        else:
+            self.w(f"    mov {self.slot[e['id']]}(%rbp), {reg}")
+
+    def _hold_left(self):
+        if self.cur.get("method") or self.rbx_hold:
+            self.w("    sub $16, %rsp")
+            self.w("    mov %rax, (%rsp)")
+            return "stack"
+        self.rbx_hold += 1
+        self.w("    mov %rax, %rbx")
+        return "rbx"
+
+    def _unhold_left(self, kind):
         self.w("    mov %rax, %rcx")
-        self.w("    mov (%rsp), %rax")
-        self.w("    add $16, %rsp")
-        bits = 64 if row == ("i64",) else 32
+        if kind == "rbx":
+            self.rbx_hold -= 1
+            self.w("    mov %rbx, %rax")
+        else:
+            self.w("    mov (%rsp), %rax")
+            self.w("    add $16, %rsp")
+
+    def _int_binop_right(self, e, op, row):
+        if self._int_leaf(e["b"]):
+            self._load_rcx(e["b"])
+        else:
+            kind = self._hold_left()
+            self.gen(e["b"])
+            self._unhold_left(kind)
+        self._int_finish(e, op, 64 if row == ("i64",) else 32)
+
+    def _int_finish(self, e, op, bits):
         if op in ("==", "!=", "<", ">", "<=", ">="):
             self.w("    cmp %rcx, %rax" if bits == 64 else "    cmp %ecx, %eax")
             setcc = {"==": "e", "!=": "ne", "<": "l", ">": "g", "<=": "le", ">=": "ge"}[op]
@@ -476,6 +581,10 @@ class Emit:
             self.w("    movzx %al, %eax")
             return
         if op == "/":
+            k = _pow2_shift(e["b"], bits)
+            if k is not None:
+                self.idiv_pow2(bits, k)
+                return
             self.idiv(bits)
             return
         if bits == 32:
@@ -496,6 +605,23 @@ class Emit:
         self.w(f"{nan}:")
         self.w("    mov $1, %eax" if op == "!=" else "    xor %eax, %eax")
         self.w(f"{end}:")
+
+    def idiv_pow2(self, bits, k):
+        # Toward zero, so a negative dividend is adjusted before the arithmetic shift.
+        if k == 0:
+            return
+        if bits == 32:
+            self.w("    mov %eax, %ecx")
+            self.w("    sar $31, %ecx")
+            self.w(f"    shr ${32 - k}, %ecx")
+            self.w("    add %ecx, %eax")
+            self.w(f"    sar ${k}, %eax")
+            return
+        self.w("    mov %rax, %rcx")
+        self.w("    sar $63, %rcx")
+        self.w(f"    shr ${64 - k}, %rcx")
+        self.w("    add %rcx, %rax")
+        self.w(f"    sar ${k}, %rax")
 
     def idiv(self, bits):
         reg = "%ecx" if bits == 32 else "%rcx"
@@ -915,10 +1041,150 @@ class Emit:
             self.w(f"    mov %rax, {off}(%rbp)")
         self.w(f"    movb $1, {off + 8}(%rbp)")
 
+    def _r32(self, reg):
+        return {"rsi": "esi", "rdi": "edi", "rbx": "ebx"}.get(reg, reg + "d")
+
+    def _assign_vregs(self, fn):
+        # Caller-saved first so a short live range does not make us push.
+        pool = ["r8", "r9", "r10", "r11", "rsi", "rdi", "r12", "r13", "r14", "r15"]
+        self.vreg = {}
+        self.extra_pushes = []
+        self.stack_pad = 8
+        if self._has_regloop(fn["body"]):
+            return
+        params = {p["id"] for p in fn["params"]}
+        do_idx = set()
+        defs, uses, slow, calls = {}, {}, set(), []
+        loops = []
+
+        def reads(e, pos):
+            if isinstance(e, list):
+                for x in e:
+                    reads(x, pos)
+                return
+            if not isinstance(e, dict):
+                return
+            if e.get("k") == "addr" and isinstance(e.get("a"), dict) and e["a"].get("k") == "name":
+                slow.add(e["a"]["id"])
+            if e.get("k") == "name" and e.get("id"):
+                uses.setdefault(e["id"], []).append(pos)
+                if not e.get("fast"):
+                    slow.add(e["id"])
+            if e.get("k") in ("call", "method", "loadbmp", "start", "run"):
+                calls.append(pos)
+            for v in e.values():
+                if isinstance(v, (dict, list)):
+                    reads(v, pos)
+
+        def walk(stmts):
+            for st in stmts:
+                pos = walk.n = walk.n + 1
+                op = st[0]
+                if op == "decl":
+                    if st[3] is not None:
+                        reads(st[3], pos)
+                        defs.setdefault(st[1], []).append(pos)
+                elif op == "store" and st[1].get("k") == "name":
+                    reads(st[2], pos)
+                    defs.setdefault(st[1]["id"], []).append(pos)
+                elif op == "store":
+                    reads(st[1], pos)
+                    reads(st[2], pos)
+                elif op == "expr":
+                    reads(st[1], pos)
+                elif op == "return" and st[1] is not None:
+                    reads(st[1], pos)
+                elif op == "if":
+                    reads(st[1], pos)
+                    walk(st[2])
+                    walk(st[3])
+                elif op == "loop":
+                    before = walk.n
+                    walk(st[1])
+                    if walk.n >= before + 1:
+                        loops.append((before + 1, walk.n))
+                elif op == "do":
+                    do_idx.add(st[2])
+                    reads(st[1], pos)
+                    before = walk.n
+                    walk(st[3])
+                    if walk.n >= before + 1:
+                        loops.append((before + 1, walk.n))
+                    walk(st[4])
+                elif op == "time":
+                    calls.append(pos)
+                    reads(st[2], pos)
+                    walk(st[3])
+                elif op in ("fork", "finish"):
+                    calls.append(pos)
+                elif op == "adecl" and st[3]:
+                    reads(st[3], pos)
+        walk.n = 0
+        walk(fn["body"])
+
+        intervals = []
+        for iid, ds in defs.items():
+            if iid in params or iid in do_idx or iid in slow or iid not in uses:
+                continue
+            info = self.prog["ids"].get(iid, {})
+            if info.get("ty") not in (("i32",), ("i64",), ("bool",)):
+                continue
+            if info.get("time") or info.get("mutex") or info.get("xor") or info.get("ephemeral") or info.get("freeze"):
+                continue
+            if iid not in self.slot:
+                continue
+            start, end = min(ds), max(uses[iid])
+            if any(u < start for u in uses[iid]):
+                continue
+            for left, right in loops:
+                uses_in = [u for u in uses[iid] if left <= u <= right]
+                if not uses_in:
+                    continue
+                defs_in = [d for d in ds if left <= d <= right]
+                # A use before this iteration's store is live across the back edge.
+                if not defs_in or any(u < min(defs_in) for u in uses_in):
+                    if end < right:
+                        end = right
+            if any(start <= c <= end for c in calls):
+                continue
+            intervals.append((start, end, iid))
+        intervals.sort()
+        active = []
+        chosen = []
+        for start, end, iid in intervals:
+            active = [a for a in active if a[0] >= start]
+            used = {a[1] for a in active}
+            free = next((r for r in pool if r not in used), None)
+            if free is None:
+                continue
+            active.append((end, free))
+            self.vreg[iid] = free
+            chosen.append(free)
+        self.extra_pushes = [r for r in ("r12", "r13", "r14", "r15") if r in chosen]
+        if len(self.extra_pushes) % 2:
+            self.stack_pad = 0
+
+    def _has_regloop(self, stmts):
+        for st in stmts:
+            op = st[0]
+            if op == "do" and len(st) > 6 and st[6].get("reg"):
+                return True
+            if op == "if" and (self._has_regloop(st[2]) or self._has_regloop(st[3])):
+                return True
+            if op == "loop" and self._has_regloop(st[1]):
+                return True
+            if op == "do" and (self._has_regloop(st[3]) or self._has_regloop(st[4])):
+                return True
+            if op == "time" and self._has_regloop(st[3]):
+                return True
+        return False
+
     def emit_fn(self, fn, public):
         self.o = []
         self.cur = fn
+        self.rbx_hold = 0
         self.layout(fn)
+        self._assign_vregs(fn)
         self.prologue(fn, public)
         self.stmts(fn["body"])
         text = "\n".join(self.o).replace("jmp .Lret_PLACE", f"jmp .Lret_{public}")
@@ -981,6 +1247,18 @@ class Emit:
             + (bss if self.static_ids else [])
             + ['    .section .note.GNU-stack,"",@progbits', ""]
         )
+
+
+def _pow2_shift(expr, bits):
+    if not isinstance(expr, dict) or expr.get("k") != "int":
+        return None
+    n = expr.get("n")
+    if not isinstance(n, int) or n <= 1 or n & (n - 1):
+        return None
+    k = n.bit_length() - 1
+    if k <= 0 or k >= bits:
+        return None
+    return k
 
 
 def assemble(prog):

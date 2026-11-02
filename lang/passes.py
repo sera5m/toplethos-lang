@@ -9,6 +9,7 @@ SCALARS = {("f64",), ("i32",), ("i64",), ("bool",)}
 
 
 def optimize(prog):
+    _inline(prog)
     ids = prog["ids"]
     for fn in prog["fns"].values():
         _fn(fn, ids)
@@ -692,3 +693,344 @@ def _regloop_ok(st, ids):
         if any(isinstance(p, dict) and not rec(p) for p in inner[1:]):
             return False
     return True
+
+
+def _inline(prog):
+    ids = prog["ids"]
+    fns = prog["fns"]
+    ctr = [0]
+    eligible = {name: fn for name, fn in fns.items() if _inline_ok(fn, fns, ids)}
+    calls = {name: _direct_calls(fn["body"]) for name, fn in eligible.items()}
+    pending = {name: {c for c in calls[name] if c in eligible and c != name} for name in eligible}
+    order = []
+    ready = [name for name, deps in pending.items() if not deps]
+    seen = set()
+    while ready:
+        name = ready.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        order.append(name)
+        for other, deps in pending.items():
+            if name in deps:
+                deps.remove(name)
+                if not deps and other not in seen and other not in ready:
+                    ready.append(other)
+    for name in order:
+        src = fns[name]
+        for fn in list(fns.values()):
+            if fn["name"] == name or fn.get("divzero") != src.get("divzero"):
+                continue
+            fn["body"] = _paste_calls(fn["body"], name, src, ids, ctr)
+        for obj in prog["objects"].values():
+            for fn in obj["methods"].values():
+                if fn.get("divzero") != src.get("divzero"):
+                    continue
+                fn["body"] = _paste_calls(fn["body"], name, src, ids, ctr)
+
+
+def _marked(ids, iid):
+    info = ids.get(iid, {})
+    return bool(info.get("time") or info.get("xor") or info.get("mutex") or info.get("ephemeral") or info.get("freeze"))
+
+
+def _plain_body(stmts, ids):
+    for st in stmts:
+        op = st[0]
+        if op in ("decl", "adecl") and _marked(ids, st[1]):
+            return False
+        if op == "if" and not (_plain_body(st[2], ids) and _plain_body(st[3], ids)):
+            return False
+    return True
+
+
+def _always_returns(stmts):
+    for st in stmts:
+        op = st[0]
+        if op == "return":
+            return True
+        if op == "if" and _always_returns(st[2]) and _always_returns(st[3]):
+            return True
+    return False
+
+
+def _inline_ok(fn, fns, ids):
+    if fn.get("method") or fn.get("require") or fn.get("ensure") or fn.get("out") is None:
+        return False
+    if not _scalar(fn["out"]):
+        return False
+    for p in fn["params"]:
+        if not _scalar(p["ty"]):
+            return False
+    if fn["name"] in _direct_calls(fn["body"]):
+        return False
+    count = _stmt_count(fn["body"])
+    if count == 0 or count > 48:
+        return False
+    if not _straight(fn["body"]) or not _plain_body(fn["body"], ids) or not _always_returns(fn["body"]):
+        return False
+    return True
+
+
+def _straight(stmts):
+    for st in stmts:
+        op = st[0]
+        if op in ("decl", "store", "expr", "return"):
+            continue
+        if op == "if":
+            if not _straight(st[2]) or not _straight(st[3]):
+                return False
+            continue
+        return False
+    return True
+
+
+def _direct_calls(stmts):
+    found = set()
+
+    def see(e):
+        if not isinstance(e, dict):
+            return
+        if e.get("k") == "call" and e.get("name"):
+            found.add(e["name"])
+        for v in e.values():
+            if isinstance(v, dict):
+                see(v)
+            elif isinstance(v, list):
+                for x in v:
+                    see(x)
+
+    def walk(body):
+        for st in body:
+            for part in st[1:]:
+                see(part)
+            op = st[0]
+            if op == "if":
+                walk(st[2])
+                walk(st[3])
+            elif op == "loop":
+                walk(st[1])
+            elif op == "do":
+                walk(st[3])
+                walk(st[4])
+
+    walk(stmts)
+    return found
+
+
+def _stmt_count(stmts):
+    n = 0
+    for st in stmts:
+        n += 1
+        if st[0] == "if":
+            n += _stmt_count(st[2]) + _stmt_count(st[3])
+    return n
+
+
+def _paste_calls(stmts, name, fn, ids, ctr):
+    out = []
+    for st in stmts:
+        pre, st2 = _paste_stmt(st, name, fn, ids, ctr)
+        out.extend(pre)
+        out.append(st2)
+    return out
+
+
+def _paste_stmt(st, name, fn, ids, ctr):
+    op = st[0]
+    if op == "decl":
+        pre, expr = _paste_expr(st[3], name, fn, ids, ctr)
+        return pre, ("decl", st[1], st[2], expr, st[4])
+    if op == "store":
+        pre, rhs = _paste_expr(st[2], name, fn, ids, ctr)
+        return pre, ("store", st[1], rhs, st[3])
+    if op == "expr":
+        pre, expr = _paste_expr(st[1], name, fn, ids, ctr)
+        return pre, ("expr", expr, st[2])
+    if op == "return":
+        pre, expr = _paste_expr(st[1], name, fn, ids, ctr)
+        return pre, ("return", expr, st[2])
+    if op == "if":
+        pre, cond = _paste_expr(st[1], name, fn, ids, ctr)
+        return pre, ("if", cond, _paste_calls(st[2], name, fn, ids, ctr), _paste_calls(st[3], name, fn, ids, ctr), st[4])
+    if op == "loop":
+        return [], ("loop", _paste_calls(st[1], name, fn, ids, ctr), st[2])
+    if op == "do":
+        pre, count = _paste_expr(st[1], name, fn, ids, ctr)
+        return pre, ("do", count, st[2], _paste_calls(st[3], name, fn, ids, ctr), _paste_calls(st[4], name, fn, ids, ctr), *st[5:])
+    if op == "time":
+        pre, watch = _paste_expr(st[2], name, fn, ids, ctr)
+        return pre, ("time", st[1], watch, _paste_calls(st[3], name, fn, ids, ctr), st[4])
+    return [], st
+
+
+def _paste_expr(e, name, fn, ids, ctr):
+    if isinstance(e, list):
+        pre = []
+        out = []
+        for item in e:
+            extra, child = _paste_expr(item, name, fn, ids, ctr)
+            pre.extend(extra)
+            out.append(child)
+        return pre, out
+    if not isinstance(e, dict):
+        return [], e
+    # The right of && and || may not run. A call there stays a call.
+    if e.get("k") == "bin" and e.get("op") in ("&&", "||"):
+        e = dict(e)
+        pre, left = _paste_expr(e.get("a"), name, fn, ids, ctr)
+        e["a"] = left
+        return pre, e
+    e = dict(e)
+    pre = []
+    for key, val in list(e.items()):
+        extra, child = _paste_expr(val, name, fn, ids, ctr)
+        pre.extend(extra)
+        e[key] = child
+    args = e.get("args")
+    if e.get("k") == "call" and e.get("name") == name and isinstance(args, list) and len(args) == len(fn["params"]):
+        extra, result = _splice(e, fn, ids, ctr)
+        pre.extend(extra)
+        return pre, result
+    return pre, e
+
+
+def _new_id(ids, ctr, info):
+    info = dict(info)
+    while True:
+        ctr[0] += 1
+        nid = f"inl.{ctr[0]}"
+        if nid not in ids:
+            break
+    info["id"] = nid
+    ids[nid] = info
+    return nid
+
+
+def _splice(call, fn, ids, ctr):
+    mapping = {}
+
+    def fresh(old):
+        nid = _new_id(ids, ctr, ids[old])
+        mapping[old] = nid
+        return nid
+
+    line = fn["line"]
+    pre = []
+    for param, arg in zip(fn["params"], call["args"]):
+        pre.append(("decl", fresh(param["id"]), param["ty"], arg, line))
+    _collect_decls(fn["body"], fresh)
+    body = _remap_stmts(fn["body"], mapping)
+    result = _new_id(ids, ctr, {"ty": fn["out"], "ro": False, "name": "inl"})
+    pre.append(("decl", result, fn["out"], None, line))
+    if _single_tail(body):
+        pre.extend(_return_to_store(body, result, fn["out"], line))
+    else:
+        body = _returns_to_leaves(body, result, fn["out"], line)
+        body.append(("leave", line))
+        pre.append(("loop", body, line))
+    return pre, {"k": "name", "id": result, "ty": fn["out"], "name": "inl"}
+
+
+def _single_tail(stmts):
+    found = [0]
+
+    def walk(body):
+        for st in body:
+            if st[0] == "return":
+                found[0] += 1
+            elif st[0] == "if":
+                walk(st[2])
+                walk(st[3])
+
+    walk(stmts)
+    return found[0] == 1 and bool(stmts) and stmts[-1][0] == "return"
+
+
+def _collect_decls(stmts, fresh):
+    for st in stmts:
+        op = st[0]
+        if op in ("decl", "adecl"):
+            fresh(st[1])
+        elif op == "if":
+            _collect_decls(st[2], fresh)
+            _collect_decls(st[3], fresh)
+        elif op == "loop":
+            _collect_decls(st[1], fresh)
+        elif op == "do":
+            fresh(st[2])
+            _collect_decls(st[3], fresh)
+            _collect_decls(st[4], fresh)
+        elif op == "time":
+            _collect_decls(st[3], fresh)
+
+
+def _remap_stmts(stmts, mapping):
+    out = []
+    for st in stmts:
+        op = st[0]
+        if op == "decl":
+            out.append(("decl", mapping[st[1]], st[2], _remap(st[3], mapping), st[4]))
+        elif op == "adecl":
+            out.append(("adecl", mapping[st[1]], st[2], _remap(st[3], mapping), st[4]))
+        elif op == "store":
+            out.append(("store", _remap(st[1], mapping), _remap(st[2], mapping), st[3]))
+        elif op == "expr":
+            out.append(("expr", _remap(st[1], mapping), st[2]))
+        elif op == "return":
+            out.append(("return", _remap(st[1], mapping), st[2]))
+        elif op == "if":
+            out.append(("if", _remap(st[1], mapping), _remap_stmts(st[2], mapping), _remap_stmts(st[3], mapping), st[4]))
+        elif op == "loop":
+            out.append(("loop", _remap_stmts(st[1], mapping), st[2]))
+        elif op == "do":
+            out.append(("do", _remap(st[1], mapping), mapping[st[2]], _remap_stmts(st[3], mapping), _remap_stmts(st[4], mapping), *st[5:]))
+        elif op == "time":
+            out.append(("time", st[1], _remap(st[2], mapping), _remap_stmts(st[3], mapping), st[4]))
+        else:
+            out.append(st)
+    return out
+
+
+def _remap(e, mapping):
+    if isinstance(e, list):
+        return [_remap(x, mapping) for x in e]
+    if not isinstance(e, dict):
+        return e
+    e = {k: _remap(v, mapping) for k, v in e.items()}
+    if e.get("k") == "name" and e.get("id") in mapping:
+        e["id"] = mapping[e["id"]]
+    return e
+
+
+def _return_to_store(stmts, result, ty, line):
+    out = []
+    for st in stmts:
+        op = st[0]
+        if op == "return":
+            if st[1] is not None:
+                out.append(("store", {"k": "name", "id": result, "ty": ty, "name": "inl"}, st[1], line))
+        elif op == "if":
+            out.append(("if", st[1], _return_to_store(st[2], result, ty, line), _return_to_store(st[3], result, ty, line), st[4]))
+        else:
+            out.append(st)
+    return out
+
+
+def _returns_to_leaves(stmts, result, ty, line):
+    out = []
+    for st in stmts:
+        op = st[0]
+        if op == "return":
+            if st[1] is not None:
+                out.append(("store", {"k": "name", "id": result, "ty": ty, "name": "inl"}, st[1], line))
+            out.append(("leave", line))
+        elif op == "if":
+            out.append(("if", st[1], _returns_to_leaves(st[2], result, ty, line), _returns_to_leaves(st[3], result, ty, line), st[4]))
+        elif op == "loop":
+            out.append(("loop", _returns_to_leaves(st[1], result, ty, line), st[2]))
+        elif op == "do":
+            out.append(("do", st[1], st[2], _returns_to_leaves(st[3], result, ty, line), _returns_to_leaves(st[4], result, ty, line), *st[5:]))
+        else:
+            out.append(st)
+    return out

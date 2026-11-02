@@ -686,6 +686,11 @@ The choice is made while compiling. A constant array, a constant coefficient, an
 | a present-flag check on a cell stored on every path to the load | phase 1 | the load is the value. No flag check |
 | `y = c + x * y` with `c` a constant or a pure addend | phase 3 | one `mulsd` and one `addsd`. `x` is held. Not `vfmadd`. Not `loop` |
 | `do n[constant]` that did not get the register row | the count is a constant | the trip count is an immediate. It is not spilled and reloaded |
+| `a / 2^k` on an integer, `2^k` a positive constant | the divisor is that constant | an arithmetic shift that rounds toward zero. Not `idiv` |
+| the left of an integer operator, saved while the right runs | the right is a constant or a present name, or `rbx` is free because this is not a method | the left stays in a register. It is not pushed |
+| an index of a named array, and a store through that index | the array is a name | the index is not pushed. An integer value being stored stays in `rbx` |
+| a plain integer or bool local | no call while it is live, nothing takes its address, and a register is free | the value stays in that register. The cell is not read or stored |
+| a call of a straight function | scalar arguments and result, not a method, no loop of its own, it does not call itself, no `@static` `@config` `@xor` `@mutex` `@ephemeral` or `@val` cell, the same `@divzero` as the caller, and the call is not on the skipped side of `&&` or `||` | the body is pasted at the call. One return at the end is a store. An earlier return is a store and a leave |
 
 A straight-line function whose live locals fit in one page still follows the Pages rule. These rewrites do not move a live object, and they do not page-align a small one.
 

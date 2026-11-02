@@ -21,6 +21,56 @@ fn main in[] out[i32] {
   return 0;
 }
 """),
+    ("nest", "14\n", """
+fn lum in[i32 p] out[i32] { return p / 256; }
+fn twice in[i32 a] out[i32] {
+  i32 x = lum in[a];
+  return x + lum in[a];
+}
+fn main in[] out[i32] {
+  print in[twice in[7 * 256]];
+  return 0;
+}
+"""),
+    ("early", "1\n0\n", """
+fn less in[i32 a, i32 b] out[bool] {
+  if a != b { return a < b; }
+  return false;
+}
+fn main in[] out[i32] {
+  if less in[1, 2] { print in[1]; } else { print in[0]; }
+  if less in[3, 3] { print in[1]; } else { print in[0]; }
+  return 0;
+}
+"""),
+    ("pow2", "-2\n-2\n2\n0\n-1\n390\n-1073741824\n", """
+fn main in[] out[i32] {
+  i32 a = 0 - 5;
+  i32 b = 0 - 4;
+  i32 c = 5;
+  i32 d = 0 - 1;
+  i32 e = 0 - 65536;
+  i32 f = 100000;
+  i32 g = 0 - 2147483647 - 1;
+  print in[a / 2];
+  print in[b / 2];
+  print in[c / 2];
+  print in[d / 2];
+  print in[e / 65536];
+  print in[f / 256];
+  print in[g / 2];
+  return 0;
+}
+"""),
+    ("and skip", "0\n", """
+fn die in[] out[i32] { return 1 / 0; }
+fn main in[] out[i32] {
+  bool t = false;
+  if t && (die in[] > 0) { return 1; }
+  print in[0];
+  return 0;
+}
+"""),
     ("object", "2\n", """
 object Point {
   i32 x;
