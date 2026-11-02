@@ -9,3 +9,4 @@ not_deps:
 phase4: researched, not implemented
 loop_opcode: forbidden
 fma_contract: forbidden
+pages: USE.md section Pages. Placement rule. Not an optimization pass. Not phase 4.

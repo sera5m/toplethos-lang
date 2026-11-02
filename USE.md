@@ -575,6 +575,61 @@ match[c] {
 
 A `string` is a sequence of `char`, like `std::string`. `"text"` is a `string`, not a pointer. `==` and `<` compare the bytes in order. `+` appends. `size in[s]` is the number of `char` values. `s[i]` is one `char`, with the same index rule as an array.
 
+## Pages
+
+A page is 4096 bytes. This is where an object, an array, or a function frame is placed. It is not a type, and it is not a mark the programmer writes. `@paged` is still only residency. `@memory_hard` is still a file, and a file is not packed into a RAM page.
+
+The size is the laid-out size on that target. Count alignment padding, the present flag, and the extra bytes of a `@mutex` cell. Do not use the sum of the field atoms. A child counts the parent prefix. An embedded object is not placed on its own. The outer object is what is placed. An empty object occupies no page.
+
+Placement alignment is the greater of 16 and the target's C++ alignment for that type. A `@mutex` cell is also 64-byte aligned inside the page. If that pad would push the object across the page, and the object would have fit on this page without the pad, the object starts on the next page instead.
+
+The bytes left on the current page decide.
+
+| laid-out size | placement |
+|---|---|
+| 0 | No page. |
+| 1 … 2048 | Pack it. 2048 fits twice, with nothing left. 1024 fits four. 512 fits eight. Do not stop at two just because the size is under 2048. |
+| 2049 … 4096 | One object on that page, starting on the boundary. A 3 KiB object cannot share the page with another object of that size. The spare bytes at the end may hold a later object that fits in the spare. They may not hold one that would cross. |
+| 4097 and up | Start on a boundary. The bytes stay contiguous and cover `ceil(size / 4096)` pages. Do not pad each page into its own slice of fields. |
+
+An array is one allocation. Elements stay contiguous, in index order. Do not page-align each element, even when an element is large. If the whole array fits in the bytes left on the page, place it there. If it fits in one page but not in the bytes left, start it on the next page. If it is larger than a page, page-align the base and keep the elements contiguous across pages. An element that itself spans a page is allowed. Inserting padding so each element starts on a page is not.
+
+A function frame uses the same table against the stack page. A frame that fits in the bytes left stays there. A frame that fits in one page but not in the remainder starts at the next stack page. A frame bigger than a page is contiguous and its base is page-aligned. A frame of 4096 or less is not allocated with `malloc` to force a private page. The call is still the ordinary x86-64 stack.
+
+A straight-line function whose live locals, and the objects those locals name, fit in one page keeps those bytes on that one resident page for the whole run. Arrays and objects small enough to fit are kept on a loaded page for that run. A large array stays a run of pages, with the page under the current index loaded.
+
+The compiler keeps a context for every live name: page, offset, length, resident or not, dirty or not, and whether another run may write it. The next op may use a name only when that context says its page is resident. If it is not, the compiler loads that page before the op. It does not test residency again for a page it has already proved resident and has not unlocked. An unlocked `@paged` sector is not resident. A read or a store of it is still a failure.
+
+A live object is not moved. A pointer keeps the address it was given. There is no compaction.
+
+Two runs may share a page. Two mutable cells used by different runs are separated by 64 bytes, unless both are only read. Sharing a cache line is a compile error in that case. Sharing a page is not.
+
+A huge page, 2 MiB, is used only when one allocation is at least 2 MiB. A 3 KiB object never uses one.
+
+These sizes are known from the type, so the choice is made while compiling. The desktop host places real bytes this way. The interpreter uses the same sizes and the same failure on an unlocked `@paged` sector. It does not insert 4096-byte gaps.
+
+Odd cases, all of which follow the table and are not exceptions to it:
+
+| case | result |
+|---|---|
+| exactly 2048 | Two per page. No spare. |
+| exactly 4096 | One page. No spare. The base is the boundary. |
+| 3072, or any size from 2049 to 4095 | One on the page. The tail is spare and may take a smaller later object. |
+| size just over 4096 | Two pages, contiguous, base on a boundary. One extra page is not added in front. |
+| array of 3 KiB objects | The array is contiguous. The base follows the array rule. Elements are not each given a page. |
+| array of `f64` that fits in one page | One resident page. No per-element alignment to 4096. |
+| `@mutex` pad would cross | Next page, then 64-byte align. |
+| parent plus child | One object. The size includes the prefix. |
+| embedded field | Not a separate placement. |
+| `@memory_hard` | File. Not a RAM page. |
+| `@paged` sector | A run of these pages. Placement is this table. Residency is the lock. |
+| pointer, `pool`, `pipe`, `fn` | The cell is placed by its own size. The target is placed on its own. |
+| two size classes | Not mixed in one slab, except the spare tail of a 2049 … 4096 object. |
+| live object, page looks sparse | Leave it. Do not move it. |
+| interpreter | Same decisions, no hardware gaps. |
+
+One atom load crossing a page is a compiler bug when the value's laid-out size is 4096 or less. A larger object may cross. A field whose alignment was honored does not itself cross: an `f64` stays on an 8-byte boundary, so it cannot sit on the last 4 bytes of a page.
+
 ## Utilities
 
 `min`, `max`, `clamp`, and `abs` take one atom. The arguments of `min`, `max`, and `clamp` are that same atom. `abs` of the lowest signed value is a failure. `swap` takes two pointers to the same type.
@@ -858,4 +913,4 @@ A program that compiles has one meaning. A violation is a compile error or a fai
 
 ## Not in the language
 
-No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtual dispatch. No vptr. No downcast. A child method is a mutation, not an override. No inferred result types. No runtime polymorphic number. No `using`. No argument-dependent lookup. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. No bitwise operators. No `%`. No type punning. No undefined behavior. A missing arm is not an error unless `@total` or the project switch `total` says so.
+No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtual dispatch. No vptr. No downcast. A child method is a mutation, not an override. No inferred result types. No runtime polymorphic number. No `using`. No argument-dependent lookup. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. No bitwise operators. No `%`. No type punning. No undefined behavior. A missing arm is not an error unless `@total` or the project switch `total` says so. No per-element page alignment inside an array. No moving a live object to compact a page.
