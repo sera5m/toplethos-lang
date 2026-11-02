@@ -181,7 +181,7 @@ class Front:
         live = {
             "public", "private", "protected", "mut", "val", "xor",
             "ephemeral", "static", "config", "divzero", "ismutationof",
-            "require", "ensure", "childof",
+            "require", "ensure", "childof", "mutex",
         }
         while True:
             self.skip()
@@ -209,7 +209,7 @@ class Front:
                 self.fail("@childof is for an object")
             if name in ("divzero", "ismutationof", "require", "ensure") and where != "fn":
                 self.fail(f"@{name} is for a function")
-            if name in ("val", "xor", "ephemeral", "static", "config") and where not in ("bind", "field"):
+            if name in ("val", "xor", "ephemeral", "static", "config", "mutex") and where not in ("bind", "field"):
                 self.fail(f"@{name} is for a binding")
             out[name] = arg
         times = [t for t in ("ephemeral", "static", "config") if t in out]
@@ -231,6 +231,8 @@ class Front:
             info["ephemeral"] = True
         if "xor" in ms:
             info["xor"] = True
+        if "mutex" in ms:
+            info["mutex"] = True
         if "mut" in ms:
             info["mut"] = True
         if "private" in ms:
@@ -331,6 +333,9 @@ class Front:
                     self.note_uses(st[1])
                     walk(st[3], depth + 1)
                     walk(st[4], depth)
+                elif op == "time":
+                    self.note_uses(st[2])
+                    walk(st[3], depth)
         walk(fn["body"], 0)
         if isinstance(fn.get("require"), dict):
             self.note_uses(fn["require"])
@@ -582,6 +587,16 @@ class Front:
             return ("continue", line)
         if self.eat("if"):
             return self.if_stmt(line)
+        if self.starts("@"):
+            return self.time_stmt(line)
+        if self.eat("fork"):
+            return self.fork_stmt(line)
+        if self.eat("finish"):
+            return self.finish_stmt(line)
+        if self.eat("lock"):
+            return self.lock_stmt(line, "lock")
+        if self.eat("unlock"):
+            return self.lock_stmt(line, "unlock")
         if self.eat("loop"):
             self.marks("loop")
             self.loop += 1
@@ -618,6 +633,80 @@ class Front:
         if expr["ty"] != fn["out"]:
             self.fail(f'result type is not the designated out type')
         return ("return", expr, line)
+
+    def int_const(self):
+        e = self.expr(("i32",))
+        if e["k"] != "int" or e["n"] < 1 or e["n"] > 64:
+            self.fail("fork takes a constant thread count")
+        return e["n"]
+
+    def check_worker(self, name, extra):
+        fn = self.fns.get(name)
+        if fn is None:
+            self.fail(f"'{name}' is not a function")
+        if fn["out"] != ("f64",):
+            self.fail("a parallel function returns f64")
+        ps = fn["params"]
+        if not ps or ps[0]["ty"] != ("i32",):
+            self.fail("a parallel function takes the lane as i32")
+        if extra is None and len(ps) != 1:
+            self.fail("a parallel function takes the lane as i32")
+        if extra is not None and (len(ps) != 2 or ps[1]["ty"][0] != "ptr"):
+            self.fail("a parallel function takes the lane and one pointer")
+        return fn
+
+    def with_cell(self):
+        if not self.eat("with"):
+            return None
+        self.expect("[")
+        name = self.ident()
+        self.expect("]")
+        info = self.lookup(name)
+        if info is None or not info.get("mutex"):
+            self.fail("with takes an @mutex cell")
+        return info["id"]
+
+    def time_stmt(self, line):
+        self.expect("@")
+        if not self.eat("time"):
+            self.later("attribute on a statement")
+        self.expect("[")
+        label = self.quoted()
+        self.expect("]")
+        self.expect("watch")
+        watched = self.expr(("f64",))
+        if watched["k"] != "name" or watched["ty"] != ("f64",):
+            self.fail("@time watches an f64 name")
+        body = self.block()
+        return ("time", label, watched, body, line)
+
+    def fork_stmt(self, line):
+        name = self.ident()
+        self.expect("in")
+        self.expect("[")
+        n = self.int_const()
+        self.expect("]")
+        extra = self.with_cell()
+        self.expect(";")
+        self.check_worker(name, extra)
+        return ("fork", name, n, extra, line)
+
+    def finish_stmt(self, line):
+        name = self.ident()
+        self.expect(";")
+        return ("finish", name, line)
+
+    def lock_stmt(self, line, kind):
+        self.expect("[")
+        name = self.ident()
+        self.expect("]")
+        self.expect(";")
+        info = self.lookup(name)
+        if info is None:
+            self.fail(f"'{name}' is used before it is declared")
+        if not info.get("mutex") and info["ty"][0] != "ptr":
+            self.fail("lock of a cell that is not @mutex")
+        return (kind, info["id"], info["ty"], line)
 
     def if_stmt(self, line):
         if self.eat("["):
@@ -688,6 +777,8 @@ class Front:
         iid = self.fresh(name)
         info = {"id": iid, "ty": ty, "ro": False, "name": name}
         self.paint(info, ms)
+        if info.get("mutex") and ty not in (("i32",), ("i64",), ("f64",)):
+            self.fail("@mutex on this type")
         self.bind(name, info)
         return ("decl", iid, ty, expr, line)
 
@@ -909,6 +1000,20 @@ class Front:
             return {"k": "bool", "v": False, "ty": ("bool",)}
         if self.peek().isdigit():
             return self.number(expect)
+        if self.eat("start"):
+            name = self.ident()
+            if name not in self.fns:
+                self.fail(f"'{name}' is not a function")
+            return {"k": "start", "name": name, "ty": ("f64",)}
+        if self.eat("run"):
+            name = self.ident()
+            self.expect("in")
+            self.expect("[")
+            n = self.int_const()
+            self.expect("]")
+            extra = self.with_cell()
+            self.check_worker(name, extra)
+            return {"k": "run", "name": name, "n": n, "extra": extra, "ty": ("f64",)}
         name = self.ident()
         self.skip()
         if self.peek() == "(":

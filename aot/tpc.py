@@ -1190,7 +1190,7 @@ def compile_source(src):
             prog = front_parse(src)
         except FrontError as e:
             raise CompileError(str(e))
-        return ["USE.md core"], assemble(prog), False
+        return ["USE.md core"], assemble(prog), "desktop"
     head = "\n" + src
     if "\nfn " in head or "\nobject " in head or "\nf64 " in head:
         import feat
@@ -1253,6 +1253,9 @@ def main(argv):
     cmd = ["g++", "-o", args.o, asm_path]
     if needs_rt == "battery":
         cmd = ["g++", "-O2", "-pthread", "-o", args.o, asm_path, str(Path(__file__).with_name("batteryrt.c"))]
+    elif needs_rt == "desktop":
+        root = Path(__file__).resolve().parents[1]
+        cmd = ["g++", "-pthread", "-o", args.o, asm_path, str(root / "lang" / "desktop.c")]
     elif needs_rt:
         cmd = ["g++", "-O2", "-o", args.o, asm_path, str(Path(__file__).with_name("wordrt.c"))]
     print(" ".join(cmd), file=sys.stderr)

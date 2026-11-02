@@ -1,5 +1,8 @@
 """Execute the checked program. Same results as the compiler."""
 
+import threading
+import time
+
 from front import Failure
 
 MASK32 = 0xFFFFFFFF
@@ -22,10 +25,43 @@ class Interp:
     def __init__(self, prog):
         self.prog = prog
         self.out = []
-        self.frames = []
-        self.returned = False
         self.statics = {}
-        self.fn_stack = []
+        self.tls = threading.local()
+        self.gate = None
+
+    def _local(self):
+        t = self.tls
+        if not hasattr(t, "on"):
+            t.frames = []
+            t.returned = False
+            t.fn_stack = []
+            t.here_box = None
+            t.on = True
+        return t
+
+    @property
+    def frames(self):
+        return self._local().frames
+
+    @property
+    def returned(self):
+        return self._local().returned
+
+    @returned.setter
+    def returned(self, v):
+        self._local().returned = v
+
+    @property
+    def fn_stack(self):
+        return self._local().fn_stack
+
+    @property
+    def here_box(self):
+        return self._local().here_box
+
+    @here_box.setter
+    def here_box(self, v):
+        self._local().here_box = v
 
     def run(self):
         self.call(self.prog["fns"]["main"], [])
@@ -78,6 +114,84 @@ class Interp:
         slot["present"] = False
         slot["v"] = 0
 
+    def cell_mutex(self, iid, ty):
+        if ty[0] == "ptr":
+            slot = self.cell_of({"k": "name", "id": iid})
+            target = slot["v"]
+            if not isinstance(target, dict):
+                raise Failure("absent")
+        else:
+            target = self.cell_of({"k": "name", "id": iid})
+        if "mu" not in target:
+            target["mu"] = threading.Lock()
+        return target["mu"]
+
+    def tp_fork(self, name, n, extra):
+        if self.gate is not None:
+            raise Failure("fork before the previous join")
+        fn = self.prog["fns"][name]
+        extra_cell = None
+        if extra is not None:
+            extra_cell = self.cell_of({"k": "name", "id": extra})
+        g = {
+            "n": n,
+            "ready": 0,
+            "done": 0,
+            "go": False,
+            "error": None,
+            "outs": [0.0] * n,
+            "threads": [],
+            "cv": threading.Condition(),
+        }
+        self.gate = g
+
+        def work(lane):
+            with g["cv"]:
+                g["ready"] += 1
+                g["cv"].notify_all()
+                while not g["go"]:
+                    g["cv"].wait()
+            try:
+                args = [lane]
+                if extra_cell is not None:
+                    args.append(extra_cell)
+                val = self.call(fn, args)
+                g["outs"][lane] = 0.0 if val is None else float(val)
+            except Exception as exc:
+                g["error"] = exc
+            with g["cv"]:
+                g["done"] += 1
+                g["cv"].notify_all()
+
+        for lane in range(n):
+            t = threading.Thread(target=work, args=(lane,))
+            g["threads"].append(t)
+            t.start()
+        with g["cv"]:
+            while g["ready"] < n:
+                g["cv"].wait()
+
+    def tp_start(self):
+        g = self.gate
+        if g is None or g["go"]:
+            raise Failure("start before fork")
+        with g["cv"]:
+            g["go"] = True
+            g["cv"].notify_all()
+            while g["done"] < g["n"]:
+                g["cv"].wait()
+        if g["error"] is not None:
+            raise g["error"]
+        return sum(g["outs"])
+
+    def tp_finish(self):
+        g = self.gate
+        if g is None or not g["go"] or g["done"] < g["n"]:
+            raise Failure("finish before start")
+        for t in g["threads"]:
+            t.join()
+        self.gate = None
+
     def block(self, body):
         self.returned = False
         try:
@@ -102,6 +216,29 @@ class Interp:
                 if st[1] is None:
                     return None
                 return self.eval(st[1])
+            if op == "time":
+                t0 = time.perf_counter()
+                r, how = self.block(st[3])
+                if how == "return":
+                    self.returned = True
+                    return r
+                if how == "leave":
+                    raise _Leave()
+                if how == "continue":
+                    raise _Continue()
+                val = self.eval(st[2])
+                self.out.append(f"{st[1]} {time.perf_counter() - t0:.6f} {float(val):.9f}\n")
+                continue
+            if op == "fork":
+                self.tp_fork(st[1], st[2], st[3])
+                continue
+            if op == "finish":
+                self.tp_finish()
+                continue
+            if op in ("lock", "unlock"):
+                mu = self.cell_mutex(st[1], st[2])
+                (mu.release if op == "unlock" else mu.acquire)()
+                continue
             if op == "leave":
                 raise _Leave()
             if op == "continue":
@@ -293,6 +430,13 @@ class Interp:
             return self.neg(v, e["ty"])
         if k == "bin":
             return self.binop(e)
+        if k == "start":
+            return self.tp_start()
+        if k == "run":
+            self.tp_fork(e["name"], e["n"], e.get("extra"))
+            val = self.tp_start()
+            self.tp_finish()
+            return val
         if k == "call":
             if e["name"] == "print":
                 self.out.append(self.show(self.eval(e["args"][0]), e["args"][0]["ty"]) + "\n")

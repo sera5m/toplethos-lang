@@ -157,6 +157,34 @@ fn main in[] out[i32] {
   return 0;
 }
 """),
+    ("threads", "10.000000000\n", """
+fn lane in[i32 lane] out[f64] { return as[f64, lane] + 1.0; }
+fn main in[] out[i32] {
+  fork lane in[4];
+  f64 s = start lane;
+  finish lane;
+  print in[s];
+  return 0;
+}
+"""),
+    ("mutex", "40.000000000\n", """
+fn add in[i32 lane, f64* p] out[f64] {
+  do n[10] {
+    lock[p];
+    *p = *p + 1.0;
+    unlock[p];
+  }
+  return 0.0;
+}
+fn main in[] out[i32] {
+  f64 shared @mutex = 0.0;
+  fork add in[4] with[shared];
+  f64 s = start add;
+  finish add;
+  print in[shared];
+  return 0;
+}
+"""),
 ]
 
 BAD = [

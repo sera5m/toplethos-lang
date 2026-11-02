@@ -60,12 +60,13 @@ class Emit:
                 return
             info = self.prog["ids"].get(iid, {})
             self.kind[iid] = ty
+            wide = 64 if info.get("mutex") else self.cell_size(ty)
             if info.get("time") in ("static", "config"):
                 if iid not in self.static_ids:
                     self.static_ids.append(iid)
-                    self.static_size[iid] = self.cell_size(ty)
+                    self.static_size[iid] = wide
                 return
-            cursor += self.cell_size(ty)
+            cursor += wide
             self.slot[iid] = -cursor
 
         for p in fn["params"]:
@@ -89,6 +90,8 @@ class Emit:
                 add(st[2], ("i32",))
                 self.walk_decls(st[3], add)
                 self.walk_decls(st[4], add)
+            elif op == "time":
+                self.walk_decls(st[3], add)
 
     def sym(self, iid):
         return "st_" + iid.replace("#", "_")
@@ -103,6 +106,14 @@ class Emit:
             self.w("    mov %rdi, %rbx")
         self.w(f"    sub ${self.frame + 8}, %rsp")
         for iid, off in self.slot.items():
+            info = self.prog["ids"].get(iid, {})
+            if info.get("mutex"):
+                self.w(f"    movb $0, {off + 8}(%rbp)")
+                self.w(f"    lea {off + 16}(%rbp), %rdi")
+                self.w("    xor %eax, %eax")
+                self.w("    mov $40, %ecx")
+                self.w("    rep stosb")
+                continue
             cells = self.cell_size(self.kind[iid]) // 16
             for k in range(cells):
                 self.w(f"    movb $0, {off + k * 16 + 8}(%rbp)")
@@ -128,6 +139,29 @@ class Emit:
         self.w(f"    jnz {ok}")
         self.fail(msg)
         self.w(f"{ok}:")
+
+    def pass_extra(self, iid):
+        if iid is None:
+            self.w("    xor %edx, %edx")
+            return
+        info = self.prog["ids"][iid]
+        if info.get("time") in ("static", "config"):
+            self.w(f"    lea {self.sym(iid)}(%rip), %rdx")
+        else:
+            self.w(f"    lea {self.slot[iid]}(%rbp), %rdx")
+
+    def lock_cell(self, iid, ty, unlock):
+        fn = "pthread_mutex_unlock@PLT" if unlock else "pthread_mutex_lock@PLT"
+        if ty[0] == "ptr":
+            self.w(f"    mov {self.slot[iid]}(%rbp), %rdi")
+            self.w("    add $16, %rdi")
+        else:
+            info = self.prog["ids"][iid]
+            if info.get("time") in ("static", "config"):
+                self.w(f"    lea {self.sym(iid)}+16(%rip), %rdi")
+            else:
+                self.w(f"    lea {self.slot[iid] + 16}(%rbp), %rdi")
+        self.w(f"    call {fn}")
 
     def epilogue(self, name):
         self.w(f".Lret_{name}:")
@@ -174,6 +208,15 @@ class Emit:
             return
         if k == "call":
             self.call(e)
+            return
+        if k == "start":
+            self.w("    call tp_start@PLT")
+            return
+        if k == "run":
+            self.w(f"    mov ${e['n']}, %edi")
+            self.w(f"    lea {e['name']}(%rip), %rsi")
+            self.pass_extra(e.get("extra"))
+            self.w("    call tp_run@PLT")
             return
         if k == "method":
             self.method(e)
@@ -510,7 +553,34 @@ class Emit:
     def stmts(self, body):
         for st in body:
             op = st[0]
-            if op == "decl":
+            if op == "time":
+                self.w("    call tp_mark@PLT")
+                self.stmts(st[3])
+                self.w("    call tp_lap@PLT")
+                self.w("    sub $16, %rsp")
+                self.w("    movsd %xmm0, (%rsp)")
+                self.load_cell(st[2])
+                self.w("    movapd %xmm0, %xmm1")
+                self.w("    movsd (%rsp), %xmm0")
+                self.w("    add $16, %rsp")
+                fmt = self.lit("%s %.6f %.9f\n")
+                label = self.lit(st[1])
+                self.w(f"    lea {fmt}(%rip), %rdi")
+                self.w(f"    lea {label}(%rip), %rsi")
+                self.w("    mov $2, %eax")
+                self.w("    call printf@PLT")
+            elif op == "fork":
+                self.w(f"    mov ${st[2]}, %edi")
+                self.w(f"    lea {st[1]}(%rip), %rsi")
+                self.pass_extra(st[3])
+                self.w("    call tp_fork@PLT")
+            elif op == "finish":
+                self.w("    call tp_finish@PLT")
+            elif op == "lock":
+                self.lock_cell(st[1], st[2], False)
+            elif op == "unlock":
+                self.lock_cell(st[1], st[2], True)
+            elif op == "decl":
                 if st[3] is not None:
                     info = self.prog["ids"].get(st[1], {})
                     if info.get("time") in ("static", "config"):
