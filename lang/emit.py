@@ -725,7 +725,87 @@ class Emit:
             elif op == "continue":
                 self.w(f"    jmp {self.loops[-1][0]}")
 
+    def tight_horner(self, st):
+        # do n[const] { x = as[f64, i] * scale; y = c + x*y ...; s = s + y }.
+        # Coefficients stay in xmm. No (%rsp) spill. mul then add, not vfmadd.
+        body = st[3]
+        if len(body) != 3:
+            return False
+        sx, chain, ss = body
+        if sx[0] != "store" or chain[0] != "fchain" or ss[0] != "store":
+            return False
+        rhs = sx[2]
+        if rhs.get("k") != "bin" or rhs.get("op") != "*":
+            return False
+        conv, scale = rhs["a"], rhs["b"]
+        if scale.get("k") != "f64":
+            conv, scale = scale, conv
+        if scale.get("k") != "f64" or conv.get("k") != "as":
+            return False
+        if conv.get("a", {}).get("k") != "name" or conv["a"].get("id") != st[2]:
+            return False
+        if chain[2].get("k") != "f64" or chain[3].get("id") != sx[1].get("id"):
+            return False
+        if any(c.get("k") != "f64" for c in chain[4]):
+            return False
+        coeffs = [chain[2]] + list(chain[4])
+        if len(coeffs) < 2 or len(coeffs) > 8:
+            return False
+        sr = ss[2]
+        if sr.get("k") != "bin" or sr.get("op") != "+":
+            return False
+        arms = {sr["a"].get("id"), sr["b"].get("id")}
+        if ss[1].get("id") not in arms or chain[1].get("id") not in arms:
+            return False
+        count = st[1]["n"]
+        iid, xid, yid, sid = st[2], sx[1]["id"], chain[1]["id"], ss[1]["id"]
+        # xmm9 downward is c_inner .. c_outer. xmm10 is x, xmm11 is the scale.
+        # xmm0 is y, xmm1 is s. Same numbering as the C++ direct loop.
+        creg = [f"xmm{9 - n}" for n in range(len(coeffs))]
+        top, end = self.lab(), self.lab()
+        self.w("    xor %eax, %eax")
+        self.w(f"    cmpl ${count}, %eax")
+        self.w(f"    jge {end}")
+        self.w(f"    movsd {self.slot[sid]}(%rbp), %xmm1")
+        self.w(f"    movsd {self.dub(scale['n'])}(%rip), %xmm11")
+        for n, c in enumerate(coeffs):
+            self.w(f"    movsd {self.dub(c['n'])}(%rip), %{creg[n]}")
+        self.w("    .p2align 4")
+        self.w(f"{top}:")
+        self.w("    pxor %xmm10, %xmm10")
+        self.w("    cvtsi2sdl %eax, %xmm10")
+        self.w("    addl $1, %eax")
+        self.w("    mulsd %xmm11, %xmm10")
+        self.w("    movapd %xmm10, %xmm0")
+        self.w(f"    mulsd %{creg[0]}, %xmm0")
+        for n in range(1, len(coeffs) - 1):
+            self.w(f"    addsd %{creg[n]}, %xmm0")
+            self.w("    mulsd %xmm10, %xmm0")
+        self.w(f"    addsd %{creg[-1]}, %xmm0")
+        self.w("    addsd %xmm0, %xmm1")
+        self.w(f"    cmpl ${count}, %eax")
+        self.w(f"    jne {top}")
+        self.w(f"{end}:")
+        ioff = self.slot[iid]
+        self.w(f"    mov %eax, {ioff}(%rbp)")
+        self.w(f"    movb $1, {ioff + 8}(%rbp)")
+        # x, y, s are stored once. A zero trip count leaves x and y as they were.
+        ran = self.lab()
+        self.w("    test %eax, %eax")
+        self.w(f"    jz {ran}")
+        self.w(f"    movsd %xmm10, {self.slot[xid]}(%rbp)")
+        self.w(f"    movb $1, {self.slot[xid] + 8}(%rbp)")
+        self.w(f"    movsd %xmm0, {self.slot[yid]}(%rbp)")
+        self.w(f"    movb $1, {self.slot[yid] + 8}(%rbp)")
+        self.w(f"    movsd %xmm1, {self.slot[sid]}(%rbp)")
+        self.w(f"    movb $1, {self.slot[sid] + 8}(%rbp)")
+        self.w(f"{ran}:")
+        self.stmts(st[4])
+        return True
+
     def regloop(self, st):
+        if self.tight_horner(st):
+            return True
         # i and the scalar locals stay in registers. Interlocks never get here.
         count, iid, body = st[1]["n"], st[2], st[3]
         f64s, i32s = [], []

@@ -642,7 +642,7 @@ The choice is made while compiling. A constant array, a constant coefficient, an
 |---|---|---|
 | a constant array rebuilt on every call, then loaded by a constant index | every element is a constant, nothing stores into it later, nothing takes its address | the load is the element. The array is not built |
 | `k = N` then a loop that leaves when `k < 0`, indexes that array by `k`, and does `k = k - 1`, with `N` at most 16 | `k` is only that index, that compare, and that decrement | the loop is the `N + 1` straight stores. The chain rule then applies |
-| `do n[constant]` whose body is only scalar locals | no call, no index, no field, no address taken, and the locals are `f64` or `i32` | `i` and those locals stay in registers for the loop, and are stored back after it |
+| `do n[constant]` whose body is `x = as[f64, i] * scale`, then `y = c + x * y` with constant `c`, then `s = s + y` | the same proof, and there are at most eight constants | `i` is in `%eax`, `x` `y` `s` and every `c` stay in xmm for the loop. Nothing is spilled. `mul` then `add`, not `vfmadd` |
 | a present-flag check on a cell stored on every path to the load | phase 1 | the load is the value. No flag check |
 | `y = c + x * y` with `c` a constant or a pure addend | phase 3 | one `mulsd` and one `addsd`. `x` is held. Not `vfmadd`. Not `loop` |
 | `do n[constant]` that did not get the register row | the count is a constant | the trip count is an immediate. It is not spilled and reloaded |
