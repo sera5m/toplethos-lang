@@ -35,7 +35,7 @@ A variable is one cell. Every mark on it belongs to one of four groups. A mark d
 | scope | Who can name it? | `@private` `@protected` `@public` |
 | time | When does the cell exist? | unmarked `@ephemeral` `@static` `@config` |
 | type and value | What are the bits, and how do you name them? | `i8` `i16` `i32` `i64` `ui8` `ui16` `ui32` `ui64` `size` `f32` `f64` `bool` `char` `string` `object` `T*` `fn in[] out[T]` `fnid` `@val` `@xor` |
-| geometry | Where do the bytes live, and where does a fn run? | `@paged` `@memory_hard` `@parallel[n]` `@gpuparallel` `@npuparallel` |
+| geometry | Where do the bytes live, and where does a fn run? | `@paged` `@memory_hard` `@with[name]` `@parallel[n]` `@gpuparallel` `@npuparallel` |
 
 Ordinary cell: mutable, `@private`, freed when the function returns, on the CPU. `@mut` on an ordinary cell changes nothing. It is not a scope. A function instance is not an ordinary cell. Its default is frozen. See Functions.
 
@@ -101,6 +101,7 @@ Geometry is not a type. On a function it chooses the device. On a large cell it 
 | `@npuparallel` | NPU. The same crossing rule as the GPU. |
 | `@paged` | Only the locked sector is present. A read or a store while it is unlocked is a failure. |
 | `@memory_hard` | A file. The location is fixed at program start. The file is created before `main`. If it cannot be created, the host halts. A later read or write that fails is a failure. Multi-byte integers in the file are little-endian. |
+| `@with[name]` | Sit in the spare of `name`, because you use them together. The compiler does not infer this. |
 
 The scheduler does not pick a device. You write the mark. A call through an instance uses the instance's geometry when a transform has set one, and the definition's geometry otherwise.
 
@@ -577,7 +578,7 @@ A `string` is a sequence of `char`, like `std::string`. `"text"` is a `string`, 
 
 ## Pages
 
-A page is 4096 bytes. This is where an object, an array, or a function frame is placed. It is not a type, and it is not a mark the programmer writes. `@paged` is still only residency. `@memory_hard` is still a file, and a file is not packed into a RAM page.
+A page is 4096 bytes. This is where an object, an array, or a function frame is placed. It is not a type. The size table is not a mark. `@paged` is still only residency. `@memory_hard` is still a file, and a file is not packed into a RAM page. `@with[name]` is the only mark that chooses a spare, and it chooses the one you named.
 
 The size is the laid-out size on that target. Count alignment padding, the present flag, and the extra bytes of a `@mutex` cell. Do not use the sum of the field atoms. A child counts the parent prefix. An embedded object is not placed on its own. The outer object is what is placed. An empty object occupies no page.
 
@@ -589,10 +590,22 @@ The bytes left on the current page decide.
 |---|---|
 | 0 | No page. |
 | 1 … 2048 | Pack it. 2048 fits twice, with nothing left. 1024 fits four. 512 fits eight. Do not stop at two just because the size is under 2048. |
-| 2049 … 4096 | One object on that page, starting on the boundary. A 3 KiB object cannot share the page with another object of that size. The spare bytes at the end may hold a later object that fits in the spare. They may not hold one that would cross. |
+| 2049 … 4096 | One object on that page, starting on the boundary. A 3 KiB object cannot share the page with another object of that size. The spare stays empty unless a later cell writes `@with` of this one, and that cell fits in the spare. |
 | 4097 and up | Start on a boundary. The bytes stay contiguous and cover `ceil(size / 4096)` pages. Do not pad each page into its own slice of fields. |
 
 An array is one allocation. Elements stay contiguous, in index order. Do not page-align each element, even when an element is large. If the whole array fits in the bytes left on the page, place it there. If it fits in one page but not in the bytes left, start it on the next page. If it is larger than a page, page-align the base and keep the elements contiguous across pages. An element that itself spans a page is allowed. Inserting padding so each element starts on a page is not.
+
+`@with[name]` puts this cell in the spare of `name`. You write it when the two are used around the same time. The compiler does not look at references, and it does not guess that a page will be gone later. No mark means the spare stays empty. An empty spare and a spare you never touch cost the same. The mark is the only reason to fill it.
+
+```text
+u8 block[3072];
+i32 note @with[block];
+i32 tag @with[block];
+```
+
+`name` is written first, and it lives at least as long as this cell. Its laid-out size is from 2049 to 4095, so it has a spare. Cells marked `@with` the same name are placed in source order, after that object's own bytes, at the alignment this cell already required. A cell that would cross the page does not go there. A cell that fits is not given its own page.
+
+`@with` does not change residency. `@paged` is still the lock. A live cell is still not moved. The 64-byte gap between two mutable cells of different runs still applies, and that gap counts as used spare.
 
 A function frame uses the same table against the stack page. A frame that fits in the bytes left stays there. A frame that fits in one page but not in the remainder starts at the next stack page. A frame bigger than a page is contiguous and its base is page-aligned. A frame of 4096 or less is not allocated with `malloc` to force a private page. The call is still the ordinary x86-64 stack.
 
@@ -614,7 +627,7 @@ Odd cases, all of which follow the table and are not exceptions to it:
 |---|---|
 | exactly 2048 | Two per page. No spare. |
 | exactly 4096 | One page. No spare. The base is the boundary. |
-| 3072, or any size from 2049 to 4095 | One on the page. The tail is spare and may take a smaller later object. |
+| 3072, or any size from 2049 to 4095 | One on the page. The tail is spare and stays empty unless `@with` names this cell and fits. |
 | size just over 4096 | Two pages, contiguous, base on a boundary. One extra page is not added in front. |
 | array of 3 KiB objects | The array is contiguous. The base follows the array rule. Elements are not each given a page. |
 | array of `f64` that fits in one page | One resident page. No per-element alignment to 4096. |
@@ -624,7 +637,7 @@ Odd cases, all of which follow the table and are not exceptions to it:
 | `@memory_hard` | File. Not a RAM page. |
 | `@paged` sector | A run of these pages. Placement is this table. Residency is the lock. |
 | pointer, `pool`, `pipe`, `fn` | The cell is placed by its own size. The target is placed on its own. |
-| two size classes | Not mixed in one slab, except the spare tail of a 2049 … 4096 object. |
+| two size classes | Not mixed, unless the smaller one writes `@with` of the one that has the spare. |
 | live object, page looks sparse | Leave it. Do not move it. |
 | interpreter | Same decisions, no hardware gaps. |
 
@@ -901,6 +914,11 @@ A program that compiles has one meaning. A violation is a compile error or a fai
 - a `foreign` function with a body, or `@body` on one
 - `include lib` of a mangled C++ name
 - an unknown `@`
+- `@with` of a name that is not a cell, is written later, or dies sooner
+- `@with` of a cell whose size is not from 2049 to 4095, or of a `@memory_hard` cell
+- `@with` on a `@memory_hard` cell
+- a `@with` cell that does not fit in the spare left, counting alignment and a 64-byte gap owed to another run
+- a second `@with` on one cell
 - a detached pointer to a cell that dies with the caller
 - two `@public` variables with the same short name in one namespace
 - `@compeval` with an input that is not a constant
@@ -932,4 +950,4 @@ A program that compiles has one meaning. A violation is a compile error or a fai
 
 ## Not in the language
 
-No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtual dispatch. No vptr. No downcast. A child method is a mutation, not an override. No inferred result types. No runtime polymorphic number. No `using`. No argument-dependent lookup. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. No bitwise operators. No `%`. No type punning. No undefined behavior. A missing arm is not an error unless `@total` or the project switch `total` says so. No per-element page alignment inside an array. No moving a live object to compact a page.
+No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtual dispatch. No vptr. No downcast. A child method is a mutation, not an override. No inferred result types. No runtime polymorphic number. No `using`. No argument-dependent lookup. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. No bitwise operators. No `%`. No type punning. No undefined behavior. A missing arm is not an error unless `@total` or the project switch `total` says so. No per-element page alignment inside an array. No moving a live object to compact a page. No inferred spare. The spare stays empty unless `@with` names it.
