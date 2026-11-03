@@ -538,6 +538,8 @@ class Interp:
             return float(e["n"])
         if k == "bool":
             return bool(e["v"])
+        if k == "enumitem":
+            return e["n"]
         if k == "name":
             slot = self.cell_of(e)
             if not slot["present"]:
@@ -787,10 +789,35 @@ class Interp:
     def cast(self, v, src, dst):
         if src == dst:
             return v
+        if src[0] == "enum" or dst[0] == "enum":
+            return self.enum_cast(int(v), src, dst)
         if dst == ("f64",):
             return float(v)
         if dst == ("i64",) and src == ("i32",):
             return int(v)
+        raise Failure("as with no row")
+
+    def enum_cast(self, v, src, dst):
+        from front import enum_limits
+        if dst[0] == "enum":
+            bits = self.prog["enums"][dst[1]]["bits"]
+            if src == ("i32",) and bits >= 32:
+                return v
+            if src == ("i64",) and bits >= 64:
+                return v
+            if src[0] == "enum" and self.prog["enums"][src[1]]["bits"] <= bits:
+                return v
+            lo, hi = enum_limits(bits)
+            if not (lo <= v <= hi):
+                raise Failure("enum value does not fit")
+            return v
+        if dst == ("i64",):
+            return v
+        if dst == ("i32",):
+            lo, hi = enum_limits(32)
+            if not (lo <= v <= hi):
+                raise Failure("enum value does not fit")
+            return v
         raise Failure("as with no row")
 
     def neg(self, v, ty):
@@ -811,6 +838,8 @@ class Interp:
             return f"{v:.9f}"
         if ty[0] == "ptr":
             return "ptr"
+        if ty[0] == "enum":
+            return str(int(v))
         return str(v)
 
 

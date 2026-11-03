@@ -16,7 +16,7 @@ def analyze(prog):
             "name": fn["name"],
             "line": fn["line"],
             "params": [p["name"] for p in fn["params"]],
-            "out": fn["out"][0] if fn["out"] else None,
+            "out": _ty(fn["out"]) if fn["out"] else None,
             "names": {},
             "calls": [],
             "callers": [],
@@ -34,6 +34,7 @@ def analyze(prog):
             "effects": [],
             "shape": [],
             "decisions": 0,
+            "_enums": prog.get("enums") or {},
         }
         for p in fn["params"]:
             _bind(rec, ids, p["id"], p["ty"], fn["line"], param=True)
@@ -70,6 +71,9 @@ def report(prog, src=None):
             if fn.get("ikitaku"):
                 tagged[oname + "." + fn["name"]] = " ".join(fn["ikitaku"])
     lines = [f"opt {level}", ""]
+    for name in sorted(prog.get("enums") or {}, key=lambda n: prog["enums"][n]["id"]):
+        lines.extend(_enum_record(prog["enums"][name], name))
+        lines.append("")
     for key in sorted(ann):
         lines.extend(_fn_record(key, ann[key], tagged.get(key)))
         lines.append("")
@@ -169,6 +173,20 @@ def impure(prog, fn):
     return ""
 
 
+def _enum_record(en, name):
+    rows = [
+        "enum {",
+        f"  name {name}",
+        f"  id {en['id']}",
+        f"  word {en['word']}",
+        f"  width {en['width']}",
+    ]
+    for item in en["order"]:
+        rows.append(f"  {item} {en['items'][item]}")
+    rows.append("}")
+    return rows
+
+
 def _fn_record(key, rec, tag):
     eff = ",".join(rec["effects"]) if rec["effects"] else "pure" if rec["pure"] else "calls"
     rows = [
@@ -196,7 +214,7 @@ def _fn_record(key, rec, tag):
 def _name_record(fn, name, row):
     decl = 1 if row["decl"] else 0
     refs = decl + row["write"] + row["read"]
-    return [
+    rows = [
         "name {",
         f"  fn {fn}",
         f"  name {name}",
@@ -207,8 +225,12 @@ def _name_record(fn, name, row):
         f"  writes {_nums(row['writes'])}",
         f"  write_n {row['write']}",
         f"  refs {refs}",
-        "}",
     ]
+    if row.get("word") is not None:
+        rows.append(f"  word {row['word']}")
+        rows.append(f"  width {row['width']}")
+    rows.append("}")
+    return rows
 
 
 def _ptr_record(site):
@@ -412,6 +434,10 @@ def _bind(rec, ids, iid, ty, line, param=False):
         row["decl"] = line
     if param:
         row["param"] = True
+    if ty and ty[0] == "enum":
+        en = rec["_enums"][ty[1]]
+        row["word"] = en["word"]
+        row["width"] = en["width"]
     if info.get("time") in ("static", "config"):
         _add(rec, "static")
 
@@ -1013,4 +1039,6 @@ def _ty(ty):
         return _ty(ty[1]) + "[]"
     if ty[0] == "obj":
         return ty[1]
+    if ty[0] == "enum":
+        return "enum " + ty[1]
     return ty[0]

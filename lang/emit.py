@@ -96,6 +96,43 @@ class Emit:
         self.dubs.append((lab, float(v)))
         return lab
 
+    def _enum64(self, ty):
+        return isinstance(ty, tuple) and ty[0] == "enum" and self.prog["enums"][ty[1]]["bits"] == 64
+
+    def enum_cast(self, src, dst):
+        from front import enum_limits
+        if src == dst:
+            return
+        src64 = src == ("i64",) or self._enum64(src)
+        dst64 = dst == ("i64",) or self._enum64(dst)
+        if dst[0] == "enum":
+            bits = self.prog["enums"][dst[1]]["bits"]
+            if not (src[0] == "enum" and src[1] == dst[1]):
+                lo, hi = enum_limits(bits)
+                if src == ("i32",) and bits >= 32:
+                    pass
+                elif src == ("i64",) and bits >= 64:
+                    pass
+                elif src[0] == "enum" and self.prog["enums"][src[1]]["bits"] <= bits:
+                    pass
+                else:
+                    reg = "%rax" if src64 else "%eax"
+                    bad = self.lab()
+                    ok = self.lab()
+                    self.w(f"    cmp ${lo}, {reg}")
+                    self.w(f"    jl {bad}")
+                    self.w(f"    cmp ${hi}, {reg}")
+                    self.w(f"    jg {bad}")
+                    self.w(f"    jmp {ok}")
+                    self.w(f"{bad}:")
+                    self.fail("enum value does not fit")
+                    self.w(f"{ok}:")
+            if dst64 and not src64:
+                self.w("    movslq %eax, %rax")
+            return
+        if dst == ("i64",) and not src64:
+            self.w("    movslq %eax, %rax")
+
     def fail(self, msg):
         if msg not in self.fails:
             self.fails.append(msg)
@@ -241,6 +278,12 @@ class Emit:
             else:
                 self.w(f"    mov ${e['n']}, %eax")
             return
+        if k == "enumitem":
+            if self._enum64(e["ty"]):
+                self.w(f"    movabs ${e['n']}, %rax")
+            else:
+                self.w(f"    mov ${e['n']}, %eax")
+            return
         if k == "f64":
             self.w(f"    movsd {self.dub(e['n'])}(%rip), %xmm0")
             return
@@ -259,6 +302,9 @@ class Emit:
         if k == "as":
             self.gen(e["a"])
             src, dst = e["a"]["ty"], e["ty"]
+            if src[0] == "enum" or dst[0] == "enum":
+                self.enum_cast(src, dst)
+                return
             if src != dst and dst == ("f64",):
                 self.w("    cvtsi2sd %rax, %xmm0" if src == ("i64",) else "    cvtsi2sd %eax, %xmm0")
             elif src == ("i32",) and dst == ("i64",):
@@ -320,7 +366,7 @@ class Emit:
         ty = e["ty"]
         if ty == ("f64",):
             self.w("    movsd (%rax), %xmm0")
-        elif ty[0] in ("i64", "ptr", "arr", "obj"):
+        elif ty == ("i64",) or ty[0] in ("ptr", "arr", "obj") or self._enum64(ty):
             self.w("    mov (%rax), %rax")
         else:
             self.w("    mov (%rax), %eax")
@@ -338,7 +384,7 @@ class Emit:
             return
         home = self.vreg.get(e["id"])
         if home:
-            if e["ty"] == ("i64",):
+            if e["ty"] == ("i64",) or self._enum64(e["ty"]):
                 self.w(f"    mov %{home}, %rax")
             else:
                 self.w(f"    mov %{self._r32(home)}, %eax")
@@ -355,7 +401,7 @@ class Emit:
         off = self.slot[e["id"]]
         if ty == ("f64",):
             self.w(f"    movsd {off}(%rbp), %xmm0")
-        elif ty == ("i64",) or ty[0] == "ptr":
+        elif ty == ("i64",) or ty[0] == "ptr" or self._enum64(ty):
             self.w(f"    mov {off}(%rbp), %rax")
         else:
             self.w(f"    mov {off}(%rbp), %eax")
@@ -368,7 +414,7 @@ class Emit:
             return
         home = self.vreg.get(dest["id"])
         if home:
-            if ty == ("i64",):
+            if ty == ("i64",) or self._enum64(ty):
                 self.w(f"    mov %rax, %{home}")
             else:
                 self.w(f"    mov %eax, %{self._r32(home)}")
@@ -1059,6 +1105,8 @@ class Emit:
             self.w("    add $16, %rsp")
 
     def print_val(self, ty):
+        if isinstance(ty, tuple) and ty[0] == "enum":
+            ty = ("i64",) if self._enum64(ty) else ("i32",)
         if ty == ("bool",):
             yes = self.lab()
             end = self.lab()
@@ -1339,7 +1387,10 @@ class Emit:
             if not isinstance(e, dict):
                 return
             if e.get("k") == "name" and e["id"] != iid:
-                (f64s if e.get("ty") == ("f64",) else i32s).append(e["id"])
+                ty = e.get("ty")
+                if isinstance(ty, tuple) and ty[0] == "enum" and self._enum64(ty):
+                    return
+                (f64s if ty == ("f64",) else i32s).append(e["id"])
             for v in e.values():
                 if isinstance(v, dict):
                     rec(v)

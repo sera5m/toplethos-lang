@@ -17,6 +17,7 @@ A mark that is only in USE.md is still rejected by both hosts until a row here i
 | `include "file.tpth_s"` | The file is loaded once. A `@private` function in it is not visible here. A header is rejected. `include lib` is still rejected. |
 | `min` `max` `clamp` `abs` `swap` | The utilities. `abs` of the lowest signed value is a failure. |
 | `leave[name]` `@name` | `@name` on `loop` and `do`. `leave[name]` ends that one. |
+| `enum` `match` `@total` | A named signed integer. The width is `e8`, `e16`, `e32`, or `e64`, and the default is `e32`. The compiler word is two `i16`s: `1`, then the enum id. `match` compares one arm. `@total` requires every name. |
 
 ## Hosts disagree
 
@@ -45,8 +46,7 @@ None of the old scalar-initialization row. The cell is still 16 bytes, so a C st
 | Page placement, `@paged`, `@blockinit`, `@blockpack`, `@blockpush`, `@blockpop`, `blockid` | 5 | 4 |
 | `@memory_hard` | 3 | 3 |
 | `@gpuparallel`, `@npuparallel` | 5 | 2 |
-| Namespaces and `::` | 3 | 3 |
-| `enum`, `match`, `@total` | 3 | 3 |
+| Namespaces | 3 | 3 |
 | `string`, `char`, `s[i]` | 3 | 3 |
 | `f32`, `i8`, `i16`, the `ui` widths, `size` as a type | 3 | 3 |
 | `onfail`, `defer`, `faildefer`, `@retry`, `STOP[THIS]`, `fatal`, `onwarn`, `@structuredConcurrency` | 3 | 3 |

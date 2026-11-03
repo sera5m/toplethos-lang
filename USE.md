@@ -569,23 +569,27 @@ A short brace list zero-fills the rest. A long one is a compile error. `i32 grid
 
 The index may be `size` or an integer atom. A negative index is a failure. An index past the end is a failure. C++ leaves that undefined. This is a failure instead.
 
-An enum is a closed set of names. The underlying atom defaults to `i32`. The first name is `0` and each next name is one more, unless you write a value. Two names with the same value are a compile error. An enumerator is not an integer. `Color::red` is the name.
+An enum is a closed set of names. It is not an integer. The value is a signed integer of the enum's width, and a use of the name does not have the integer's type. `as[i32, c]` reads the value when the width is `e8`, `e16`, or `e32`. `as[i64, c]` reads any width. `as[Color, n]` stores an integer of that width, including a value with no name. A constant that does not fit the width is a compile error. A value that does not fit at run time is a failure.
+
+The width is written after the name. It is `e8`, `e16`, `e32`, or `e64`. Omitted, it is `e32`. The first name is `0` and each next name is one more, unless you write a value. A value may be negative. Two names with the same value are a compile error.
+
+The compiler keeps one 32-bit word per enum type, two `i16` halves. The high half is `1`, which means this type is an enum. The low half is that enum's id, counting from `0` in the order the enums are declared. The cell holds the signed value, not the word. The word is how the hosts tell one enum from another and from a plain integer.
 
 ```text
-enum Color {
+enum Color e16 {
   red,
   green,
-  blue
+  blue = 4
 }
 Color c = Color::red;
-match[c] {
+match @total [c] {
   Color::red { }
   Color::green { }
   Color::blue { }
 }
 ```
 
-`as[i32, c]` is the underlying value. `as[Color, n]` accepts any value of that atom, including one with no name. `match` does not fall through. An arm that does not match is skipped. `@total`, or the project switch `total`, makes a missing named arm a compile error. A value with no name matches no arm.
+`Color::red` is the name. `match` does not fall through. An arm that does not match is skipped. `@total` makes a missing named arm a compile error. A value with no name matches no arm. `match` of an `i32`, an `i64`, or a `bool` takes constant arms of that same atom, and `@total` is not allowed there, because an atom is not a closed set of names.
 
 A `string` is a sequence of `char`, like `std::string`. `"text"` is a `string`, not a pointer. `==` and `<` compare the bytes in order. `+` appends. `size in[s]` is the number of `char` values. `s[i]` is one `char`, with the same index rule as an array.
 

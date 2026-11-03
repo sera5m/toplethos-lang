@@ -16,6 +16,19 @@ class Failure(Exception):
 
 
 ATOMS = {"i32", "i64", "f64", "bool"}
+ENUM_WIDTHS = {"e8": 8, "e16": 16, "e32": 32, "e64": 64}
+
+
+def enum_limits(bits):
+    if bits >= 64:
+        return -9223372036854775808, 9223372036854775807
+    half = 1 << (bits - 1)
+    return -half, half - 1
+
+
+def enum_word(eid):
+    """Two i16s. The high half is 1, meaning enum. The low half is the enum id."""
+    return (1 << 16) | eid
 
 
 class Front:
@@ -26,6 +39,8 @@ class Front:
         self.col = 1
         self.fns = {}
         self.objects = {}
+        self.enums = {}
+        self.enum_n = 0
         self.scopes = []
         self.nid = 0
         self.loop = 0
@@ -215,7 +230,7 @@ class Front:
         live = {
             "public", "private", "protected", "mut", "val", "xor",
             "ephemeral", "static", "config", "divzero", "ismutationof",
-            "require", "ensure", "childof", "mutex", "inlined",
+            "require", "ensure", "childof", "mutex", "inlined", "total",
         }
         while True:
             self.skip()
@@ -227,7 +242,9 @@ class Front:
             if name in ("ptr", "ref"):
                 self.fail(f"@{name} is not a mark")
             arg = True
-            if self.eat("["):
+            if name == "total":
+                pass
+            elif self.eat("["):
                 if name == "parallel":
                     if where != "fn":
                         self.fail("@parallel is for a function")
@@ -252,6 +269,8 @@ class Front:
                 self.later(f"@{name}")
             if name == "childof" and where != "object":
                 self.fail("@childof is for an object")
+            if name == "total" and where != "match":
+                self.fail("@total is for a match")
             if name in ("divzero", "ismutationof", "require", "ensure", "inlined") and where != "fn":
                 self.fail(f"@{name} is for a function")
             if name in ("val", "xor", "ephemeral", "static", "config", "mutex") and where not in ("bind", "field"):
@@ -403,7 +422,13 @@ class Front:
         fn = self.fns["main"]
         if fn["params"] or fn["out"] != ("i32",):
             self.fail("main takes nothing and its result type is i32")
-        prog = {"fns": self.fns, "objects": self.objects, "ids": self.ids, "opt": self.opt or "01"}
+        prog = {
+            "fns": self.fns,
+            "objects": self.objects,
+            "enums": self.enums,
+            "ids": self.ids,
+            "opt": self.opt or "01",
+        }
         from analyze import analyze, impure, symbol_table
         prog["ann"] = analyze(prog)
         prog["symbols"] = symbol_table(prog)
@@ -445,10 +470,13 @@ class Front:
             if self.eat("object"):
                 self.object()
                 continue
+            if self.eat("enum"):
+                self.enum_decl()
+                continue
             if self.eat("include"):
                 self.include_file()
                 continue
-            if self.at_word(("namespace", "flow", "pipe", "pool", "enum", "macro", "struct")):
+            if self.at_word(("namespace", "flow", "pipe", "pool", "macro", "struct")):
                 w = self.ident()
                 self.later(w)
             self.fail("expected fn or object")
@@ -474,6 +502,8 @@ class Front:
         sub = Front(text)
         sub.fns = self.fns
         sub.objects = self.objects
+        sub.enums = self.enums
+        sub.enum_n = self.enum_n
         sub.ids = self.ids
         sub.nid = self.nid
         sub.opt = self.opt
@@ -482,6 +512,7 @@ class Front:
         sub.file = full
         sub.parse_items()
         self.nid = sub.nid
+        self.enum_n = sub.enum_n
         self.opt = sub.opt
 
     def thread_count(self):
@@ -502,6 +533,8 @@ class Front:
         name = self.ident()
         if name in self.objects:
             ty = ("obj", name)
+        elif name in self.enums:
+            ty = ("enum", name)
         elif name in ATOMS:
             ty = (name,)
         else:
@@ -694,6 +727,74 @@ class Front:
             self.expect(";")
         self.objects[name]["methods"] = methods
 
+    def enum_decl(self):
+        name = self.ident()
+        if name in self.enums or name in self.objects or name in self.fns:
+            self.fail(f"a second member with the short name {name}")
+        if self.enum_n > 65535:
+            self.fail("more than 65536 enums")
+        self.skip()
+        width = "e32"
+        for word, bits in ENUM_WIDTHS.items():
+            if self.eat(word):
+                width = word
+                bits = bits
+                break
+        else:
+            bits = 32
+        lo, hi = enum_limits(bits)
+        self.expect("{")
+        items = {}
+        order = []
+        prev = -1
+        while True:
+            self.skip()
+            if self.eat("}"):
+                break
+            item = self.ident()
+            if item in items:
+                self.fail(f"a second member with the short name {item}")
+            if self.eat("="):
+                val = self.signed_const()
+            else:
+                val = prev + 1
+            if not (lo <= val <= hi):
+                self.fail("enumerator value does not fit")
+            if val in items.values():
+                self.fail("two enumerators with the same value")
+            items[item] = val
+            order.append(item)
+            prev = val
+            if self.eat(","):
+                continue
+            self.expect("}")
+            break
+        if not order:
+            self.fail("an enum with no name")
+        self.enums[name] = {
+            "id": self.enum_n,
+            "width": width,
+            "bits": bits,
+            "items": items,
+            "order": order,
+            "word": enum_word(self.enum_n),
+        }
+        self.enum_n += 1
+
+    def signed_const(self):
+        self.skip()
+        neg = self.eat("-")
+        if not self.peek().isdigit():
+            self.fail("enumerator value")
+        n = 0
+        while self.peek().isdigit():
+            n = n * 10 + int(self.get())
+            if n > 9223372036854775808:
+                self.fail("enumerator value does not fit")
+        if neg:
+            n = -n
+        return n
+
     def extend_stmt(self, body, st):
         if st[0] == "seq":
             self.extend_stmt(body, st[1])
@@ -768,13 +869,118 @@ class Front:
             return ("loop", body, line)
         if self.eat("do"):
             return self.do_stmt(line)
-        if self.eat("match") or self.eat("defer") or self.eat("select"):
-            self.later("match" if False else "flow keyword")
-        if self.starts("i32") or self.starts("i64") or self.starts("f64") or self.starts("bool") or self.known_obj():
+        if self.eat("match"):
+            return self.match_stmt(line)
+        if self.eat("defer") or self.eat("select"):
+            self.later("flow keyword")
+        if self.starts("i32") or self.starts("i64") or self.starts("f64") or self.starts("bool") or self.known_obj() or self.known_enum():
             return self.decl(line)
         return self.assign_or_call(line)
 
     def known_obj(self):
+        self.skip()
+        for name in self.objects:
+            if self.starts(name):
+                return True
+        return False
+
+    def known_enum(self):
+        self.skip()
+        for name in self.enums:
+            if self.starts(name):
+                return True
+        return False
+
+    def match_stmt(self, line):
+        ms = self.marks("match")
+        total = "total" in ms
+        self.expect("[")
+        scrut = self.expr(None)
+        self.expect("]")
+        ty = scrut["ty"]
+        if ty[0] != "enum" and ty not in (("i32",), ("i64",), ("bool")):
+            self.fail("match of this type")
+        if total and ty[0] != "enum":
+            self.fail("@total is for an enum")
+        self.expect("{")
+        arms = []
+        seen = []
+        while True:
+            self.skip()
+            if self.eat("}"):
+                break
+            expr, key = self.match_arm(ty)
+            if key in seen:
+                self.fail("a second arm")
+            seen.append(key)
+            body = self.block()
+            arms.append((expr, key, body))
+        if total:
+            missing = [n for n in self.enums[ty[1]]["order"] if ("name", n) not in seen]
+            if missing:
+                self.fail("match is not total")
+        return self.lower_match(scrut, arms, line)
+
+    def match_arm(self, ty):
+        if ty[0] == "enum":
+            expr = self.enumerator()
+            if expr["ty"] != ty:
+                self.fail("arm of a different enum")
+            return expr, ("name", expr["item"])
+        expr = self.expr(ty)
+        expr = self.fit(expr, ty)
+        if expr["ty"] != ty or expr["k"] not in ("int", "bool"):
+            self.fail("arm is not a constant")
+        if expr["k"] == "bool":
+            return expr, ("bool", expr["v"])
+        return expr, ("int", expr["n"])
+
+    def lower_match(self, scrut, arms, line):
+        decl = None
+        if scrut["k"] == "name":
+            use = scrut
+        else:
+            iid = self.fresh("m")
+            info = {"id": iid, "ty": scrut["ty"], "ro": True, "name": "m"}
+            self.ids[iid] = info
+            use = {"k": "name", "id": iid, "ty": scrut["ty"], "name": "m"}
+            decl = ("decl", iid, scrut["ty"], scrut, line)
+        row = ("i32",)
+        if scrut["ty"][0] == "enum" and self.enums[scrut["ty"][1]]["bits"] == 64:
+            row = ("i64",)
+        elif scrut["ty"] == ("i64",):
+            row = ("i64",)
+        node = None
+        for expr, _key, body in reversed(arms):
+            cond = {"k": "bin", "op": "==", "a": use, "b": expr, "ty": ("bool",), "row": row}
+            rest = [] if node is None else [node]
+            node = ("if", cond, body, rest, line)
+        if node is None:
+            if decl is not None:
+                return decl
+            return ("expr", scrut, line)
+        if decl is not None:
+            return ("seq", decl, node)
+        return node
+
+    def enumerator(self):
+        name = self.ident()
+        if name not in self.enums or not self.eat("::"):
+            self.fail("expected an enumerator")
+        return self.enum_item(name)
+
+    def enum_item(self, name):
+        item = self.ident()
+        en = self.enums[name]
+        if item not in en["items"]:
+            self.fail(f"'{item}' is not an enumerator of {name}")
+        return {
+            "k": "enumitem",
+            "enum": name,
+            "item": item,
+            "n": en["items"][item],
+            "ty": ("enum", name),
+        }
         self.skip()
         for name in self.objects:
             if self.starts(name):
@@ -1106,6 +1312,8 @@ class Front:
             return self.show(ty[1]) + "*"
         if ty[0] == "obj":
             return ty[1]
+        if ty[0] == "enum":
+            return ty[1]
         if ty[0] == "arr":
             return self.show(ty[1]) + "[" + str(ty[2]) + "]"
         return ty[0]
@@ -1173,6 +1381,12 @@ class Front:
             right = self.bin_rel(None)
             if op in ("$=", "!$="):
                 left = {"k": "bin", "op": op, "a": left, "b": right, "ty": ("bool",)}
+                continue
+            if left["ty"][0] == "enum" or right["ty"][0] == "enum":
+                if left["ty"] != right["ty"] or op not in ("==", "!="):
+                    self.fail("no row for these operands")
+                row = ("i64",) if self.enums[left["ty"][1]]["bits"] == 64 else ("i32",)
+                left = {"k": "bin", "op": op, "a": left, "b": right, "ty": ("bool",), "row": row}
                 continue
             ty = self.arith_ty(left["ty"], right["ty"], eq=True)
             left = {"k": "bin", "op": op, "a": left, "b": right, "ty": ("bool",), "row": ty}
@@ -1322,6 +1536,10 @@ class Front:
             inner = self.expr(None)
             self.expect("]")
             self.convert(inner["ty"], ty)
+            if ty[0] == "enum" and inner["k"] == "int":
+                lo, hi = enum_limits(self.enums[ty[1]]["bits"])
+                if not (lo <= inner["n"] <= hi):
+                    self.fail("enumerator value does not fit")
             return {"k": "as", "ty": ty, "a": inner}
         if self.eat("true"):
             return {"k": "bool", "v": True, "ty": ("bool",)}
@@ -1345,6 +1563,8 @@ class Front:
             return {"k": "run", "name": name, "n": n, "extra": extra, "ty": ("f64",)}
         name = self.ident()
         self.skip()
+        if name in self.enums and self.eat("::"):
+            return self.enum_item(name)
         if self.peek() == "(":
             self.fail("name() is not a call")
         if self.eat("in"):
@@ -1646,6 +1866,12 @@ class Front:
             (("i64",), ("f64",)),
         }
         if src == dst:
+            return
+        if src[0] == "enum" and dst in (("i32",), ("i64",)):
+            if dst == ("i32",) and self.enums[src[1]]["bits"] > 32:
+                self.fail("as with no row")
+            return
+        if dst[0] == "enum" and src in (("i32",), ("i64",)):
             return
         if (src, dst) not in ok:
             self.fail("as with no row")

@@ -428,6 +428,45 @@ fn main in[] out[i32] {
   return 0;
 }
 """),
+    ("enum", "2\n2\n1\n0\n-1\n3000000000\n", """
+enum Color e16 {
+  red,
+  yellow = 2,
+  green
+}
+enum Ink e8 {
+  black = -1,
+  white = 1
+}
+enum Big e64 {
+  huge = 3000000000
+}
+object Wrap {
+  Color c;
+}
+fn id in[Color c] out[Color] { return c; }
+fn main in[] out[i32] {
+  Color c = Color::yellow;
+  i32 n = 0;
+  match @total [c] {
+    Color::red { n = 1; }
+    Color::yellow { n = 2; }
+    Color::green { n = 3; }
+  }
+  print in[n];
+  print in[as[i32, id in[c]]];
+  Color z = as[Color, 0];
+  if z == Color::red { print in[1]; } else { print in[0]; }
+  Color u = as[Color, 9];
+  if u == Color::red { print in[1]; } else { print in[0]; }
+  print in[as[i32, Ink::black]];
+  print in[as[i64, Big::huge]];
+  Wrap w;
+  w.c = Color::green;
+  if w.c == Color::green { return 0; }
+  return 1;
+}
+"""),
 ]
 
 BAD = [
@@ -558,6 +597,53 @@ fn main in[] out[i32] {
 fn main in[] out[i32] {
   i32 n @mutex = 1;
   print in[n];
+  return 0;
+}
+"""),
+    ("enum same", "two enumerators with the same value", """
+enum Color { red = 1, blue = 1 }
+fn main in[] out[i32] { return 0; }
+"""),
+    ("enum int", "cannot store", """
+enum Color { red }
+fn main in[] out[i32] {
+  i32 n = Color::red;
+  return n;
+}
+"""),
+    ("enum total", "match is not total", """
+enum Color { red, blue }
+fn main in[] out[i32] {
+  Color c = Color::red;
+  match @total [c] { Color::red { } }
+  return 0;
+}
+"""),
+    ("enum fit", "enumerator value does not fit", """
+enum Ink e8 { hot = 200 }
+fn main in[] out[i32] { return 0; }
+"""),
+    ("enum row", "no row", """
+enum Color { red }
+fn main in[] out[i32] {
+  Color c = Color::red;
+  i32 n = c + 1;
+  return n;
+}
+"""),
+    ("enum wide", "as with no row", """
+enum Big e64 { huge = 3000000000 }
+fn main in[] out[i32] {
+  i32 n = as[i32, Big::huge];
+  return n;
+}
+"""),
+    ("enum runtime", "enum value does not fit", """
+enum Ink e8 { black }
+fn main in[] out[i32] {
+  i32 n = 200;
+  Ink a = as[Ink, n];
+  print in[as[i32, a]];
   return 0;
 }
 """),
