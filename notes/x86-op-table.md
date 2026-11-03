@@ -19,7 +19,7 @@ Similarity 5 means one opcode is the operation. Ambiguity 5 means the source for
 | i32 add / sub | `addl` / `subl` | 5 | 2 | 2 | yes | yes |
 | i32 mul | `imull` | 5 | 2 | 2 | yes | yes |
 | i32 div | `cdq`, then `idiv` | 3 | 4 | 2 | yes | yes |
-| i32 mod | same `idiv`, remainder in `edx` | 3 | 4 | 2 | yes | yes |
+| i32 mod | same `idiv`, remainder in `edx` | 3 | 4 | 2 | specified, not emitted | yes |
 | f64 add / sub / mul / div | `addsd` `subsd` `mulsd` `divsd` | 5 | 2 | 1 | yes | yes |
 | cmp to bool | `cmpl` or `ucomisd`, then `setcc` | 3 | 4 | 1 | yes | yes |
 | `&&` / `||` | `test` + `jcc` around the right side | 2 | 4 | 3 | yes | yes |

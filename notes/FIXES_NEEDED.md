@@ -15,8 +15,8 @@ A mark that is only in USE.md is still rejected by both hosts until a row here i
 | gap | note | c | i |
 |---|---|---:|---:|
 | Use tracking | Count uses of functions, variables, and every other name, and record where. How often, and in which body. This is the cheap half of the symbol table in [GOALS.md](GOALS.md). | 2 | 3 |
-| Bitwise | `&` `\|` `^` `~` `<<` `>>` as operators. USE.md forbids them today. `&` stays the address, and `&&` `\|\|` stay bool, so the new spellings have to be chosen. Adding them changes the spec. | 2 | 3 |
-| Modulo | `%`. USE.md forbids it. `idiv` already leaves a remainder in `edx`. The language has no operator for it. Integer remainder rounds with the same toward-zero division the hosts already use. | 1 | 3 |
+| Bitwise | `&` `\|` `^` `~` `<<` `>>`. USE.md allows them. Unary `&` is still the address. `&&` and `\|\|` stay `bool`. Both hosts reject the bitwise forms until a row exists. Same width, two's complement bits. A shift count outside `0 .. width-1` is a failure. | 2 | 3 |
+| Modulo | `%`. USE.md allows it. `a % b` is `a - (a / b) * b`. Zero and the lowest signed value with `-1` are the same failures as `/`. No float row. Both hosts reject it until a row exists. | 1 | 3 |
 | Pointers, wider than today | Today a pointer is `&cell`, `T*`, and `*p`. What "expanded" adds is not named yet. Do not invent the list. `window` and `gather` are already rejected below. | 2 | 3 |
 | Static analysis | Facts known before the call: present, pure region, who names a cell, which function a body calls. Phase 1 is a start. It is not this. | 3 | 4 |
 | Active analysis | Facts gathered while a program runs. Not a v1.0 host. The shape is in [GOALS.md](GOALS.md). | 4 | 4 |
@@ -62,6 +62,18 @@ A mark that is only in USE.md is still rejected by both hosts until a row here i
 | `i4`, `f8`, `bf16`, unsigned floats, balanced ternary | 5 | 1 |
 | `leave[name]`, `@name` on a loop | 1 | 1 |
 
+## Walls
+
+These are not missing syntax. They are reasons a goal breaks if it is built the naive way. The decision is in [GOALS.md](GOALS.md).
+
+| goal | wall | decision |
+|---|---|---|
+| Flatten a hot function onto the GPU | SIMD divergence, and driver latency | Only a data-parallel loop goes. Scalar control stays on the CPU. Divergence is tracked, not ignored. |
+| Roll back a bad mutation | External I/O cannot be reverted | Undo memory only. The system must know what it is allowed to undo. Pause and flush first when downtime is acceptable. |
+| Replace a running function | I-cache against D-cache | Do not patch bytes under the instruction pointer. A dirty flag, then a call to the compiled function. Flip one pointer after the other page is verified. |
+| Salvage a good piece from another branch | Hidden coupling | The risk stays. Layout assumptions have to be in the symbol row, or the merge is not checked. |
+| Score exact cycles | Undecidable for a dynamic loop | Lower bound, average, upper bound, and unknown. Not an exact cycle count. |
+
 ## Not a fix
 
-No bitwise operators until the 1.1 row above changes USE.md. No `%` until that row does. No overloads, no traits, no vptr, no downcast, no borrow checker, no `goto`. The interpreter does not run the passes. That is the spec. Packing the 16-byte cell would be faster and would drop the present flag the spec counts. A pass that names a whole region is not a row in Known rewrites. It is a goal, not a 1.0 bug.
+Bitwise and `%` are in USE.md and are not in the hosts yet. No overloads, no traits, no vptr, no downcast, no borrow checker, no `goto`. The interpreter does not run the passes. That is the spec. Packing the 16-byte cell would be faster and would drop the present flag the spec counts. A pass that names a whole region is not a row in Known rewrites. It is a goal, not a 1.0 bug.

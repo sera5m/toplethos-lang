@@ -6,7 +6,7 @@ This is language spec 1.0. [MATRIX.md](MATRIX.md) is older and does not win wher
 
 `//` through the end of the line is a comment. A graph marker is a comment. It is not code.
 
-`$` is structural equality and nothing else. It is not a variable sigil. `^` alone is not an operator. `^=` resolves and stores. `goto` is not in this version. Later, if it exists, it takes a pointer to a program position, not a text label.
+`$` is structural equality and nothing else. It is not a variable sigil. Unary `^` is not an operator. Binary `^` is bitwise xor. `^=` resolves and stores. `goto` is not in this version. Later, if it exists, it takes a pointer to a program position, not a text label.
 
 A statement ends with `;`. A brace block does not. `return`, a declaration, a store, and a call used as a statement all end with `;`.
 
@@ -15,16 +15,20 @@ A statement ends with `;`. A brace block does not. `return`, a declaration, a st
 | order | operators | associativity |
 |---|---|---|
 | 1 | `::` `.` `in[]` `[index]` | |
-| 2 | unary `+` `-` `!` `*` `&`, and `as[T, v]` | |
-| 3 | `*` `/` | left |
+| 2 | unary `+` `-` `!` `~` `*` `&`, and `as[T, v]` | |
+| 3 | `*` `/` `%` | left |
 | 4 | `+` `-` | left |
-| 5 | `<` `>` `<=` `>=` | left |
-| 6 | `==` `!=` `$=` `!$=` | left |
-| 7 | `&&` | left, and the right runs only when the left is true |
-| 8 | `\|\|` | left, and the right runs only when the left is false |
-| 9 | `=` `+=` `^=` | right |
+| 5 | `<<` `>>` | left |
+| 6 | `<` `>` `<=` `>=` | left |
+| 7 | `==` `!=` `$=` `!$=` | left |
+| 8 | `&` | left |
+| 9 | `^` | left |
+| 10 | `\|` | left |
+| 11 | `&&` | left, and the right runs only when the left is true |
+| 12 | `\|\|` | left, and the right runs only when the left is false |
+| 13 | `=` `+=` `^=` | right |
 
-`!`, `&&`, and `||` take `bool` and result in `bool`. An integer is not a `bool`. There is no bitwise `&`, `|`, or `^`. `&` is only the address.
+`!`, `&&`, and `||` take `bool` and result in `bool`. An integer is not a `bool`. Unary `&` is the address. Binary `&`, `|`, and `^` are bitwise, and so are `~`, `<<`, and `>>`.
 
 ## What a variable is
 
@@ -512,7 +516,9 @@ typeprimitive { ptr_to_elem, size, kind }
 | two `string` values | Append the bytes of the right to the left. | `string` |
 | anything else | No row, until you add one. | Compile error. |
 
-`-`, `*`, and `/` are `submagnitude`, `mulmagnitude`, and `divmagnitude`. They use the same row rules, except `uf` subtraction has no built-in row: a negative result does not fit. Integer `/` truncates toward zero. `/` by zero is a failure. Dividing the lowest signed value by `-1` is a failure. Unary `-` of that same value is a failure. Integer `+` and `-` wrap. That wrap is the result, and an optimizer may not delete it.
+`-`, `*`, `/`, and `%` are `submagnitude`, `mulmagnitude`, `divmagnitude`, and `remmagnitude`. They use the same row rules, except `uf` subtraction has no built-in row: a negative result does not fit. Integer `/` truncates toward zero. `a % b` is `a - (a / b) * b`, so the remainder takes the sign of `a`. `/` or `%` by zero is a failure. Dividing or taking the remainder of the lowest signed value by `-1` is a failure. Unary `-` of that same value is a failure. Integer `+` and `-` wrap. That wrap is the result, and an optimizer may not delete it. `%` has no row for a float. `@divzero` applies to `%` by zero the same way it applies to `/`.
+
+Binary `&`, `^`, and `|`, and unary `~`, take two integer atoms of the same width, or one for `~`. The bits are the two's complement representation. A float, a `bool`, a pointer, or two different widths has no row. `<<` and `>>` take that integer and an `i32` count. The count must be from `0` through one less than the width. Outside that range is a failure, and a constant count outside it is a compile error. `<<` shifts the bits toward the high end and drops what leaves the width. `>>` on a signed atom fills with the sign bit. `>>` on an unsigned atom fills with zero. There is no row that turns a bitwise result into a float.
 
 A product of small factors resolves to a wider atom. `i4`, `ui4`, `i8`, and `ui8` multiply to `i32`. `f8e4m3`, `f8e5m2`, `uf8e4m3`, `uf8e5m2`, `f16`, and `bf16` multiply to `f32`. The `+` of two equal atoms stays that atom. `onfail` runs.
 
@@ -987,8 +993,8 @@ A program that compiles has one meaning. A violation is a compile error or a fai
 - a read or a store of a `@mutex` cell outside `lock` or `hold`
 - a second run touching a cell that another run stores, unless the cell is `@mutex`, `@xor`, or `@accum`
 - a store to `@accum` that is not an add
-- `&`, `|`, `^`, `~`, `<<`, or `>>` used as an operator. `&` as the address, and `&&` and `||`, stay
-- `%`
+- a bitwise operator or `%` with no row
+- a constant shift count outside `0` through one less than the width
 - `as` from a pointer to one atom into a pointer to another
 - a namespace initializer that calls a function
 - a pointer stored into a cell that outlives its target
@@ -1000,4 +1006,4 @@ A program that compiles has one meaning. A violation is a compile error or a fai
 
 ## Not in the language
 
-No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtual dispatch. No vptr. No downcast. A child method is a mutation, not an override. No inferred result types. No runtime polymorphic number. No `using`. No argument-dependent lookup. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. No bitwise operators. No `%`. No type punning. No undefined behavior. A missing arm is not an error unless `@total` or the project switch `total` says so. No per-element page alignment inside an array. No moving a live object to compact a page. No inferred spare, and no `@with`. A spare on the size table stays empty. A cell joins a load block only by `@blockpack`.
+No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtual dispatch. No vptr. No downcast. A child method is a mutation, not an override. No inferred result types. No runtime polymorphic number. No `using`. No argument-dependent lookup. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. No type punning. No undefined behavior. A missing arm is not an error unless `@total` or the project switch `total` says so. No per-element page alignment inside an array. No moving a live object to compact a page. No inferred spare, and no `@with`. A spare on the size table stays empty. A cell joins a load block only by `@blockpack`.

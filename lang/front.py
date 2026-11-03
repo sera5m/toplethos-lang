@@ -877,6 +877,8 @@ class Front:
             if left["ty"] != ("bool",) or right["ty"] != ("bool",):
                 self.fail("|| applied to a value that is not bool")
             left = {"k": "bin", "op": "||", "a": left, "b": right, "ty": ("bool",)}
+        if self.starts("|"):
+            self.later("bitwise |")
         return left
 
     def bin_and(self, expect):
@@ -886,6 +888,8 @@ class Front:
             if left["ty"] != ("bool",) or right["ty"] != ("bool",):
                 self.fail("&& applied to a value that is not bool")
             left = {"k": "bin", "op": "&&", "a": left, "b": right, "ty": ("bool",)}
+        if self.starts("&"):
+            self.later("bitwise &")
         return left
 
     def bin_eq(self, expect):
@@ -897,6 +901,8 @@ class Front:
                     op = cand
                     break
             if not op:
+                if self.starts("^") and not self.starts("^="):
+                    self.later("bitwise ^")
                 return left
             right = self.bin_rel(None)
             ty = self.arith_ty(left["ty"], right["ty"], eq=True)
@@ -905,6 +911,8 @@ class Front:
     def bin_rel(self, expect):
         left = self.bin_add(None)
         while True:
+            if self.eat("<<") or self.eat(">>"):
+                self.later("shift")
             op = None
             for cand in ("<=", ">=", "<", ">"):
                 if self.eat(cand):
@@ -937,7 +945,7 @@ class Front:
             elif self.eat("/"):
                 op = "/"
             elif self.eat("%"):
-                self.fail("%")
+                self.later("%")
             else:
                 return left
             right = self.unary(None)
@@ -957,6 +965,8 @@ class Front:
 
     def unary(self, expect):
         self.skip()
+        if self.eat("~"):
+            self.later("~")
         if self.eat("!"):
             e = self.unary(None)
             if e["ty"] != ("bool",):
