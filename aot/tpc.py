@@ -40,7 +40,7 @@ def main(argv):
         from analyze import report
         if args.analyze:
             prog = parse(src)
-            sys.stdout.write(report(prog))
+            sys.stdout.write(report(prog, src))
             return 0
         text = compile_source(src)
     except CompileError as e:
