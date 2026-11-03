@@ -22,6 +22,9 @@ def analyze(prog):
             "callers": [],
             "invoked": [],
             "sites": [],
+            "ops": [],
+            "mutates": False,
+            "atom": None,
             "key": key,
             "loops": 0,
             "loops_at": [],
@@ -31,9 +34,9 @@ def analyze(prog):
             "decisions": 0,
         }
         for p in fn["params"]:
-            _bind(rec, ids, p["id"], p["ty"], fn["line"])
+            _bind(rec, ids, p["id"], p["ty"], fn["line"], param=True)
         if fn.get("here"):
-            _bind(rec, ids, fn["here"], ("obj", fn["method"]), fn["line"])
+            _bind(rec, ids, fn["here"], ("obj", fn["method"]), fn["line"], param=True)
         _walk(fn["body"], rec, ids)
         rec["shape"] = _shape(rec)
         rec["forward"] = bool(rec["loops_at"]) and all(row["forward"] for row in rec["loops_at"])
@@ -44,7 +47,9 @@ def analyze(prog):
         for callee in rec["calls"]:
             if callee in out and key not in out[callee]["callers"]:
                 out[callee]["callers"].append(key)
+    _classify(out)
     _number_sites(out)
+    _number_ops(out)
     return out
 
 
@@ -78,6 +83,11 @@ def report(prog, src=None):
         for site in ann[key]["sites"]:
             lines.extend(_ptr_record(site))
             lines.append("")
+    ops = [op for key in ann for op in ann[key]["ops"]]
+    ops.sort(key=lambda op: int(op["id"][2:]))
+    for op in ops:
+        lines.extend(_op_record(op))
+        lines.append("")
     if src is not None:
         lines.append("--- source ---")
         lines.extend(_annotate(src, ann))
@@ -115,6 +125,7 @@ def _fn_record(key, rec, tag):
         f"  loops {rec['loops']}",
         f"  forward {'yes' if rec['forward'] else 'no'}",
         f"  effect {eff}",
+        f"  atom {rec.get('atom') or '-'}",
         f"  calls {_words(rec['calls'])}",
         f"  callers {_words(rec['callers'])}",
         f"  invoked {_words(rec['invoked'])}",
@@ -179,6 +190,7 @@ def _annotate(src, ann):
     loop_at = {}
     fn_at = {}
     ptr_at = {}
+    drop_at = {}
     for key, rec in ann.items():
         fn_at.setdefault(rec["line"], []).append(
             f"fn {key} shape {_words(rec['shape'])} complex {rec['complex']} "
@@ -210,12 +222,19 @@ def _annotate(src, ann):
                 f"{site['id']} {site['kind']} {site['name']} decl {site['decl']} "
                 f"effect {site['effect']} args {_words(site['args'])}"
             )
+        for op in rec["ops"]:
+            if op.get("drop"):
+                _out, into = _dest_word(op)
+                drop_at.setdefault(op["line"], []).append(
+                    f"drop {op['id']} {op['atom']} {op['name']} into {into}"
+                )
     out = []
     for n, line in enumerate(src.splitlines(), 1):
         parts = []
         parts.extend(fn_at.get(n, []))
         parts.extend(loop_at.get(n, []))
         parts.extend(ptr_at.get(n, []))
+        parts.extend(drop_at.get(n, []))
         parts.extend(long_at.get(n, []))
         declared = set()
         for bit in long_at.get(n, []):
@@ -255,19 +274,27 @@ def _walk(stmts, rec, ids):
             if op == "decl":
                 _bind(rec, ids, st[1], st[2], line)
                 if st[3] is not None:
-                    _expr(st[3], rec, ids, False, line)
+                    rloc = _expr(st[3], rec, ids, False, line)
+                    name = ids.get(st[1], {}).get("name", "?")
+                    sop = _add_op(rec, "set", name, line, [rloc])
+                    _link_drop(rloc, ("name", name), sop)
             elif op == "store":
                 inc = _inc_id(st)
-                if inc is not None:
-                    _touch(rec, ids, inc, True, line)
-                    _expr(st[2], rec, ids, False, line)
+                if inc is not None or (isinstance(st[1], dict) and st[1].get("k") == "name"):
+                    rloc = _expr(st[2], rec, ids, False, line)
+                    iid = inc if inc is not None else st[1].get("id")
+                    _touch(rec, ids, iid, True, line)
+                    name = ids.get(iid, {}).get("name", "?")
+                    sop = _add_op(rec, "set", name, line, [rloc])
+                    _link_drop(rloc, ("name", name), sop)
                 else:
                     _expr(st[1], rec, ids, True, line)
                     _expr(st[2], rec, ids, False, line)
             elif op == "expr":
                 _expr(st[1], rec, ids, False, line)
             elif st[1] is not None:
-                _expr(st[1], rec, ids, False, line)
+                rloc = _expr(st[1], rec, ids, False, line)
+                _link_drop(rloc, ("out",), None)
         elif op == "if":
             rec["decisions"] += 1
             _expr(st[1], rec, ids, False, line)
@@ -312,7 +339,7 @@ def _walk(stmts, rec, ids):
             rec["effects"].append(op)
 
 
-def _bind(rec, ids, iid, ty, line):
+def _bind(rec, ids, iid, ty, line, param=False):
     info = ids.get(iid, {})
     name = info.get("name", iid)
     row = rec["names"].get(name)
@@ -321,6 +348,8 @@ def _bind(rec, ids, iid, ty, line):
         rec["names"][name] = row
     elif not row["decl"]:
         row["decl"] = line
+    if param:
+        row["param"] = True
     if info.get("time") in ("static", "config"):
         _add(rec, "static")
 
@@ -348,147 +377,178 @@ def _touch(rec, ids, iid, write, line):
 
 def _expr(e, rec, ids, write, line):
     if not isinstance(e, dict):
-        return
+        return ("tmp",)
     k = e.get("k")
     if k == "name":
         _touch(rec, ids, e["id"], write, line)
-        return
+        name = ids.get(e["id"], {}).get("name", "?")
+        op = _add_op(rec, "set" if write else "get", name, line, [])
+        return ("name", name, op)
     if k == "call":
         args = e.get("args") or []
+        locs = [_expr(a, rec, ids, False, line) for a in args]
         if e["name"] in ("print", "loadbmp", "loadbytes"):
             _add(rec, e["name"])
-            _site(rec, ids, "call", e["name"], line, args, "-", e["name"])
-        else:
-            if e["name"] not in rec["calls"]:
-                rec["calls"].append(e["name"])
-            _site(rec, ids, "call", e["name"], line, args, e["name"], None)
-        for a in args:
-            _expr(a, rec, ids, False, line)
-        return
+            return _call_op(rec, ids, "call", e["name"], line, locs, "-", e["name"])
+        if e["name"] not in rec["calls"]:
+            rec["calls"].append(e["name"])
+        return _call_op(rec, ids, "call", e["name"], line, locs, e["name"], None)
     if k == "method":
         name = e.get("name") or "?"
         decl = (e.get("obj") or "?") + "." + name
         if decl not in rec["calls"]:
             rec["calls"].append(decl)
-        _expr(e.get("a"), rec, ids, False, line)
-        args = e.get("args") or []
-        for a in args:
-            _expr(a, rec, ids, False, line)
-        rec["sites"].append({
-            "kind": "method",
-            "name": name,
-            "line": line,
-            "caller": rec["key"],
-            "decl": decl,
-            "recv": _arg_name(e.get("a"), ids),
-            "args": [_arg_name(a, ids) for a in args],
-            "effect": None,
-        })
-        return
+        recv = _expr(e.get("a"), rec, ids, False, line)
+        locs = [_expr(a, rec, ids, False, line) for a in (e.get("args") or [])]
+        return _call_op(rec, ids, "method", name, line, locs, decl, None, recv=_loc_word(recv))
     if k == "start":
         _add(rec, "start")
         if e["name"] not in rec["calls"]:
             rec["calls"].append(e["name"])
-        _site(rec, ids, "start", e["name"], line, [], e["name"], None)
-        return
+        return _call_op(rec, ids, "start", e["name"], line, [], e["name"], None)
     if k == "run":
         _add(rec, "run")
         if e["name"] not in rec["calls"]:
             rec["calls"].append(e["name"])
-        words = ["int"]
+        locs = [("lit", "int")]
         if e.get("extra"):
-            words.append(ids.get(e["extra"], {}).get("name", "?"))
-        rec["sites"].append({
-            "kind": "run",
-            "name": e["name"],
-            "line": line,
-            "caller": rec["key"],
-            "decl": e["name"],
-            "recv": None,
-            "args": words,
-            "effect": None,
-        })
-        return
+            cell = ids.get(e["extra"], {}).get("name", "?")
+            g = _add_op(rec, "get", cell, line, [])
+            locs.append(("name", cell, g))
+        return _call_op(rec, ids, "run", e["name"], line, locs, e["name"], None)
     if k == "size":
-        _site(rec, ids, "call", "size", line, [e.get("a")], "-", "pure")
-        _expr(e.get("a"), rec, ids, False, line)
-        return
+        loc = _expr(e.get("a"), rec, ids, False, line)
+        return _call_op(rec, ids, "call", "size", line, [loc], "-", "pure")
     if k == "upd":
-        _expr(e.get("a"), rec, ids, False, line)
+        loc = _expr(e.get("a"), rec, ids, False, line)
         _expr(e.get("a"), rec, ids, True, line)
-        return
+        return loc if loc[0] == "name" else ("tmp",)
     if k == "index":
         _expr(e.get("a"), rec, ids, write, line)
         _expr(e.get("i"), rec, ids, False, line)
-        return
+        return ("tmp",)
     if k == "field":
-        _expr(e.get("a"), rec, ids, write, line)
-        return
+        base = e.get("a")
+        if write and isinstance(base, dict) and base.get("k") == "name":
+            info = ids.get(base["id"], {})
+            row = rec["names"].get(info.get("name"))
+            if row and row.get("param"):
+                rec["mutates"] = True
+        _expr(base, rec, ids, write, line)
+        return ("tmp",)
     if k == "deref":
-        _expr(e.get("a"), rec, ids, False, line)
-        return
+        loc = _expr(e.get("a"), rec, ids, False, line)
+        if write:
+            rec["mutates"] = True
+            pname = loc[1] if loc[0] == "name" else "*"
+            _add_op(rec, "set", "*" + str(pname), line, [loc])
+        return ("tmp",)
     if k == "loadbmp":
         _add(rec, "loadbmp")
-        if e.get("id"):
-            _touch(rec, ids, e["id"], True, line)
-        _builtin_site(rec, ids, "loadbmp", line, e.get("id"))
-        return
+        return _mem_call(rec, ids, "loadbmp", line, e.get("id"))
     if k == "loadbytes":
         _add(rec, "loadbytes")
-        if e.get("id"):
-            _touch(rec, ids, e["id"], True, line)
-        _builtin_site(rec, ids, "loadbytes", line, e.get("id"))
-        return
+        return _mem_call(rec, ids, "loadbytes", line, e.get("id"))
+    if k == "addr":
+        return _expr(e.get("a"), rec, ids, False, line)
+    if k == "int":
+        return ("lit", "int")
+    if k == "f64":
+        return ("lit", "f64")
+    if k == "bool":
+        return ("lit", "bool")
     for key in ("a", "b", "i"):
         if isinstance(e.get(key), dict):
             _expr(e[key], rec, ids, False, line)
     for a in e.get("args") or []:
         _expr(a, rec, ids, False, line)
+    return ("tmp",)
 
 
-def _builtin_site(rec, ids, name, line, iid):
-    arg = ids.get(iid, {}).get("name", "?") if iid else "-"
-    rec["sites"].append({
-        "kind": "call",
-        "name": name,
-        "line": line,
-        "caller": rec["key"],
-        "decl": "-",
-        "recv": None,
-        "args": [arg],
-        "effect": name,
-    })
+def _mem_call(rec, ids, name, line, iid):
+    arg = ids.get(iid, {}).get("name", "?") if iid else None
+    locs = []
+    if arg:
+        _touch(rec, ids, iid, True, line)
+        sop = _add_op(rec, "set", arg, line, [])
+        locs.append(("name", arg, sop))
+    return _call_op(rec, ids, "call", name, line, locs, "-", name)
 
 
-def _site(rec, ids, kind, name, line, args, decl, effect):
-    rec["sites"].append({
+def _call_op(rec, ids, kind, name, line, locs, decl, effect, recv=None):
+    site = {
         "kind": kind,
         "name": name,
         "line": line,
         "caller": rec["key"],
         "decl": decl,
-        "recv": None,
-        "args": [_arg_name(a, ids) for a in args],
+        "recv": recv,
+        "args": [_loc_word(a) for a in locs],
         "effect": effect,
-    })
+    }
+    rec["sites"].append(site)
+    op = _add_op(rec, "call", name, line, locs, decl)
+    op["kind"] = kind
+    op["instance"] = site
+    op["effect"] = effect
+    for i, loc in enumerate(locs):
+        _consume(loc, op, i)
+    return ("op", op)
 
 
-def _arg_name(e, ids):
-    if not isinstance(e, dict):
+def _add_op(rec, atom, name, line, inn=None, decl="-"):
+    op = {
+        "atom": atom,
+        "kind": atom,
+        "name": name,
+        "line": line,
+        "fn": rec["key"],
+        "instance": None,
+        "parent": None,
+        "inn": list(inn or []),
+        "drop": False,
+        "into": None,
+        "decl": decl,
+        "effect": None,
+    }
+    rec["ops"].append(op)
+    return op
+
+
+def _consume(loc, parent, index):
+    if not loc:
+        return
+    if loc[0] == "name" and len(loc) > 2 and loc[2] is not None:
+        loc[2]["parent"] = parent
+    elif loc[0] == "op":
+        _link_drop(loc, ("in", parent, index), parent)
+
+
+def _link_drop(rloc, dest, parent):
+    if not rloc or rloc[0] != "op":
+        return
+    child = rloc[1]
+    child["drop"] = True
+    child["into"] = dest
+    child["parent"] = parent
+
+
+def _loc_word(loc):
+    if not loc:
         return "?"
-    k = e.get("k")
-    if k == "name":
-        return ids.get(e["id"], {}).get("name", "?")
-    if k == "int":
-        return "int"
-    if k == "f64":
-        return "f64"
-    if k == "bool":
-        return "bool"
-    return k or "?"
+    if loc[0] == "name":
+        return loc[1]
+    if loc[0] == "lit":
+        return loc[1]
+    if loc[0] == "op":
+        return loc[1].get("id") or loc[1].get("name") or "?"
+    return "tmp"
 
 
 def _effect_word(rec):
+    if rec.get("mutates") or rec.get("atom") == "mutable":
+        extra = ",".join(rec["effects"])
+        return "mutable" if not extra else "mutable," + extra
     if rec["effects"]:
         return ",".join(rec["effects"])
     if rec["pure"]:
@@ -512,6 +572,112 @@ def _number_sites(out):
                 site["decl_line"] = 0
                 if not site.get("effect"):
                     site["effect"] = "-"
+
+
+def _classify(out):
+    for _ in range(len(out) + 1):
+        changed = False
+        for rec in out.values():
+            atom = _fn_atom(rec, out)
+            if atom != rec["atom"]:
+                rec["atom"] = atom
+                changed = True
+        if not changed:
+            break
+    for rec in out.values():
+        if rec["atom"] is None:
+            rec["atom"] = "impure"
+
+
+def _fn_atom(rec, out):
+    if rec["mutates"]:
+        return "mutable"
+    if rec["effects"]:
+        return "impure"
+    worst = "pure"
+    for callee in rec["calls"]:
+        drec = out.get(callee)
+        if drec is None:
+            return "impure"
+        atom = drec.get("atom")
+        if atom is None:
+            return None
+        if atom == "mutable":
+            return "mutable"
+        if atom == "impure":
+            worst = "impure"
+    return worst
+
+
+def _number_ops(out):
+    n = 1
+    for rec in out.values():
+        for op in rec["ops"]:
+            op["id"] = f"op{n}"
+            n += 1
+            if op["atom"] == "call":
+                op["atom"] = _call_atom(op, out)
+    for rec in out.values():
+        for op in rec["ops"]:
+            site = op.get("instance")
+            if isinstance(site, dict):
+                site["args"] = [_loc_word(a) for a in op["inn"]] or ["-"]
+
+
+def _call_atom(op, out):
+    if op.get("kind") in ("start", "run"):
+        return "impure"
+    if op.get("decl") in ("-", None):
+        if op.get("effect") in ("print", "loadbytes", "loadbmp"):
+            return "impure"
+        return "pure"
+    drec = out.get(op["decl"])
+    if drec is None or drec.get("atom") is None:
+        return "impure"
+    return drec["atom"]
+
+
+def _dest_word(op):
+    if op["atom"] == "get":
+        return op["name"], "-"
+    if op["atom"] == "set":
+        return op["name"], op["name"]
+    into = op.get("into")
+    if not op.get("drop") or not into:
+        return "tmp", "-"
+    if into[0] == "name":
+        return into[1], into[1]
+    if into[0] == "out":
+        return "out", "out"
+    if into[0] == "in":
+        parent, index = into[1], into[2]
+        return "here", f"{parent.get('id', '?')}.in{index}"
+    return "tmp", "-"
+
+
+def _op_record(op):
+    out, into = _dest_word(op)
+    parent = op.get("parent")
+    pid = parent.get("id") if isinstance(parent, dict) else "-"
+    inst = op.get("instance")
+    iid = inst.get("id") if isinstance(inst, dict) else "-"
+    inns = [_loc_word(a) for a in op["inn"]]
+    return [
+        "op {",
+        f"  id {op['id']}",
+        f"  atom {op['atom']}",
+        f"  kind {op['kind']}",
+        f"  fn {op['fn']}",
+        f"  name {op['name']}",
+        f"  line {op['line']}",
+        f"  instance {iid}",
+        f"  parent {pid}",
+        f"  in {_words(inns)}",
+        f"  out {out}",
+        f"  into {into}",
+        f"  drop {'yes' if op['drop'] else 'no'}",
+        "}",
+    ]
 
 
 def _inc_id(st):

@@ -6,7 +6,7 @@ The arithmetic, the `@globaloptimize` levels, and `@inlined` are already in the 
 
 ## What the table is
 
-One record per function, one per name in that function, one per loop, and one annotation pointer per call site. The compiler already runs this from the parse, before the passes. `tpc --analyze file.tpth_s` prints it and does not compile.
+One record per function, one per name in that function, one per loop, one annotation pointer per call site, and one `op` per read, write, or call. The compiler already runs this from the parse, before the passes. `tpc --analyze file.tpth_s` prints it and does not compile.
 
 Counts are source sites, not runs. `i = i + 1` once in the text is one write, however many times the loop runs. A dynamic total is a later cost field. It is not this table.
 
@@ -35,6 +35,29 @@ A call, a method call, `start`, and `run` each get one `annptr` record. The id (
 | `effect` | The callee's effect from its own record: `pure`, a builtin name, or the effect list. |
 
 The declaration lists those ids on `invoked`. A variable stays on its `name` record. This is still not a runtime pointer, and it still does not delete a check.
+
+## Call table
+
+Every read, write, and call is also an `op` in one master table. The atom is one of five:
+
+| atom | when |
+|---|---|
+| `get` | A read of a name. |
+| `set` | A write of a name, including the initializer. |
+| `pure` | A call whose body has no effect and no write through a pointer, `HERE`, or other parameter, and whose own calls are pure. |
+| `impure` | A call that prints, loads, starts, runs, or calls something impure. `start` and `run` are impure even when the worker is pure. |
+| `mutable` | A call that writes through a pointer or a parameter, or that calls a mutable function. |
+
+`in` is the locations the op reads. `out` is where the result goes. `instance` is the `annptr` for a call, and `-` for a get or a set.
+
+`drop yes` means the result is already the next location, so a later pass does not need a temporary and a copy. `out here` means that location is an input of the parent call (`into op5.in0`). `out` a name means the result is stored straight into that name. `into out` means the result is the function's own return. Anything else stays `tmp`.
+
+```text
+var = a in[b in[param]];
+```
+
+`b` is `atom pure`, `out here`, `into` the input of `a`. `a` is `atom pure`, `out var`. The return register of `b` is the argument register of `a`, and the return register of `a` is `var`. The table records that. It does not rewrite the assembly yet.
+
 
 ## What it is not
 

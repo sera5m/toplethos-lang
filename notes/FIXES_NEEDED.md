@@ -18,7 +18,7 @@ A mark that is only in USE.md is still rejected by both hosts until a row here i
 | Bitwise | `&` `\|` `^` `~` `<<` `>>`. Both hosts implement the row. Unary `&` is still the address. `&&` and `\|\|` stay `bool`. Same width, two's complement bits. A shift count outside `0 .. width-1` is a failure. | 2 | 3 |
 | Modulo | `%`. Both hosts implement the row. `a % b` is `a - (a / b) * b`. Zero and the lowest signed value with `-1` are the same failures as `/`. No float row. | 1 | 3 |
 | Pointers, wider than today | Today a pointer is `&cell`, `T*`, and `*p`. What "expanded" adds is not named yet. Do not invent the list. `window` and `gather` are already rejected below. | 2 | 3 |
-| Static analysis | [lang/analyze.py](../lang/analyze.py) prints the reference table: each name's read and write lines, callers, which loops only increment a cursor, and one `annptr` per call, method, `start`, and `run`. `tpc --analyze` shows the records and a `<<<>>>` view of the source. It is not the scored symbol table. | 3 | 4 |
+| Static analysis | [lang/analyze.py](../lang/analyze.py) prints the reference table: name reads and writes, `annptr` per call, and an `op` row for every get, set, and call (`pure`, `impure`, or `mutable`). A nested call whose result is the next input is marked `drop`. `tpc --analyze` shows it. It does not rewrite the assembly. It is not the scored symbol table. | 3 | 4 |
 | Active analysis | Facts gathered while a program runs. Not a v1.0 host. The shape is in [GOALS.md](GOALS.md). | 4 | 4 |
 
 ## Half built
