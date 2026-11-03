@@ -1,12 +1,25 @@
 """Reference table for one program. Both hosts can read it. It does not change values.
 
 Counts are source sites, not how many times a loop runs.
+
+Three passes, each once, in order. A pass does not loop until something settles.
 """
 
 
 def analyze(prog):
-    ids = prog["ids"]
-    out = {}
+    state = {"prog": prog, "ids": prog["ids"], "fns": {}, "log": []}
+    _pass_broad(state)
+    _pass_function(state)
+    _pass_reserved(state)
+    prog["passes"] = state["log"]
+    return state["fns"]
+
+
+def _pass_broad(state):
+    """Local structure only. No callee atom is known yet."""
+    prog = state["prog"]
+    ids = state["ids"]
+    out = state["fns"]
     fns = list(prog["fns"].values()) + [
         m for obj in prog["objects"].values() for m in obj["methods"].values()
     ]
@@ -30,6 +43,8 @@ def analyze(prog):
             "key": key,
             "loops": 0,
             "loops_at": [],
+            "cuts": [],
+            "blocks": [],
             "forward": False,
             "effects": [],
             "shape": [],
@@ -50,10 +65,131 @@ def analyze(prog):
         for callee in rec["calls"]:
             if callee in out and key not in out[callee]["callers"]:
                 out[callee]["callers"].append(key)
-    _classify(out)
-    _number_sites(out)
-    _number_ops(out)
-    return out
+    state["log"].append({"n": 1, "name": "broad", "did": "walk"})
+
+
+def _pass_function(state):
+    """One visit per function, callees first. Then the blocks inside it."""
+    fns = state["fns"]
+    for key in _callee_first(fns):
+        rec = fns[key]
+        atom = _local_atom(rec)
+        for callee in rec["calls"]:
+            other = fns.get(callee)
+            if other is None:
+                atom = _worst(atom, "impure")
+            else:
+                known = other["atom"] if other["atom"] else _local_atom(other)
+                atom = _worst(atom, known)
+        rec["atom"] = atom
+    _number_sites(fns)
+    _number_ops(fns)
+    for rec in fns.values():
+        rec["blocks"] = _blocks(rec)
+    state["log"].append({"n": 2, "name": "function", "did": "atom block"})
+
+
+def _pass_reserved(state):
+    """Kept for a later pass. It runs, and it changes nothing."""
+    state["log"].append({"n": 3, "name": "reserved", "did": "-"})
+
+
+def _local_atom(rec):
+    if rec["mutates"]:
+        return "mutable"
+    if rec["effects"]:
+        return "impure"
+    return "pure"
+
+
+def _worst(a, b):
+    rank = {"pure": 0, "impure": 1, "mutable": 2}
+    return a if rank[a] >= rank[b] else b
+
+
+def _callee_first(fns):
+    """Postorder. A cycle uses the local atom of the function already open."""
+    order = []
+    color = {}
+    for start in fns:
+        if color.get(start):
+            continue
+        stack = [(start, False)]
+        while stack:
+            key, ready = stack.pop()
+            if ready:
+                color[key] = 2
+                order.append(key)
+                continue
+            if color.get(key):
+                continue
+            color[key] = 1
+            stack.append((key, True))
+            for callee in fns[key]["calls"]:
+                if callee in fns and not color.get(callee):
+                    stack.append((callee, False))
+    return order
+
+
+def _blocks(rec):
+    cuts = sorted(set(rec["cuts"]) | {row["line"] for row in rec["loops_at"]})
+    order = []
+    by = {}
+    for op in rec["ops"]:
+        line = op["line"]
+        row = by.get(line)
+        if row is None:
+            row = {"atom": "pure", "effect": [], "ops": 0}
+            by[line] = row
+            order.append(line)
+        row["ops"] += 1
+        atom = _region_atom(op)
+        row["atom"] = _worst(row["atom"], atom)
+        if atom != "pure":
+            word = op.get("effect") or op["name"]
+            if word and word not in row["effect"]:
+                row["effect"].append(str(word))
+    blocks = []
+    cur = None
+    prev = 0
+    for line in order:
+        row = by[line]
+        split = cur is not None and (
+            cur["atom"] != row["atom"] or any(prev < cut <= line for cut in cuts)
+        )
+        if cur is None or split:
+            if cur:
+                blocks.append(cur)
+            cur = {
+                "line": line,
+                "end": line,
+                "atom": row["atom"],
+                "effect": list(row["effect"]),
+                "ops": row["ops"],
+            }
+        else:
+            cur["end"] = line
+            cur["ops"] += row["ops"]
+            for word in row["effect"]:
+                if word not in cur["effect"]:
+                    cur["effect"].append(word)
+        prev = line
+    if cur:
+        blocks.append(cur)
+    for i, block in enumerate(blocks, 1):
+        block["id"] = "b" + str(i)
+    return blocks
+
+
+def _region_atom(op):
+    if op["kind"] in ("call", "method", "start", "run"):
+        atom = op["atom"]
+        if atom in ("pure", "impure", "mutable"):
+            return atom
+        if op.get("effect") in ("print", "loadbmp", "loadbytes", "savebmp", "start", "run"):
+            return "impure"
+        return "pure"
+    return "pure"
 
 
 def report(prog, src=None):
@@ -71,6 +207,9 @@ def report(prog, src=None):
             if fn.get("ikitaku"):
                 tagged[oname + "." + fn["name"]] = " ".join(fn["ikitaku"])
     lines = [f"opt {level}", ""]
+    for row in prog.get("passes") or []:
+        lines.extend(_pass_record(row))
+        lines.append("")
     for name in sorted(prog.get("enums") or {}, key=lambda n: prog["enums"][n]["id"]):
         lines.extend(_enum_record(prog["enums"][name], name))
         lines.append("")
@@ -84,6 +223,9 @@ def report(prog, src=None):
             lines.append("")
         for row in rec["loops_at"]:
             lines.extend(_loop_record(key, row))
+            lines.append("")
+        for block in rec.get("blocks") or []:
+            lines.extend(_block_record(key, block))
             lines.append("")
     for key in sorted(ann):
         for site in ann[key]["sites"]:
@@ -135,6 +277,30 @@ def symbol_table(prog):
             "edges": {},
         }
     return out
+
+
+def _pass_record(row):
+    return [
+        "pass {",
+        f"  n {row['n']}",
+        f"  name {row['name']}",
+        f"  did {row['did']}",
+        "}",
+    ]
+
+
+def _block_record(fn, block):
+    return [
+        "block {",
+        f"  fn {fn}",
+        f"  id {block['id']}",
+        f"  line {block['line']}",
+        f"  end {block['end']}",
+        f"  atom {block['atom']}",
+        f"  effect {_words(block['effect'])}",
+        f"  ops {block['ops']}",
+        "}",
+    ]
 
 
 def _symbol_record(name, row):
@@ -201,6 +367,7 @@ def _fn_record(key, rec, tag):
         f"  forward {'yes' if rec['forward'] else 'no'}",
         f"  effect {eff}",
         f"  atom {rec.get('atom') or '-'}",
+        f"  blocks {len(rec.get('blocks') or [])}",
         f"  calls {_words(rec['calls'])}",
         f"  callers {_words(rec['callers'])}",
         f"  invoked {_words(rec['invoked'])}",
@@ -270,6 +437,7 @@ def _annotate(src, ann):
     fn_at = {}
     ptr_at = {}
     drop_at = {}
+    block_at = {}
     for key, rec in ann.items():
         fn_at.setdefault(rec["line"], []).append(
             f"fn {key} shape {_words(rec['shape'])} complex {rec['complex']} "
@@ -296,6 +464,10 @@ def _annotate(src, ann):
                 if row["forward"]
                 else "loop not forward"
             )
+        for block in rec.get("blocks") or []:
+            block_at.setdefault(block["line"], []).append(
+                f"block {block['id']} {block['atom']} to {block['end']}"
+            )
         for site in rec["sites"]:
             ptr_at.setdefault(site["line"], []).append(
                 f"{site['id']} {site['kind']} {site['name']} decl {site['decl']} "
@@ -311,6 +483,7 @@ def _annotate(src, ann):
     for n, line in enumerate(src.splitlines(), 1):
         parts = []
         parts.extend(fn_at.get(n, []))
+        parts.extend(block_at.get(n, []))
         parts.extend(loop_at.get(n, []))
         parts.extend(ptr_at.get(n, []))
         parts.extend(drop_at.get(n, []))
@@ -378,11 +551,13 @@ def _walk(stmts, rec, ids):
                 _link_drop(rloc, ("out",), None)
         elif op == "if":
             rec["decisions"] += 1
+            rec["cuts"].append(line)
             _expr(st[1], rec, ids, False, line)
             _walk(st[2], rec, ids)
             _walk(st[3], rec, ids)
         elif op == "loop":
             rec["loops"] += 1
+            rec["cuts"].append(line)
             facts = _cursor_facts(st[1], ids)
             rec["loops_at"].append({
                 "line": line,
@@ -393,6 +568,7 @@ def _walk(stmts, rec, ids):
             _walk(st[1], rec, ids)
         elif op == "do":
             rec["loops"] += 1
+            rec["cuts"].append(line)
             bound = []
             if isinstance(st[1], dict) and st[1].get("k") == "name":
                 info = ids.get(st[1]["id"], {})
@@ -659,7 +835,9 @@ def _effect_word(rec):
         return "mutable" if not extra else "mutable," + extra
     if rec["effects"]:
         return ",".join(rec["effects"])
-    if rec["pure"]:
+    if rec.get("atom") == "impure":
+        return "impure"
+    if rec["pure"] or rec.get("atom") == "pure":
         return "pure"
     return "calls"
 
@@ -680,41 +858,6 @@ def _number_sites(out):
                 site["decl_line"] = 0
                 if not site.get("effect"):
                     site["effect"] = "-"
-
-
-def _classify(out):
-    for _ in range(len(out) + 1):
-        changed = False
-        for rec in out.values():
-            atom = _fn_atom(rec, out)
-            if atom != rec["atom"]:
-                rec["atom"] = atom
-                changed = True
-        if not changed:
-            break
-    for rec in out.values():
-        if rec["atom"] is None:
-            rec["atom"] = "impure"
-
-
-def _fn_atom(rec, out):
-    if rec["mutates"]:
-        return "mutable"
-    if rec["effects"]:
-        return "impure"
-    worst = "pure"
-    for callee in rec["calls"]:
-        drec = out.get(callee)
-        if drec is None:
-            return "impure"
-        atom = drec.get("atom")
-        if atom is None:
-            return None
-        if atom == "mutable":
-            return "mutable"
-        if atom == "impure":
-            worst = "impure"
-    return worst
 
 
 def _number_ops(out):
