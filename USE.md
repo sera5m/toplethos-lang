@@ -700,6 +700,7 @@ The choice is made while compiling. A constant array, a constant coefficient, an
 | `y = c + x * y` with `c` a constant or a pure addend | phase 3 | one `mulsd` and one `addsd`. `x` is held. Not `vfmadd`. Not `loop` |
 | `do n[constant]` that did not get the register row | the count is a constant | the trip count is an immediate. It is not spilled and reloaded |
 | `a / 2^k` on an integer, `2^k` a positive constant | the divisor is that constant | an arithmetic shift that rounds toward zero. Not `idiv` |
+| `if (x >= lo && x <= hi)` with `lo` and `hi` constants, `lo <= hi`, and both fitting a 32-bit immediate | the condition is that test and nothing else. `>=` and `<=` only. The value is not stored | `sub lo`, then `cmp (hi - lo)` / `ja`. Not two `setcc` chains |
 | the left of an integer operator, saved while the right runs | the right is a constant or a present name, or `rbx` is free because this is not a method | the left stays in a register. It is not pushed |
 | an index of a named array, and a store through that index | the array is a name | the index is not pushed. An integer value being stored stays in `rbx` |
 | a plain integer or bool local | no call while it is live, nothing takes its address, and a register is free | the value stays in that register. The cell is not read or stored |

@@ -67,7 +67,7 @@ var = a in[b in[param]];
 | `drop` | The copy of a call result into a temporary. The result is already the next location. |
 | `reuse` | A second `get` of a name on the same line, with no `set` of it in between. The value is already in a register. |
 | `inc` | The `get` of a cursor that is only `n = n + 1`. The store is an increment of that register. |
-| `range` | `x >= A && x <= B` with constant bounds. One unsigned compare, not two compares and an `and`. Counted on its own. It is not added into `static`, because that `and` is not one of the table's ops. |
+| `range` | `x >= A && x <= B` with constant bounds. One unsigned compare, not two compares and an `and`. Counted on its own. It is not added into `static`, because that `and` is not one of the table's ops. When this test is the condition of an `if`, the compiler emits `sub` / `cmp` / `ja` instead of the `setcc` chains. A stored bool is left as written. |
 | `forward` | A loop whose cursor only increments. A pointer walk, not an index recalculated from zero. A shape, not a deleted op. |
 
 On the Cicero scan this is a few dozen source ops, not half the table. The larger cut is the lowering under each of those ops: a compare becomes a chain of boolean stores, and an index becomes a multiply, a bounds check, and a present check. Those are the phase-4 rewrites. This table is what tells them the pattern is legal.

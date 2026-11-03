@@ -53,6 +53,8 @@ A load stays off the one-row table. The flag check is still required when phase 
 
 These are real, and they belong on the tree or on the compiler's own instruction list. A pass over the finished `.s` text cannot see that a present flag is dead.
 
+One row is now lowered, at the `if`, before the instructions are written. `if (x >= lo && x <= hi)` with constant bounds becomes `sub` / `cmp` / `ja`. The long form was two `cmp` / `setcc` / `movzx` chains and a `test`. A use of that test as a stored bool is still the long form. The other rows below are not lowered.
+
 | technique | where it already exists | use it on |
 |---|---|---|
 | promote stack slots to registers | LLVM `mem2reg` | the tree, before emit. This is the pass that matches the cell protocol |

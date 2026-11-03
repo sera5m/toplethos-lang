@@ -3,6 +3,60 @@
 import struct
 
 
+def _imm32(n):
+    return -2147483648 <= n <= 2147483647
+
+
+def _range_bounds(e):
+    if not isinstance(e, dict) or e.get("k") != "bin" or e.get("op") != "&&":
+        return None
+    left, right = _one_bound(e.get("a")), _one_bound(e.get("b"))
+    if not left or not right or left[0] != right[0]:
+        return None
+    lo = hi = None
+    for kind, n in ((left[1], left[2]), (right[1], right[2])):
+        if kind == "lo":
+            if lo is not None:
+                return None
+            lo = n
+        else:
+            if hi is not None:
+                return None
+            hi = n
+    if lo is None or hi is None:
+        return None
+    name = left[3]
+    if name.get("ty") == ("i64",):
+        wide = True
+    elif name.get("ty") == ("i32",):
+        wide = False
+    else:
+        return None
+    return name, lo, hi, wide
+
+
+def _int_const(e):
+    if not isinstance(e, dict):
+        return None
+    if e.get("k") == "int":
+        return e["n"]
+    if e.get("k") == "unary" and e.get("op") == "-" and isinstance(e.get("a"), dict) and e["a"].get("k") == "int":
+        return -e["a"]["n"]
+    return None
+
+
+def _one_bound(e):
+    if not isinstance(e, dict) or e.get("k") != "bin" or e.get("op") not in (">=", "<="):
+        return None
+    a, b = e.get("a"), e.get("b")
+    nb, na = _int_const(b), _int_const(a)
+    if isinstance(a, dict) and a.get("k") == "name" and nb is not None:
+        return a["id"], "lo" if e["op"] == ">=" else "hi", nb, a
+    if isinstance(b, dict) and b.get("k") == "name" and na is not None:
+        return b["id"], "lo" if e["op"] == "<=" else "hi", na, b
+    return None
+
+
 class Emit:
     def __init__(self, prog):
         self.regmap = {}
@@ -942,6 +996,8 @@ class Emit:
                     self.gen(st[1])
                 self.w("    jmp .Lret_PLACE")
             elif op == "if":
+                if self.range_if(st):
+                    continue
                 no = self.lab()
                 end = self.lab()
                 self.gen(st[1])
@@ -997,6 +1053,29 @@ class Emit:
                 self.w(f"    jmp {self.loops[-1][1]}")
             elif op == "continue":
                 self.w(f"    jmp {self.loops[-1][0]}")
+
+    def range_if(self, st):
+        # (x >= lo && x <= hi), constants, used only as this branch.
+        # The long form is two cmp/setcc/movzx chains and a test.
+        # The short form is one subtract and an unsigned compare.
+        hit = _range_bounds(st[1])
+        if not hit:
+            return False
+        name, lo, hi, wide = hit
+        if not (_imm32(lo) and _imm32(hi) and lo <= hi and _imm32(hi - lo)):
+            return False
+        no, end = self.lab(), self.lab()
+        self.gen(name)
+        reg = "%rax" if wide else "%eax"
+        self.w(f"    sub ${lo}, {reg}")
+        self.w(f"    cmp ${hi - lo}, {reg}")
+        self.w(f"    ja {no}")
+        self.stmts(st[2])
+        self.w(f"    jmp {end}")
+        self.w(f"{no}:")
+        self.stmts(st[3])
+        self.w(f"{end}:")
+        return True
 
     def tight_horner(self, st):
         # do n[const] { x = as[f64, i] * scale; y = c + x*y ...; s = s + y }.

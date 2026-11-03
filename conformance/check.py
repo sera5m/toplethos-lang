@@ -336,6 +336,28 @@ fn main in[] out[i32] {
   return 0;
 }
 """),
+    ("range", "3\ntrue\n", """
+fn main in[] out[i32] {
+  i32 n = 0;
+  i32 c = 64;
+  if (c >= 65) && (c <= 90) { n = n + 1; }
+  c = 65;
+  if (c >= 65) && (c <= 90) { n = n + 1; }
+  c = 90;
+  if (65 <= c) && (90 >= c) { n = n + 1; }
+  c = 91;
+  if (c >= 65) && (c <= 90) { n = n + 1; }
+  c = -1;
+  if (c >= -2) && (c <= 0) { n = n + 1; }
+  c = -3;
+  if (c >= -2) && (c <= 0) { n = n + 1; }
+  print in[n];
+  c = 65;
+  bool stored = (c >= 65) && (c <= 90);
+  print in[stored];
+  return 0;
+}
+"""),
 ]
 
 BAD = [
