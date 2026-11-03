@@ -23,6 +23,8 @@ def analyze(prog):
             "invoked": [],
             "sites": [],
             "ops": [],
+            "incs": [],
+            "ranges": [],
             "mutates": False,
             "atom": None,
             "key": key,
@@ -88,6 +90,14 @@ def report(prog, src=None):
     for op in ops:
         lines.extend(_op_record(op))
         lines.append("")
+    for key in sorted(ann):
+        rec = ann[key]
+        if rec["pats"] or rec["ops"]:
+            lines.extend(_reduce_record(key, rec))
+            lines.append("")
+        for pat in rec["pats"]:
+            lines.extend(_pat_record(key, pat))
+            lines.append("")
     if src is not None:
         lines.append("--- source ---")
         lines.extend(_annotate(src, ann))
@@ -285,6 +295,8 @@ def _walk(stmts, rec, ids):
                     iid = inc if inc is not None else st[1].get("id")
                     _touch(rec, ids, iid, True, line)
                     name = ids.get(iid, {}).get("name", "?")
+                    if inc is not None:
+                        rec["incs"].append((line, name))
                     sop = _add_op(rec, "set", name, line, [rloc])
                     _link_drop(rloc, ("name", name), sop)
                 else:
@@ -457,6 +469,10 @@ def _expr(e, rec, ids, write, line):
         return ("lit", "f64")
     if k == "bool":
         return ("lit", "bool")
+    if k == "bin" and e.get("op") == "&&":
+        ranged = _range_name(e)
+        if ranged:
+            rec["ranges"].append({"line": line, "name": ranged})
     for key in ("a", "b", "i"):
         if isinstance(e.get(key), dict):
             _expr(e[key], rec, ids, False, line)
@@ -622,6 +638,111 @@ def _number_ops(out):
             site = op.get("instance")
             if isinstance(site, dict):
                 site["args"] = [_loc_word(a) for a in op["inn"]] or ["-"]
+    for rec in out.values():
+        _patterns(rec)
+
+
+def _range_name(e):
+    a, b = e.get("a"), e.get("b")
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return None
+    if a.get("k") != "bin" or b.get("k") != "bin":
+        return None
+    if a.get("op") not in ("<", ">", "<=", ">=") or b.get("op") not in ("<", ">", "<=", ">="):
+        return None
+    left = _rel_name(a)
+    right = _rel_name(b)
+    if left and left == right:
+        return left
+    return None
+
+
+def _rel_name(e):
+    a, b = e.get("a"), e.get("b")
+    name = other = None
+    for side in (a, b):
+        if not isinstance(side, dict):
+            return None
+        if side.get("k") == "name" and side.get("name"):
+            name = side["name"]
+        elif side.get("k") == "int":
+            other = True
+    if name and other:
+        return name
+    return None
+
+
+def _patterns(rec):
+    groups = {}
+
+    def add(kind, line, what, save):
+        groups[(kind, line, what)] = groups.get((kind, line, what), 0) + save
+
+    for op in rec["ops"]:
+        if op.get("drop") and op.get("kind") in ("call", "method", "start", "run"):
+            add("drop", op["line"], op["name"], 1)
+    by = {}
+    for op in rec["ops"]:
+        by.setdefault(op["line"], []).append(op)
+    for line, ops in by.items():
+        live = {}
+        extra = {}
+        for op in ops:
+            if op["atom"] == "set":
+                live[op["name"]] = False
+            elif op["atom"] == "get":
+                if live.get(op["name"]):
+                    extra[op["name"]] = extra.get(op["name"], 0) + 1
+                else:
+                    live[op["name"]] = True
+        for name, n in extra.items():
+            add("reuse", line, name, n)
+    for line, name in rec.get("incs", []):
+        add("inc", line, name, 1)
+    for row in rec.get("ranges", []):
+        add("range", row["line"], row["name"], 1)
+    for row in rec["loops_at"]:
+        if row["forward"] and row["cursor"]:
+            what = " ".join(row["cursor"])
+            if row["bound"]:
+                what += " < " + " ".join(row["bound"])
+            add("forward", row["line"], what, 0)
+    rec["pats"] = [
+        {"name": kind, "line": line, "what": what, "save": save}
+        for (kind, line, what), save in groups.items()
+    ]
+    rec["pats"].sort(key=lambda p: (p["line"], p["name"], p["what"]))
+    rec["saved"] = sum(
+        p["save"] for p in rec["pats"] if p["name"] in ("drop", "reuse", "inc")
+    )
+
+
+def _reduce_record(key, rec):
+    forward = sum(1 for p in rec["pats"] if p["name"] == "forward")
+    return [
+        "reduce {",
+        f"  fn {key}",
+        f"  ops {len(rec['ops'])}",
+        f"  drop {sum(p['save'] for p in rec['pats'] if p['name'] == 'drop')}",
+        f"  reuse {sum(p['save'] for p in rec['pats'] if p['name'] == 'reuse')}",
+        f"  inc {sum(p['save'] for p in rec['pats'] if p['name'] == 'inc')}",
+        f"  range {sum(p['save'] for p in rec['pats'] if p['name'] == 'range')}",
+        f"  forward {forward}",
+        f"  static {rec['saved']}",
+        "}",
+    ]
+
+
+def _pat_record(fn, pat):
+    return [
+        "pattern {",
+        f"  name {pat['name']}",
+        f"  fn {fn}",
+        f"  line {pat['line']}",
+        f"  what {pat['what']}",
+        f"  save {pat['save']}",
+        "}",
+    ]
 
 
 def _call_atom(op, out):
