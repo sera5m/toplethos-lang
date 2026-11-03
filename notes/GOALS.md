@@ -46,6 +46,36 @@ The problems, and the approach that was named for each:
 - [sera5m/ikitaku](https://github.com/sera5m/ikitaku) is parked. It is the back component for verification and for leaving some local minima. It is a reasoner with a read-only graph. It is not a compiler pass, and [x86-op-table.md](x86-op-table.md) already says it is not a dependency. Using it behind the JIT does not make it one until this goal is built.
 - The symbol table may need a wider API than the row above. Ikitaku, or a later IR pass, may hand the JIT a hint. Hints are not the table, and they are not required for a program to run.
 
+## Who rewrites
+
+The AI is not the JIT. An outside tool is not the editor either. The two are semi-separate. Half of what the AI needs already lives in the JIT. The AI uses that half. It does not grow its own.
+
+The program runs with the symbol table, the JIT, and self-modification all off. The interpreter is the oracle. A rewrite that disagrees with it is dropped.
+
+| | owns | does not own |
+|---|---|---|
+| JIT | Where a function is, how often it ran, the effect of the body, the other page, the dirty flag, the pointer flip. | Which idea is worth trying. |
+| AI | Which hot path, which transform, when a score has gone flat, which saved function to try next. | The address of the bytes. It names a function. The JIT resolves the name. |
+
+That is why the rewrite is not pointer chasing. The runtime already knows where the function is. The AI never has to.
+
+Ikitaku stays on the AI side of that line. A question to it is "is this rewrite the same as the old body?" The answers are a proof, a counterexample, or unknown. Unknown means do not apply. It is still not a compiler pass.
+
+A small kernel stays outside both. The verifier, the scorer, the effect gate, and the snapshot store cannot be rewritten by a mutation. If the AI can edit the thing that scores it, the score is not a score.
+
+These follow from that split, and are not built:
+
+- A snapshot is the hash of the state and the code. A hash already visited is not tried again.
+- An effect is pure, reversible, or irreversible. Only the first two can be undone. An irreversible effect waits for an explicit gate.
+- Check a function, not the whole program. First the old body and the new body on the same recorded inputs. Then a shadow run. Then the pointer flip. The old body stays for a while.
+- Salvage one pure function, not a branch. Re-check it in the merged state.
+- Cost stays lower, average, upper, or unknown. Unknown in a callee makes the caller's upper bound unknown.
+- Counts are sampled, and they decay. The useful count is an edge: who called whom. Exact counts are for a hot edge only.
+- Generated code is saved as the tree, keyed by the hash, not as machine code. The next process compiles again from that and skips the warmup.
+
+Not chosen, and not implied by the split: a solver for every pure function, equality saturation, capability pointers, simulated annealing, and a GPU kernel. The GPU rule already stands. Uniform and large, or it stays on the CPU.
+
 ## What this is not
 
-Not pointer chasing. Not a rewrite of a live object in the Pages sense. Not required for `fn main` to run. Not v1.0, and not a reason to put bytecode back into the 1.0 compiler.
+Not pointer chasing. Not a rewrite of a live object in the Pages sense. Not required for `fn main` to run. Not v1.0, and not a reason to put bytecode back into the 1.0 compiler. Not one mind that is both the AI and the JIT.
+
