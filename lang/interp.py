@@ -130,6 +130,7 @@ class Interp:
         return len(data)
 
     def call(self, fn, args):
+        self.note_call(fn)
         if fn.get("inlined"):
             return self.native(fn, args)
         frame = {}
@@ -256,11 +257,24 @@ class Interp:
             t.join()
         self.gate = None
 
+    def note_call(self, fn):
+        table = self.prog.get("symbols") or {}
+        row = table.get(fn["name"])
+        if row is None:
+            return
+        row["calls"] += 1
+        caller = self.fn_stack[-1]["name"] if self.fn_stack else "-"
+        row["edges"][caller] = row["edges"].get(caller, 0) + 1
+
+    def releave(self):
+        raise self._local().leave
+
     def block(self, body):
         self.returned = False
         try:
             r = self.stmts(body)
-        except _Leave:
+        except _Leave as e:
+            self._local().leave = e
             return None, "leave"
         except _Continue:
             return None, "continue"
@@ -287,7 +301,7 @@ class Interp:
                     self.returned = True
                     return r
                 if how == "leave":
-                    raise _Leave()
+                    self.releave()
                 if how == "continue":
                     raise _Continue()
                 val = self.eval(st[2])
@@ -303,8 +317,23 @@ class Interp:
                 mu = self.cell_mutex(st[1], st[2])
                 (mu.release if op == "unlock" else mu.acquire)()
                 continue
+            if op == "hold":
+                mu = self.cell_mutex(st[1], st[2])
+                mu.acquire()
+                try:
+                    r, how = self.block(st[3])
+                finally:
+                    mu.release()
+                if how == "return":
+                    self.returned = True
+                    return r
+                if how == "leave":
+                    self.releave()
+                if how == "continue":
+                    raise _Continue()
+                continue
             if op == "leave":
-                raise _Leave()
+                raise _Leave(st[2] if len(st) > 2 else None)
             if op == "continue":
                 raise _Continue()
             if op == "decl":
@@ -368,21 +397,28 @@ class Interp:
                     self.returned = True
                     return r
                 if how == "leave":
-                    raise _Leave()
+                    self.releave()
                 if how == "continue":
                     raise _Continue()
                 continue
             if op == "loop":
+                lname = st[3]["name"] if len(st) > 3 and isinstance(st[3], dict) else None
                 while True:
                     r, how = self.block(st[1])
                     if how == "return":
                         self.returned = True
                         return r
                     if how == "leave":
-                        break
+                        e = self._local().leave
+                        if e.name is None or e.name == lname:
+                            break
+                        raise e
+                    if how == "continue":
+                        continue
                 continue
             if op == "do":
-                _, count, iid, body, onfin, _ = st
+                count, iid, body, onfin = st[1], st[2], st[3], st[4]
+                lname = st[6]["name"] if len(st) > 6 and isinstance(st[6], dict) else None
                 n = self.eval(count)
                 if not isinstance(n, int) or n < 0:
                     raise Failure("do n[k] with k < 0")
@@ -396,14 +432,17 @@ class Interp:
                         self.returned = True
                         return r
                     if how == "leave":
-                        break
+                        e = self._local().leave
+                        if e.name is None or e.name == lname:
+                            break
+                        raise e
                 if onfin:
                     r, how = self.block(onfin)
                     if how == "return":
                         self.returned = True
                         return r
                     if how == "leave":
-                        raise _Leave()
+                        self.releave()
                 continue
             raise Failure("bad statement")
         return None
@@ -463,8 +502,19 @@ class Interp:
             v = slot["v"]
             if self.prog["ids"].get(e["id"], {}).get("ephemeral"):
                 slot["present"] = False
+                slot["empty"] = True
                 slot["v"] = 0
             return v
+        if k == "statecmp":
+            slot = self.cell_of({"k": "name", "id": e["id"]})
+            if slot.get("empty"):
+                got = "empty"
+            elif slot["present"]:
+                got = "present"
+            else:
+                got = "absent"
+            eq = got == e["word"]
+            return eq if e["op"] == "==" else not eq
         if k == "field":
             slot = self.cell_of(e)
             if not slot["present"]:
@@ -509,6 +559,8 @@ class Interp:
             self.tp_finish()
             return val
         if k == "call":
+            if e["name"] in ("min", "max", "clamp", "abs", "swap"):
+                return self.builtin(e)
             if e["name"] == "print":
                 self.out.append(self.show(self.eval(e["args"][0]), e["args"][0]["ty"]) + "\n")
                 return None
@@ -533,8 +585,40 @@ class Interp:
             return self.call(fn, args)
         raise Failure("bad expression")
 
+    def builtin(self, e):
+        name = e["name"]
+        if name == "swap":
+            a = self.eval(e["args"][0])
+            b = self.eval(e["args"][1])
+            a["v"], b["v"] = b["v"], a["v"]
+            a["present"], b["present"] = b["present"], a["present"]
+            a["empty"], b["empty"] = b.get("empty"), a.get("empty")
+            return None
+        vals = [self.eval(a) for a in e["args"]]
+        if name == "abs":
+            v = vals[0]
+            if e["ty"] == ("i32",) and v == MIN32:
+                raise Failure("abs")
+            if e["ty"] == ("i64",) and v == MIN64:
+                raise Failure("abs")
+            return abs(v) if e["ty"] != ("f64",) else abs(float(v))
+        if name == "min":
+            return vals[0] if vals[0] < vals[1] else vals[1]
+        if name == "max":
+            return vals[0] if vals[0] > vals[1] else vals[1]
+        v, lo, hi = vals
+        if v < lo:
+            return lo
+        if v > hi:
+            return hi
+        return v
+
     def binop(self, e):
         op = e["op"]
+        if op == "$=":
+            return False
+        if op == "!$=":
+            return True
         if op == "&&":
             return bool(self.eval(e["a"]) and self.eval(e["b"]))
         if op == "||":
@@ -685,7 +769,8 @@ class Interp:
 
 
 class _Leave(Exception):
-    pass
+    def __init__(self, name=None):
+        self.name = name
 
 
 class _Continue(Exception):

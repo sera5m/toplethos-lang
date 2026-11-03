@@ -4,39 +4,44 @@ Not built. v1.0 stays the two hosts that exist. Scores are complexity, then impa
 
 A mark that is only in USE.md is still rejected by both hosts until a row here is built. Do not start a row from this file without saying which one.
 
+## Done in the hosts
+
+| gap | what both hosts do now |
+|---|---|
+| Uninitialized scalar | A scalar with no store stays absent. A read is a failure on both hosts. |
+| Use tracking | The reference table records where. The symbol row records inputs, outputs, variables, functions, and invokes. The interpreter adds `calls` and `edges` while the program runs. |
+| `+=` `a = b = c` `$=` `^=` | `+=` is `+` then store. `a = b = c` stores right to left. `$=` is false until a `flow` names the pair. `!$=` is the opposite. `^=` stores through a convert row that already exists. |
+| `if[state[name]]` | `if[state[name]]` is present. `==` and `!=` also take `absent`, `present`, and `empty`. The look does not read the value, so an `@ephemeral` cell is not consumed. After its one read the state is `empty`. |
+| `hold` and mutex paths | `hold[cell] { }` locks and unlocks on every exit. A read or a store of an `@mutex` cell outside `lock` or `hold` is a compile error. A path that locks and does not unlock is a compile error. The creating initializer is not that read. |
+| `@parallel[n]` | The function is a CPU worker of n threads. `fork name;` uses that n. A different `fork name in[k]` is a compile error. |
+| `include "file.tpth_s"` | The file is loaded once. A `@private` function in it is not visible here. A header is rejected. `include lib` is still rejected. |
+| `min` `max` `clamp` `abs` `swap` | The utilities. `abs` of the lowest signed value is a failure. |
+| `leave[name]` `@name` | `@name` on `loop` and `do`. `leave[name]` ends that one. |
+
 ## Hosts disagree
 
-| gap | spec | what the compiler does | c | i |
-|---|---|---|---:|---:|
-| Uninitialized scalar | No store means absent. A read is a failure. | [lang/passes.py](../lang/passes.py) marks every scalar declaration present, even with no initializer, then skips the check. The interpreter still fails. | 1 | 5 |
+None of the old scalar-initialization row. The cell is still 16 bytes, so a C struct of the same fields would not match. That is the object-layout row below.
 
 ## Asked for 1.1
 
 | gap | note | c | i |
 |---|---|---:|---:|
-| Use tracking | Count uses of functions, variables, and every other name, and record where. How often, and in which body. This is the cheap half of the symbol table in [GOALS.md](GOALS.md). | 2 | 3 |
-| Bitwise | `&` `\|` `^` `~` `<<` `>>`. Both hosts implement the row. Unary `&` is still the address. `&&` and `\|\|` stay `bool`. Same width, two's complement bits. A shift count outside `0 .. width-1` is a failure. | 2 | 3 |
-| Modulo | `%`. Both hosts implement the row. `a % b` is `a - (a / b) * b`. Zero and the lowest signed value with `-1` are the same failures as `/`. No float row. | 1 | 3 |
 | Pointers, wider than today | Today a pointer is `&cell`, `T*`, and `*p`. What "expanded" adds is not named yet. Do not invent the list. `window` and `gather` are already rejected below. | 2 | 3 |
-| Static analysis | [lang/analyze.py](../lang/analyze.py) prints the reference table, an `op` row per get, set, and call, and a `reduce` count for `drop`, `reuse`, `inc`, `range`, and `forward`. `static` is the source ops those patterns can delete. It does not rewrite the assembly. It is not the scored symbol table. | 3 | 4 |
-| Active analysis | Facts gathered while a program runs. Not a v1.0 host. The shape is in [GOALS.md](GOALS.md). | 4 | 4 |
+| Static analysis | The table counts `drop`, `reuse`, `inc`, `range`, and `forward`. Only the constant range `if` is lowered. `inc`, `reuse`, and `forward` are not. It is not a cycle score. Cost on the symbol row is `unknown`. | 3 | 4 |
+| Active analysis | Call counts and caller edges are recorded on the symbol row while the interpreter runs. The rest of the shape in [GOALS.md](GOALS.md) — the other page, the dirty flag, the snapshot — is not a v1.0 host. | 4 | 4 |
 
 ## Half built
 
 | gap | spec | hosts | c | i |
 |---|---|---|---:|---:|
-| Mutex paths | A read or a store outside `lock` or `hold` is a compile error. Every path that locks unlocks. | `lock` and `unlock` run. `hold` is not accepted. No path check. | 3 | 3 |
-| `@parallel[n]` | The mark is n CPU threads. | Threads exist as `fork` and `finish`. The mark is rejected. | 2 | 2 |
-| Scope across files | `@public` is any file that included this one. | Marks work in one file. `include` is rejected. | 3 | 3 |
-| Object layout | Fields use the target's C++ alignment. Pages also say to count the present flag. | Every cell is 16 bytes. A C struct would not match. | 4 | 3 |
-| `+=` `a = b = c` `$=` `^=` | In the precedence table. | Not parsed, or rejected as a bad statement. | 2 | 2 |
-| `if[state[name]]` | Look at absent or empty without reading the value. | `if[` fails with "if takes a bool condition." Wrong message. | 2 | 2 |
+| Scope across files | `@public` is any file that included this one. | `include "file.tpth_s"` loads it. `@private` stays in that file. `@protected` across a subclass in another file is not checked. `include lib` is rejected. | 3 | 3 |
+| Object layout | Fields use the target's C++ alignment. Pages also say to count the present flag. | Every cell is 16 bytes. A C struct would not match. Packing the cell would drop the present flag the spec counts. | 4 | 3 |
 
 ## Rejected by both
 
 | feature | c | i |
 |---|---:|---:|
-| `include` of another `.tpth_s`, and `include lib` / `foreign` | 4 | 5 |
+| `include lib` / `foreign` | 4 | 5 |
 | Page placement, `@paged`, `@blockinit`, `@blockpack`, `@blockpush`, `@blockpop`, `blockid` | 5 | 4 |
 | `@memory_hard` | 3 | 3 |
 | `@gpuparallel`, `@npuparallel` | 5 | 2 |
@@ -45,7 +50,6 @@ A mark that is only in USE.md is still rejected by both hosts until a row here i
 | `string`, `char`, `s[i]` | 3 | 3 |
 | `f32`, `i8`, `i16`, the `ui` widths, `size` as a type | 3 | 3 |
 | `onfail`, `defer`, `faildefer`, `@retry`, `STOP[THIS]`, `fatal`, `onwarn`, `@structuredConcurrency` | 3 | 3 |
-| `min`, `max`, `clamp`, `abs`, `swap` | 1 | 2 |
 | `rng`, `rand`, `randf` | 2 | 2 |
 | A user `row[addmagnitude]`, and convert rows past the three live widenings | 3 | 2 |
 | `fnid`, `instance`, `compose`, `bind`, `transform`, `out[here]` | 4 | 2 |
@@ -60,7 +64,6 @@ A mark that is only in USE.md is still rejected by both hosts until a row here i
 | `macro`, `when` | 2 | 1 |
 | `create`, coroutines, the 15-minute stack move | 4 | 1 |
 | `i4`, `f8`, `bf16`, unsigned floats, balanced ternary | 5 | 1 |
-| `leave[name]`, `@name` on a loop | 1 | 1 |
 
 ## Walls
 

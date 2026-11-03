@@ -231,7 +231,9 @@ fn main in[] out[i32] {
   fork add in[4] with[shared];
   f64 s = start add;
   finish add;
-  print in[shared];
+  hold[shared] {
+    print in[shared];
+  }
   return 0;
 }
 """),
@@ -358,6 +360,74 @@ fn main in[] out[i32] {
   return 0;
 }
 """),
+    ("assign", "6\n5\nfalse\ntrue\n", """
+fn main in[] out[i32] {
+  i32 a = 1;
+  i32 b = 2;
+  a = b = 5;
+  a += 1;
+  print in[a];
+  print in[b];
+  bool same = 1 $= 2;
+  bool nots = 1 !$= 2;
+  print in[same];
+  print in[nots];
+  return 0;
+}
+"""),
+    ("util", "1\n3\n10\n4\n2\n1\n", """
+fn main in[] out[i32] {
+  print in[min in[3, 1]];
+  print in[max in[3, 1]];
+  print in[clamp in[20, 0, 10]];
+  print in[abs in[-4]];
+  i32 x = 1;
+  i32 y = 2;
+  swap in[&x, &y];
+  print in[x];
+  print in[y];
+  return 0;
+}
+"""),
+    ("state", "2\n1\n", """
+fn main in[] out[i32] {
+  i32 n;
+  i32 hit = 0;
+  if[state[n] == absent] { hit = hit + 1; }
+  n = 4;
+  if[state[n]] { hit = hit + 1; }
+  print in[hit];
+  i32 once @ephemeral = 7;
+  i32 got = once;
+  i32 empty = 0;
+  if[state[once] == empty] { empty = 1; }
+  print in[empty];
+  return 0;
+}
+"""),
+    ("named", "3\n", """
+fn main in[] out[i32] {
+  i32 m = 0;
+  loop @name[outer] {
+    loop @name[inner] {
+      m = m + 1;
+      if m == 3 { leave[outer]; }
+    }
+  }
+  print in[m];
+  return 0;
+}
+"""),
+    ("parallel", "10.000000000\n", """
+fn lane in[i32 lane] out[f64] @parallel[4] { return as[f64, lane] + 1.0; }
+fn main in[] out[i32] {
+  fork lane;
+  f64 s = start lane;
+  finish lane;
+  print in[s];
+  return 0;
+}
+"""),
 ]
 
 BAD = [
@@ -477,6 +547,20 @@ fn main in[] out[i32] {
   return n;
 }
 """),
+    ("absent", "absent", """
+fn main in[] out[i32] {
+  i32 n;
+  print in[n];
+  return 0;
+}
+"""),
+    ("mutex out", "outside lock or hold", """
+fn main in[] out[i32] {
+  i32 n @mutex = 1;
+  print in[n];
+  return 0;
+}
+"""),
 ]
 
 
@@ -514,6 +598,23 @@ def main():
         else:
             bad += 1
             print(f"FAIL {name}\n  interp {ie}\n  compile {ce}")
+    open("/tmp/tp_lib.tpth_s", "w").write("fn twice in[i32 a] out[i32] { return a + a; }\n")
+    inter, ie, compiled, ce = both('include "/tmp/tp_lib.tpth_s";\nfn main in[] out[i32] {\n  print in[twice in[3]];\n  return 0;\n}\n')
+    if ie or ce or inter != "6\n" or compiled != "6\n":
+        bad += 1
+        print(f"FAIL include\n  interp {ie or inter!r}\n  compile {ce or compiled!r}")
+    else:
+        print("ok   include")
+    from front import parse as parse_src
+    from interp import execute
+    prog = parse_src("fn inc in[i32 a] out[i32] { return a + 1; }\nfn main in[] out[i32] {\n  i32 n = inc in[1];\n  n = inc in[n];\n  print in[n];\n  return 0;\n}\n")
+    out = execute(prog)
+    row = prog["symbols"]["inc"]
+    if out != "3\n" or row["calls"] != 2 or row["edges"].get("main") != 2 or row["cost"] != "unknown":
+        bad += 1
+        print(f"FAIL symbol {out!r} {row}")
+    else:
+        print("ok   symbol")
     print("match" if bad == 0 else f"{bad} failed")
     return 1 if bad else 0
 

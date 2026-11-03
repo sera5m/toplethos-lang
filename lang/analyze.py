@@ -98,11 +98,58 @@ def report(prog, src=None):
         for pat in rec["pats"]:
             lines.extend(_pat_record(key, pat))
             lines.append("")
+    if prog.get("symbols"):
+        for name in sorted(prog["symbols"]):
+            lines.extend(_symbol_record(name, prog["symbols"][name]))
+            lines.append("")
     if src is not None:
         lines.append("--- source ---")
         lines.extend(_annotate(src, ann))
     text = "\n".join(lines).rstrip() + "\n"
     return text
+
+
+def symbol_table(prog):
+    ann = prog.get("ann") or {}
+    out = {}
+    for name, fn in prog["fns"].items():
+        rec = ann.get(name, {})
+        calls = []
+        for site in rec.get("sites", []):
+            if site.get("kind") == "call" and site.get("name"):
+                calls.append(site["name"])
+        out[name] = {
+            "cost": "unknown",
+            "time": "unknown",
+            "resources": "cpu",
+            "inputs": [p["name"] for p in fn["params"]],
+            "outputs": [] if fn["out"] is None else ["out"],
+            "variables": sorted(rec.get("names", {})),
+            "functions": sorted(set(calls)),
+            "invokes": [s["id"] for s in rec.get("sites", [])],
+            "calls": 0,
+            "edges": {},
+        }
+    return out
+
+
+def _symbol_record(name, row):
+    edges = " ".join(f"{who}:{n}" for who, n in sorted(row["edges"].items())) or "-"
+    return [
+        "symbol {",
+        f"  name {name}",
+        f"  cost {row['cost']}",
+        f"  time {row['time']}",
+        f"  resources {row['resources']}",
+        f"  inputs {_words(row['inputs'])}",
+        f"  outputs {_words(row['outputs'])}",
+        f"  variables {_words(row['variables'])}",
+        f"  functions {_words(row['functions'])}",
+        f"  invokes {_words(row['invokes'])}",
+        f"  calls {row['calls']}",
+        f"  edges {edges}",
+        "}",
+    ]
 
 
 def impure(prog, fn):
@@ -345,6 +392,9 @@ def _walk(stmts, rec, ids):
             rec["effects"].append(op)
             if op == "time" and len(st) > 3:
                 _walk(st[3], rec, ids)
+        elif op == "hold":
+            rec["effects"].append("hold")
+            _walk(st[3], rec, ids)
         elif op == "leave" or op == "continue":
             pass
         else:
@@ -398,6 +448,15 @@ def _expr(e, rec, ids, write, line):
         return ("name", name, op)
     if k == "call":
         args = e.get("args") or []
+        if e["name"] in ("min", "max", "clamp", "abs"):
+            for a in args:
+                _expr(a, rec, ids, False, line)
+            return ("tmp",)
+        if e["name"] == "swap":
+            for a in args:
+                _expr(a, rec, ids, False, line)
+            _add(rec, "swap")
+            return ("tmp",)
         locs = [_expr(a, rec, ids, False, line) for a in args]
         if e["name"] in ("print", "loadbmp", "loadbytes"):
             _add(rec, e["name"])
@@ -469,6 +528,8 @@ def _expr(e, rec, ids, write, line):
         return ("lit", "f64")
     if k == "bool":
         return ("lit", "bool")
+    if k == "statecmp":
+        return ("tmp",)
     if k == "bin" and e.get("op") == "&&":
         ranged = _range_name(e)
         if ranged:

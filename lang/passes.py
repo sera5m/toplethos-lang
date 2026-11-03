@@ -108,7 +108,8 @@ def _phase1(stmts, present, ids):
         if op == "decl":
             expr = _expr(st[3], present, ids) if st[3] is not None else None
             stmts[i] = ("decl", st[1], st[2], expr, st[4])
-            _note_present(present, ids, st[1], st[2])
+            if expr is not None or not _scalar(st[2]):
+                _note_present(present, ids, st[1], st[2])
         elif op == "store":
             _expr(st[1], present, ids)
             rhs = _expr(st[2], present, ids)
@@ -131,13 +132,15 @@ def _phase1(stmts, present, ids):
             stmts[i] = ("if", cond, st[2], st[3], st[4])
         elif op == "loop":
             _phase1(st[1], set(present), ids)
+        elif op == "hold":
+            _phase1(st[3], present, ids)
         elif op == "do":
             count = _expr(st[1], present, ids)
             inner = set(present)
             inner.add(st[2])
             _phase1(st[3], inner, ids)
             _phase1(st[4], set(present), ids)
-            stmts[i] = ("do", count, st[2], st[3], st[4], st[5])
+            stmts[i] = ("do", count, st[2], st[3], st[4], st[5], *st[6:])
         elif op == "time":
             watch = _expr(st[2], present, ids)
             _phase1(st[3], present, ids)
@@ -249,7 +252,9 @@ def _nest(st, ids):
     if op == "if":
         return (op, st[1], _fuse(st[2], ids), _fuse(st[3], ids), st[4])
     if op == "loop":
-        return (op, _fuse(st[1], ids), st[2])
+        return (op, _fuse(st[1], ids), st[2], *st[3:])
+    if op == "hold":
+        return (op, st[1], st[2], _fuse(st[3], ids), st[4])
     if op == "do":
         fused = (op, st[1], st[2], _fuse(st[3], ids), _fuse(st[4], ids), st[5])
         return fused + (st[6],) if len(st) > 6 else fused
@@ -863,7 +868,7 @@ def _paste_stmt(st, name, fn, ids, ctr):
         pre, cond = _paste_expr(st[1], name, fn, ids, ctr)
         return pre, ("if", cond, _paste_calls(st[2], name, fn, ids, ctr), _paste_calls(st[3], name, fn, ids, ctr), st[4])
     if op == "loop":
-        return [], ("loop", _paste_calls(st[1], name, fn, ids, ctr), st[2])
+        return [], ("loop", _paste_calls(st[1], name, fn, ids, ctr), *st[2:])
     if op == "do":
         pre, count = _paste_expr(st[1], name, fn, ids, ctr)
         return pre, ("do", count, st[2], _paste_calls(st[3], name, fn, ids, ctr), _paste_calls(st[4], name, fn, ids, ctr), *st[5:])
@@ -991,7 +996,7 @@ def _remap_stmts(stmts, mapping):
         elif op == "if":
             out.append(("if", _remap(st[1], mapping), _remap_stmts(st[2], mapping), _remap_stmts(st[3], mapping), st[4]))
         elif op == "loop":
-            out.append(("loop", _remap_stmts(st[1], mapping), st[2]))
+            out.append(("loop", _remap_stmts(st[1], mapping), *st[2:]))
         elif op == "do":
             out.append(("do", _remap(st[1], mapping), mapping[st[2]], _remap_stmts(st[3], mapping), _remap_stmts(st[4], mapping), *st[5:]))
         elif op == "time":
@@ -1037,7 +1042,7 @@ def _returns_to_leaves(stmts, result, ty, line):
         elif op == "if":
             out.append(("if", st[1], _returns_to_leaves(st[2], result, ty, line), _returns_to_leaves(st[3], result, ty, line), st[4]))
         elif op == "loop":
-            out.append(("loop", _returns_to_leaves(st[1], result, ty, line), st[2]))
+            out.append(("loop", _returns_to_leaves(st[1], result, ty, line), *st[2:]))
         elif op == "do":
             out.append(("do", st[1], st[2], _returns_to_leaves(st[3], result, ty, line), _returns_to_leaves(st[4], result, ty, line), *st[5:]))
         else:

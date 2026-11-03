@@ -250,6 +250,9 @@ class Emit:
         if k in ("name", "field", "index", "deref"):
             self.load_cell(e)
             return
+        if k == "statecmp":
+            self.statecmp(e)
+            return
         if k == "addr":
             self.addr(e["a"])
             return
@@ -307,8 +310,8 @@ class Emit:
         if ephemeral:
             self.w("    sub $16, %rsp")
             self.w("    mov %rax, (%rsp)")
-        self.w("    cmpb $0, 8(%rax)")
-        self.w("    jne 1f")
+        self.w("    cmpb $1, 8(%rax)")
+        self.w("    je 1f")
         self.fail("absent")
         self.w("1:")
         ty = e["ty"]
@@ -321,7 +324,7 @@ class Emit:
         if ephemeral:
             self.w("    mov (%rsp), %rcx")
             self.w("    movq $0, (%rcx)")
-            self.w("    movb $0, 8(%rcx)")
+            self.w("    movb $2, 8(%rcx)")
             self.w("    add $16, %rsp")
 
     def load_fast(self, e):
@@ -499,6 +502,9 @@ class Emit:
 
     def binop(self, e):
         op = e["op"]
+        if op in ("$=", "!$="):
+            self.w("    xor %eax, %eax" if op == "$=" else "    mov $1, %eax")
+            return
         if op in ("&&", "||"):
             done = self.lab()
             skip = self.lab()
@@ -854,6 +860,9 @@ class Emit:
         self.w("    call tp_loadbytes@PLT")
 
     def call(self, e):
+        if e["name"] in ("min", "max", "clamp", "abs", "swap"):
+            self.builtin(e)
+            return
         if e["name"] == "print":
             self.gen(e["args"][0])
             self.print_val(e["args"][0]["ty"])
@@ -861,6 +870,132 @@ class Emit:
         self.push_args(e["args"])
         self.pop_args(e["args"], method=False)
         self.w(f"    call {e['name']}")
+
+    def statecmp(self, e):
+        info = self.prog["ids"][e["id"]]
+        if info.get("time") in ("static", "config"):
+            self.w(f"    movzbl {self.sym(e['id'])}+8(%rip), %eax")
+        else:
+            self.w(f"    movzbl {self.slot[e['id']] + 8}(%rbp), %eax")
+        word = {"absent": 0, "present": 1, "empty": 2}[e["word"]]
+        self.w(f"    cmp ${word}, %eax")
+        self.w("    sete %al" if e["op"] == "==" else "    setne %al")
+        self.w("    movzx %al, %eax")
+
+    def builtin(self, e):
+        name = e["name"]
+        if name == "swap":
+            self.gen(e["args"][0])
+            self.w("    sub $16, %rsp")
+            self.w("    mov %rax, (%rsp)")
+            self.gen(e["args"][1])
+            self.w("    mov %rax, %rcx")
+            self.w("    mov (%rsp), %rax")
+            self.w("    mov (%rax), %rdx")
+            self.w("    mov (%rcx), %rdi")
+            self.w("    mov %rdi, (%rax)")
+            self.w("    mov %rdx, (%rcx)")
+            self.w("    movzbl 8(%rax), %edx")
+            self.w("    movzbl 8(%rcx), %edi")
+            self.w("    movb %dil, 8(%rax)")
+            self.w("    movb %dl, 8(%rcx)")
+            self.w("    add $16, %rsp")
+            return
+        if name == "abs":
+            self.abs_op(e)
+            return
+        if name == "clamp":
+            self.minmax(e["args"][0], e["args"][1], e["ty"], "max")
+            self.hold_result(e["ty"])
+            self.gen(e["args"][2])
+            self.unhold_result(e["ty"])
+            self.cmp_pick(e["ty"], "min")
+            return
+        self.minmax(e["args"][0], e["args"][1], e["ty"], name)
+
+    def hold_result(self, ty):
+        self.w("    sub $16, %rsp")
+        if ty == ("f64",):
+            self.w("    movsd %xmm0, (%rsp)")
+        else:
+            self.w("    mov %rax, (%rsp)")
+
+    def unhold_result(self, ty):
+        # current result is the right hand. Saved result becomes the left.
+        if ty == ("f64",):
+            self.w("    movsd %xmm0, %xmm1")
+            self.w("    movsd (%rsp), %xmm0")
+        else:
+            wide = ty == ("i64",)
+            self.w("    mov %rax, %rcx" if wide else "    mov %eax, %ecx")
+            self.w("    mov (%rsp), %rax" if wide else "    mov (%rsp), %eax")
+        self.w("    add $16, %rsp")
+
+    def minmax(self, a, b, ty, which):
+        self.gen(a)
+        self.hold_result(ty)
+        self.gen(b)
+        self.unhold_result(ty)
+        if ty != ("f64",):
+            wide = ty == ("i64",)
+            self.w("    xchg %rax, %rcx" if wide else "    xchg %eax, %ecx")
+        self.cmp_pick(ty, which)
+
+    def cmp_pick(self, ty, which):
+        # left is rcx or xmm0. right is rax or xmm1. Result is left if it wins, else right.
+        if ty == ("f64",):
+            less = self.lab()
+            end = self.lab()
+            self.w("    ucomisd %xmm1, %xmm0")
+            self.w(f"    jb {less}")
+            if which == "min":
+                self.w("    movsd %xmm1, %xmm0")
+            self.w(f"    jmp {end}")
+            self.w(f"{less}:")
+            if which == "max":
+                self.w("    movsd %xmm1, %xmm0")
+            self.w(f"{end}:")
+            return
+        wide = ty == ("i64",)
+        left = "%rcx" if wide else "%ecx"
+        right = "%rax" if wide else "%eax"
+        self.w(f"    cmp {right}, {left}")
+        op = "cmovl" if which == "min" else "cmovg"
+        self.w(f"    {op} {left}, {right}")
+
+    def abs_op(self, e):
+        self.gen(e["args"][0])
+        ty = e["ty"]
+        end = self.lab()
+        if ty == ("f64",):
+            self.w("    movmskpd %xmm0, %eax")
+            self.w("    test $1, %eax")
+            self.w(f"    jz {end}")
+            self.w(f"    movsd {self.dub(-0.0)}(%rip), %xmm1")
+            self.w("    xorpd %xmm1, %xmm0")
+            self.w(f"{end}:")
+            return
+        if ty == ("i32",):
+            ok = self.lab()
+            self.w("    cmp $0x80000000, %eax")
+            self.w(f"    jne {ok}")
+            self.fail("abs")
+            self.w(f"{ok}:")
+            self.w("    test %eax, %eax")
+            self.w(f"    jns {end}")
+            self.w("    neg %eax")
+            self.w(f"{end}:")
+            return
+        ok = self.lab()
+        self.w("    movabs $0x8000000000000000, %rcx")
+        self.w("    cmp %rcx, %rax")
+        self.w(f"    jne {ok}")
+        self.fail("abs")
+        self.w(f"{ok}:")
+        self.w("    test %rax, %rax")
+        self.w(f"    jns {end}")
+        self.w("    neg %rax")
+        self.w(f"{end}:")
 
     def method(self, e):
         self.addr(e["a"])
@@ -960,6 +1095,10 @@ class Emit:
                 self.lock_cell(st[1], st[2], False)
             elif op == "unlock":
                 self.lock_cell(st[1], st[2], True)
+            elif op == "hold":
+                self.lock_cell(st[1], st[2], False)
+                self.stmts(st[3])
+                self.lock_cell(st[1], st[2], True)
             elif op == "fchain":
                 self.fchain(st)
             elif op == "decl":
@@ -1010,14 +1149,15 @@ class Emit:
                 self.w(f"{end}:")
             elif op == "loop":
                 top, end = self.lab(), self.lab()
-                self.loops.append((top, end))
+                lname = st[3]["name"] if len(st) > 3 and isinstance(st[3], dict) else None
+                self.loops.append((top, end, lname))
                 self.w(f"{top}:")
                 self.stmts(st[1])
                 self.w(f"    jmp {top}")
                 self.w(f"{end}:")
                 self.loops.pop()
             elif op == "do":
-                if len(st) > 6 and st[6].get("reg") and self.regloop(st):
+                if len(st) > 6 and isinstance(st[6], dict) and st[6].get("reg") and self.regloop(st):
                     continue
                 top, cont, end = self.lab(), self.lab(), self.lab()
                 const = st[1].get("k") == "int"
@@ -1039,7 +1179,7 @@ class Emit:
                 else:
                     self.w("    cmp (%rsp), %eax")
                 self.w(f"    jge {end}")
-                self.loops.append((cont, end))
+                self.loops.append((cont, end, st[6].get("name") if len(st) > 6 and isinstance(st[6], dict) else None))
                 self.stmts(st[3])
                 self.loops.pop()
                 self.w(f"{cont}:")
@@ -1050,7 +1190,18 @@ class Emit:
                     self.w("    add $16, %rsp")
                 self.stmts(st[4])
             elif op == "leave":
-                self.w(f"    jmp {self.loops[-1][1]}")
+                want = st[2] if len(st) > 2 else None
+                if want:
+                    found = False
+                    for _cont, end, lname in reversed(self.loops):
+                        if lname == want:
+                            self.w(f"    jmp {end}")
+                            found = True
+                            break
+                    if not found:
+                        self.fail("leave[name] with no matching @name")
+                else:
+                    self.w(f"    jmp {self.loops[-1][1]}")
             elif op == "continue":
                 self.w(f"    jmp {self.loops[-1][0]}")
 
@@ -1379,7 +1530,7 @@ class Emit:
     def _has_regloop(self, stmts):
         for st in stmts:
             op = st[0]
-            if op == "do" and len(st) > 6 and st[6].get("reg"):
+            if op == "do" and len(st) > 6 and isinstance(st[6], dict) and st[6].get("reg"):
                 return True
             if op == "if" and (self._has_regloop(st[2]) or self._has_regloop(st[3])):
                 return True
@@ -1477,4 +1628,14 @@ def _pow2_shift(expr, bits):
 def assemble(prog):
     from passes import optimize
     optimize(prog)
-    return Emit(prog).render()
+    notes = []
+    for name in sorted(prog.get("symbols") or {}):
+        row = prog["symbols"][name]
+        fns = " ".join(row["functions"]) or "-"
+        notes.append(
+            f"# symbol {name} cost {row['cost']} time {row['time']} resources {row['resources']} functions {fns}"
+        )
+    body = Emit(prog).render()
+    if not notes:
+        return body
+    return "\n".join(notes) + "\n" + body

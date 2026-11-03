@@ -33,6 +33,11 @@ class Front:
         self.cur_fn = None
         self.ids = {}
         self.opt = None
+        self.loop_names = []
+        self.included = set()
+        self.base = ""
+        self.file = ""
+        self.lock_targets = set()
 
     def fail(self, msg):
         raise CompileError(f"line {self.line}: {msg}")
@@ -90,6 +95,8 @@ class Front:
         if tok in ("<", ">") and self.starts(tok + "="):
             return False
         if tok == "!" and self.starts("!="):
+            return False
+        if tok == "+" and self.starts("+="):
             return False
         if tok == "=" and (self.starts("==") or self.starts("=>")):
             return False
@@ -184,6 +191,8 @@ class Front:
             if self.eat("max"):
                 return "max"
             self.fail("@divzero with an argument other than 0 or max")
+        if name == "name":
+            return self.ident()
         if name == "childof":
             parent = self.ident()
             if parent not in self.objects:
@@ -219,16 +228,27 @@ class Front:
                 self.fail(f"@{name} is not a mark")
             arg = True
             if self.eat("["):
-                if name not in needs:
+                if name == "parallel":
+                    if where != "fn":
+                        self.fail("@parallel is for a function")
+                    arg = self.thread_count()
+                    self.expect("]")
+                elif name == "name":
+                    if where != "loop":
+                        self.fail("@name is for a loop")
+                    arg = self.ident()
+                    self.expect("]")
+                elif name not in needs:
                     self.skip_bracket_body()
                     self.later(f"@{name}")
-                arg = self.mark_arg(name)
-                self.expect("]")
-            elif name in needs:
+                else:
+                    arg = self.mark_arg(name)
+                    self.expect("]")
+            elif name in needs or name in ("parallel", "name"):
                 self.fail(f"@{name} needs an argument")
             if name in out:
                 self.fail(f"a second @{name}")
-            if name not in live:
+            if name not in live and name not in ("parallel", "name"):
                 self.later(f"@{name}")
             if name == "childof" and where != "object":
                 self.fail("@childof is for an object")
@@ -373,12 +393,34 @@ class Front:
         self.skip()
         return any(self.starts(w) for w in words)
 
-    def parse(self):
-        items = []
+    def parse(self, require_main=True):
+        self.parse_items()
+        if not require_main:
+            return None
+        self.link_mutations()
+        if "main" not in self.fns:
+            raise CompileError("a program with no main")
+        fn = self.fns["main"]
+        if fn["params"] or fn["out"] != ("i32",):
+            self.fail("main takes nothing and its result type is i32")
+        prog = {"fns": self.fns, "objects": self.objects, "ids": self.ids, "opt": self.opt or "01"}
+        from analyze import analyze, impure, symbol_table
+        prog["ann"] = analyze(prog)
+        prog["symbols"] = symbol_table(prog)
+        for item in list(self.fns.values()) + [
+            m for obj in self.objects.values() for m in obj["methods"].values()
+        ]:
+            if item.get("inlined"):
+                why = impure(prog, item)
+                if why:
+                    self.fail(f"@inlined function is not pure ({why})")
+        return prog
+
+    def parse_items(self):
         while True:
             self.skip()
             if not self.peek():
-                break
+                return
             if self.eat("@"):
                 self.expect("globaloptimize")
                 self.expect("[")
@@ -393,37 +435,65 @@ class Front:
                 self.expect(";")
                 if self.opt is not None:
                     self.fail("a second @globaloptimize")
-                if items:
+                if self.fns or self.objects:
                     self.fail("@globaloptimize before the first function")
                 self.opt = level
                 continue
             if self.eat("fn"):
-                items.append(self.function(None))
+                self.function(None)
                 continue
             if self.eat("object"):
                 self.object()
                 continue
-            if self.at_word(("namespace", "flow", "pipe", "pool", "enum", "macro", "struct", "include")):
+            if self.eat("include"):
+                self.include_file()
+                continue
+            if self.at_word(("namespace", "flow", "pipe", "pool", "enum", "macro", "struct")):
                 w = self.ident()
                 self.later(w)
             self.fail("expected fn or object")
-        self.link_mutations()
-        if "main" not in self.fns:
-            raise CompileError("a program with no main")
-        fn = self.fns["main"]
-        if fn["params"] or fn["out"] != ("i32",):
-            self.fail("main takes nothing and its result type is i32")
-        prog = {"fns": self.fns, "objects": self.objects, "ids": self.ids, "opt": self.opt or "01"}
-        from analyze import analyze, impure
-        prog["ann"] = analyze(prog)
-        for item in list(self.fns.values()) + [
-            m for obj in self.objects.values() for m in obj["methods"].values()
-        ]:
-            if item.get("inlined"):
-                why = impure(prog, item)
-                if why:
-                    self.fail(f"@inlined function is not pure ({why})")
-        return prog
+
+    def include_file(self):
+        import os
+        if self.eat("lib"):
+            self.later("include lib")
+        path = self.quoted()
+        self.expect(";")
+        if path.endswith((".h", ".hh", ".hpp", ".hxx")):
+            self.fail("include of a C or C++ header as Toplethos source")
+        if not path.endswith(".tpth_s"):
+            self.fail("include of a file that is not .tpth_s")
+        full = path if os.path.isabs(path) else os.path.join(self.base, path)
+        full = os.path.abspath(full)
+        if full in self.included:
+            return
+        if not os.path.isfile(full):
+            self.fail(path)
+        self.included.add(full)
+        text = open(full).read()
+        sub = Front(text)
+        sub.fns = self.fns
+        sub.objects = self.objects
+        sub.ids = self.ids
+        sub.nid = self.nid
+        sub.opt = self.opt
+        sub.included = self.included
+        sub.base = os.path.dirname(full)
+        sub.file = full
+        sub.parse_items()
+        self.nid = sub.nid
+        self.opt = sub.opt
+
+    def thread_count(self):
+        self.skip()
+        if not self.peek().isdigit():
+            self.fail("@parallel takes a constant thread count")
+        n = 0
+        while self.peek().isdigit():
+            n = n * 10 + int(self.get())
+        if n < 1:
+            self.fail("@parallel takes a constant thread count")
+        return n
 
     def type_name(self):
         self.skip()
@@ -501,12 +571,23 @@ class Front:
             "ensure": ms["ensure"] if isinstance(ms.get("ensure"), dict) else None,
             "scope": "private" if "private" in ms else "protected" if "protected" in ms else "public",
             "inlined": "inlined" in ms,
+            "parallel": ms.get("parallel"),
+            "file": self.file,
         }
+        if ms.get("parallel"):
+            ps = params
+            if out != ("f64",):
+                self.fail("a parallel function returns f64")
+            if not ps or ps[0]["ty"] != ("i32",):
+                self.fail("a parallel function takes the lane as i32")
+            if len(ps) > 2 or (len(ps) == 2 and ps[1]["ty"][0] != "ptr"):
+                self.fail("a parallel function takes the lane and one pointer")
         if ms.get("divzero") is True:
             self.fail("@divzero with an argument other than 0 or max")
         self.cur_fn = prev
         self.audit(fn)
         self.returned_all(fn)
+        self.check_fn_mutex(fn)
         if method_of:
             return fn
         self.fns[name] = fn
@@ -613,6 +694,13 @@ class Front:
             self.expect(";")
         self.objects[name]["methods"] = methods
 
+    def extend_stmt(self, body, st):
+        if st[0] == "seq":
+            self.extend_stmt(body, st[1])
+            self.extend_stmt(body, st[2])
+        else:
+            body.append(st)
+
     def block(self):
         self.expect("{")
         self.push()
@@ -624,7 +712,7 @@ class Front:
                 return body
             if not self.peek():
                 self.fail("unclosed '{'")
-            body.append(self.statement())
+            self.extend_stmt(body, self.statement())
 
     def statement(self):
         self.skip()
@@ -632,10 +720,18 @@ class Front:
         if self.eat("return"):
             return self.ret(line)
         if self.eat("leave"):
-            if self.loop == 0:
+            name = None
+            if self.eat("["):
+                name = self.ident()
+                self.expect("]")
+                if name not in self.loop_names:
+                    self.fail("leave[name] with no matching @name")
+            elif self.loop == 0:
                 self.fail("leave outside loop")
             self.expect(";")
-            return ("leave", line)
+            if name is None:
+                return ("leave", line)
+            return ("leave", line, name)
         if self.eat("continue"):
             if self.loop == 0:
                 self.fail("continue outside loop")
@@ -653,11 +749,22 @@ class Front:
             return self.lock_stmt(line, "lock")
         if self.eat("unlock"):
             return self.lock_stmt(line, "unlock")
+        if self.eat("hold"):
+            return self.hold_stmt(line)
         if self.eat("loop"):
-            self.marks("loop")
+            ms = self.marks("loop")
+            lname = ms.get("name")
+            if lname:
+                if lname in self.loop_names:
+                    self.fail("a second @name")
+                self.loop_names.append(lname)
             self.loop += 1
             body = self.block()
             self.loop -= 1
+            if lname:
+                self.loop_names.pop()
+            if lname:
+                return ("loop", body, line, {"name": lname})
             return ("loop", body, line)
         if self.eat("do"):
             return self.do_stmt(line)
@@ -738,13 +845,20 @@ class Front:
 
     def fork_stmt(self, line):
         name = self.ident()
-        self.expect("in")
-        self.expect("[")
-        n = self.int_const()
-        self.expect("]")
+        n = None
+        if self.eat("in"):
+            self.expect("[")
+            n = self.int_const()
+            self.expect("]")
         extra = self.with_cell()
         self.expect(";")
-        self.check_worker(name, extra)
+        fn = self.check_worker(name, extra)
+        if n is None:
+            if not fn.get("parallel"):
+                self.fail("fork takes a constant thread count")
+            n = fn["parallel"]
+        elif fn.get("parallel") and n != fn["parallel"]:
+            self.fail("@parallel count")
         return ("fork", name, n, extra, line)
 
     def finish_stmt(self, line):
@@ -764,12 +878,43 @@ class Front:
             self.fail("lock of a cell that is not @mutex")
         return (kind, info["id"], info["ty"], line)
 
+    def state_cond(self):
+        self.expect("state")
+        self.expect("[")
+        name = self.ident()
+        self.expect("]")
+        info = self.lookup(name)
+        if info is None:
+            self.fail(f"'{name}' is used before it is declared")
+        op = "=="
+        word = "present"
+        if self.eat("==") or self.eat("!="):
+            op = "==" if self.s.startswith("==", self.i - 2) else "!="
+            word = self.ident()
+            if word not in ("absent", "present", "empty"):
+                self.fail("state is absent, present, or empty")
+        return {"k": "statecmp", "id": info["id"], "op": op, "word": word, "ty": ("bool",)}
+
+    def hold_stmt(self, line):
+        self.expect("[")
+        name = self.ident()
+        self.expect("]")
+        info = self.lookup(name)
+        if info is None:
+            self.fail(f"'{name}' is used before it is declared")
+        if not info.get("mutex") and info["ty"][0] != "ptr":
+            self.fail("hold of a cell that is not @mutex")
+        body = self.block()
+        return ("hold", info["id"], info["ty"], body, line)
+
     def if_stmt(self, line):
         if self.eat("["):
-            self.fail("if takes a bool condition")
-        cond = self.expr(("bool",))
-        if cond["ty"] != ("bool",):
-            self.fail("if with a condition that is not bool")
+            cond = self.state_cond()
+            self.expect("]")
+        else:
+            cond = self.expr(("bool",))
+            if cond["ty"] != ("bool",):
+                self.fail("if with a condition that is not bool")
         body = self.block()
         els = []
         self.skip()
@@ -790,7 +935,12 @@ class Front:
         if count["k"] == "int" and count["n"] < 0:
             self.fail("do n[k] when k is a constant and k < 0")
         self.expect("]")
-        self.marks("loop")
+        ms = self.marks("loop")
+        lname = ms.get("name")
+        if lname:
+            if lname in self.loop_names:
+                self.fail("a second @name")
+            self.loop_names.append(lname)
         self.loop += 1
         self.do_depth += 1
         self.expect("{")
@@ -804,15 +954,20 @@ class Front:
                 break
             if not self.peek():
                 self.fail("unclosed '{'")
-            body.append(self.statement())
+            self.extend_stmt(body, self.statement())
         self.pop()
         self.do_depth -= 1
         self.loop -= 1
+        if lname:
+            self.loop_names.pop()
         onfin = []
         self.skip()
         if self.eat("onFinished"):
             onfin = self.block()
-        return ("do", count, iid, body, onfin, line)
+        st = ("do", count, iid, body, onfin, line)
+        if lname:
+            st = ("do", count, iid, body, onfin, line, {"name": lname})
+        return st
 
     def decl(self, line):
         ty = self.type_name()
@@ -881,19 +1036,51 @@ class Front:
 
     def assign_or_call(self, line):
         expr = self.expr(None)
-        if self.eat("="):
-            if expr["k"] not in ("name", "field", "deref", "index"):
-                self.fail("expr = name")
-            self.write_target(expr)
-            rhs = self.fit(self.expr(expr["ty"]), expr["ty"])
-            if rhs["ty"] != expr["ty"]:
-                self.fail(f"cannot store {self.show(rhs['ty'])} in {self.show(expr['ty'])}")
-            self.expect(";")
-            return ("store", expr, rhs, line)
+        op = self.assign_op()
+        if op:
+            return self.finish_assign(expr, op, line)
         if expr["k"] in ("call", "method", "loadbmp", "loadbytes", "upd"):
             self.expect(";")
             return ("expr", expr, line)
         self.fail("a statement, other than a brace block, that does not end with ;")
+
+    def assign_op(self):
+        if self.eat("+="):
+            return "+="
+        if self.eat("^="):
+            return "^="
+        if self.eat("="):
+            return "="
+        return None
+
+    def finish_assign(self, dest, op, line):
+        if dest["k"] not in ("name", "field", "deref", "index"):
+            self.fail("expr = name")
+        self.write_target(dest)
+        rhs = self.expr(dest["ty"] if op == "=" else None)
+        nxt = self.assign_op()
+        if nxt:
+            inner = self.finish_assign(rhs, nxt, line)
+            rhs = dict(rhs)
+            return ("seq", inner, self.store_of(dest, op, rhs, line))
+        self.expect(";")
+        return self.store_of(dest, op, rhs, line)
+
+    def store_of(self, dest, op, rhs, line):
+        if op == "+=":
+            rhs = self.fit(rhs, dest["ty"])
+            if rhs["ty"] != dest["ty"] or dest["ty"] not in (("i32",), ("i64",), ("f64",)):
+                self.fail("no row for these operands")
+            rhs = {"k": "bin", "op": "+", "a": dest, "b": rhs, "ty": dest["ty"]}
+        elif op == "^=":
+            self.convert(rhs["ty"], dest["ty"])
+            if rhs["ty"] != dest["ty"]:
+                rhs = {"k": "as", "ty": dest["ty"], "a": rhs}
+        else:
+            rhs = self.fit(rhs, dest["ty"])
+            if rhs["ty"] != dest["ty"]:
+                self.fail(f"cannot store {self.show(rhs['ty'])} in {self.show(dest['ty'])}")
+        return ("store", dest, rhs, line)
 
     def write_target(self, expr):
         if expr["k"] != "name":
@@ -977,13 +1164,16 @@ class Front:
         left = self.bin_rel(None)
         while True:
             op = None
-            for cand in ("==", "!="):
+            for cand in ("!$=", "$=", "==", "!="):
                 if self.eat(cand):
                     op = cand
                     break
             if not op:
                 return left
             right = self.bin_rel(None)
+            if op in ("$=", "!$="):
+                left = {"k": "bin", "op": op, "a": left, "b": right, "ty": ("bool",)}
+                continue
             ty = self.arith_ty(left["ty"], right["ty"], eq=True)
             left = {"k": "bin", "op": op, "a": left, "b": right, "ty": ("bool",), "row": ty}
 
@@ -1171,6 +1361,8 @@ class Front:
                 if len(args) != 1 or args[0]["ty"][0] != "arr":
                     self.fail("size takes one array")
                 return {"k": "size", "a": args[0], "ty": ("i32",)}
+            if name in ("min", "max", "clamp", "abs", "swap"):
+                return self.builtin(name, args)
             info = self.lookup(name)
             if info is None and name not in self.fns:
                 self.fail(f"'{name}' is used before it is declared")
@@ -1185,6 +1377,8 @@ class Front:
 
     def finish_call(self, name, args):
         fn = self.fns[name]
+        if fn.get("scope") != "public" and fn.get("file", "") != self.file:
+            self.fail(f"'{name}' is private to another file")
         if len(args) != len(fn["params"]):
             self.fail(f"{name} argument count")
         fitted = []
@@ -1194,6 +1388,131 @@ class Front:
                 self.fail(f"{name} argument type")
             fitted.append(arg)
         return {"k": "call", "name": name, "args": fitted, "ty": fn["out"]}
+
+    def builtin(self, name, args):
+        atoms = (("i32",), ("i64",), ("f64",))
+        if name == "abs":
+            if len(args) != 1 or args[0]["ty"] not in atoms:
+                self.fail("no row for these operands")
+            return {"k": "call", "name": "abs", "args": args, "ty": args[0]["ty"]}
+        if name == "swap":
+            if len(args) != 2 or args[0]["ty"] != args[1]["ty"] or args[0]["ty"][0] != "ptr":
+                self.fail("no row for these operands")
+            return {"k": "call", "name": "swap", "args": args, "ty": None}
+        need = 3 if name == "clamp" else 2
+        if len(args) != need:
+            self.fail("no row for these operands")
+        ty = args[0]["ty"]
+        if ty not in atoms or any(a["ty"] != ty for a in args):
+            self.fail("min, max, or clamp of two different atoms")
+        return {"k": "call", "name": name, "args": args, "ty": ty}
+
+    def collect_locks(self, body):
+        for st in body:
+            op = st[0]
+            if op in ("lock", "unlock", "hold"):
+                self.lock_targets.add(st[1])
+            if op == "if":
+                self.collect_locks(st[2])
+                self.collect_locks(st[3])
+            elif op == "loop":
+                self.collect_locks(st[1])
+            elif op == "do":
+                self.collect_locks(st[3])
+                self.collect_locks(st[4])
+            elif op == "hold":
+                self.collect_locks(st[3])
+            elif op == "time":
+                self.collect_locks(st[3])
+
+    def check_fn_mutex(self, fn):
+        self.lock_targets = set()
+        self.collect_locks(fn["body"])
+        end = self.check_mutex(fn["body"], set(), set())
+        if end:
+            self.fail("a path that locks and does not unlock")
+
+    def check_mutex(self, body, locked, at_loop):
+        locked = set(locked)
+        for st in body:
+            op = st[0]
+            if op == "lock":
+                locked.add(st[1])
+            elif op == "unlock":
+                if st[1] not in locked:
+                    self.fail("unlock of a cell that is not locked")
+                locked.discard(st[1])
+            elif op == "hold":
+                self.check_mutex(st[3], set(locked) | {st[1]}, at_loop)
+            elif op == "if":
+                left = self.check_mutex(st[2], locked, at_loop)
+                right = self.check_mutex(st[3], locked, at_loop)
+                if self.always_returns(st[2]) and not self.always_returns(st[3]):
+                    locked = right
+                elif self.always_returns(st[3]) and not self.always_returns(st[2]):
+                    locked = left
+                elif left != right:
+                    self.fail("a path that locks and does not unlock")
+                else:
+                    locked = left
+            elif op == "loop":
+                end = self.check_mutex(st[1], locked, set(locked))
+                if end != locked:
+                    self.fail("a path that locks and does not unlock")
+            elif op == "do":
+                end = self.check_mutex(st[3], locked, set(locked))
+                if end != locked:
+                    self.fail("a path that locks and does not unlock")
+                endf = self.check_mutex(st[4], locked, at_loop)
+                if endf != locked:
+                    self.fail("a path that locks and does not unlock")
+            elif op == "time":
+                self.guard_expr(st[2], locked)
+                end = self.check_mutex(st[3], locked, at_loop)
+                if end != locked:
+                    self.fail("a path that locks and does not unlock")
+            elif op == "return":
+                if st[1] is not None:
+                    self.guard_expr(st[1], locked)
+                if locked:
+                    self.fail("a path that locks and does not unlock")
+            elif op in ("leave", "continue"):
+                if locked != at_loop:
+                    self.fail("a path that locks and does not unlock")
+            elif op == "decl":
+                if st[3] is not None:
+                    self.guard_expr(st[3], locked)
+            elif op == "store":
+                self.guard_expr(st[1], locked)
+                self.guard_expr(st[2], locked)
+            elif op == "expr":
+                self.guard_expr(st[1], locked)
+            elif op == "adecl":
+                for item in st[3] or []:
+                    self.guard_expr(item, locked)
+        return locked
+
+    def guard_expr(self, e, locked, under_deref=False):
+        if not isinstance(e, dict):
+            return
+        if e.get("k") == "deref":
+            self.guard_expr(e.get("a"), locked, True)
+            return
+        if e.get("k") == "statecmp":
+            return
+        if e.get("k") == "name":
+            info = self.ids.get(e["id"], {})
+            if info.get("mutex") and e["id"] not in locked:
+                self.fail("a read or a store of a @mutex cell outside lock or hold")
+            if under_deref and e["id"] in self.lock_targets and e["id"] not in locked:
+                self.fail("a read or a store of a @mutex cell outside lock or hold")
+            return
+        for v in e.values():
+            if isinstance(v, dict):
+                self.guard_expr(v, locked)
+            elif isinstance(v, list):
+                for item in v:
+                    self.guard_expr(item, locked)
 
     def postfix(self, node):
         while True:
