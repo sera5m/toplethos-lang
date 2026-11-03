@@ -12,7 +12,7 @@ Not chosen: a solver on every function, equality saturation, capability pointers
 
 ## The annotation the table has to expose
 
-For each name: the decl line, every read line, every write line, and the function it sits in. For each loop: whether it has a cursor that only increments, and the integer names it only reads. For each function: the shape, the calls, and the callers. Counts are source sites, not runs. The function is `O(n)` only when every loop is forward. The records and the `<<<>>>` view are in [ANALYSIS.md](ANALYSIS.md).
+For each name: the decl line, every read line, every write line, and the function it sits in. For each loop: whether it has a cursor that only increments, and the integer names it only reads. For each function: the shape, the calls, and the callers. A call, a method, `start`, and `run` also get an `annptr`: the site, the declaration it points at, and an id for that one invocation. Counts are source sites, not runs. The function is `O(n)` only when every loop is forward. The records and the `<<<>>>` view are in [ANALYSIS.md](ANALYSIS.md).
 
 The word-count example is one forward scan. The index is not reset, so the nested loop is still linear in the length of the text. The map costs the same bound, because the slices add up to that length. Space is the text plus the unique keys. That is the kind of fact the table is for. It is not a proof of a hash-map cost the language does not have yet.
 

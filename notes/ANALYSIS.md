@@ -6,7 +6,7 @@ The arithmetic, the `@globaloptimize` levels, and `@inlined` are already in the 
 
 ## What the table is
 
-One record per function, one per name in that function, one per loop. The compiler already runs this from the parse, before the passes. `tpc --analyze file.tpth_s` prints it and does not compile.
+One record per function, one per name in that function, one per loop, and one annotation pointer per call site. The compiler already runs this from the parse, before the passes. `tpc --analyze file.tpth_s` prints it and does not compile.
 
 Counts are source sites, not runs. `i = i + 1` once in the text is one write, however many times the loop runs. A dynamic total is a later cost field. It is not this table.
 
@@ -19,6 +19,22 @@ A cursor is a name whose every store in that loop is `n = n + 1` or `++n`. A `do
 The machine view is the braced records. One field per line, values split on spaces, `-` when empty. A parser stops at the line `--- source ---`.
 
 The human view is the source with a `<<<>>>` note on the lines the table mentioned. The note on a declaration is the whole record. The note on a use is only what that line reads or writes. These comments are printed. They are not part of the program, and feeding them back in is not a goal.
+
+## Annotation pointers
+
+A call, a method call, `start`, and `run` each get one `annptr` record. The id (`ap1`, `ap2`, …) is that invocation. Two calls to the same function are two ids. The record holds:
+
+| field | what it is |
+|---|---|
+| `id`, `instance` | This invocation. The two fields are the same id. |
+| `kind` | `call`, `method`, `start`, or `run`. |
+| `name`, `line`, `caller` | The name as written, the line, and the function that contains the site. |
+| `decl`, `decl_line` | The symbol-table slot of the declaration, and that declaration's line. A builtin has `decl -`. |
+| `recv` | The receiver, for a method. `-` otherwise. |
+| `args` | The argument names. A literal is its kind (`int`, `f64`), not a made-up name. |
+| `effect` | The callee's effect from its own record: `pure`, a builtin name, or the effect list. |
+
+The declaration lists those ids on `invoked`. A variable stays on its `name` record. This is still not a runtime pointer, and it still does not delete a check.
 
 ## What it is not
 

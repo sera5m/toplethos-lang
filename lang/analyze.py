@@ -20,6 +20,9 @@ def analyze(prog):
             "names": {},
             "calls": [],
             "callers": [],
+            "invoked": [],
+            "sites": [],
+            "key": key,
             "loops": 0,
             "loops_at": [],
             "forward": False,
@@ -29,6 +32,8 @@ def analyze(prog):
         }
         for p in fn["params"]:
             _bind(rec, ids, p["id"], p["ty"], fn["line"])
+        if fn.get("here"):
+            _bind(rec, ids, fn["here"], ("obj", fn["method"]), fn["line"])
         _walk(fn["body"], rec, ids)
         rec["shape"] = _shape(rec)
         rec["forward"] = bool(rec["loops_at"]) and all(row["forward"] for row in rec["loops_at"])
@@ -39,6 +44,7 @@ def analyze(prog):
         for callee in rec["calls"]:
             if callee in out and key not in out[callee]["callers"]:
                 out[callee]["callers"].append(key)
+    _number_sites(out)
     return out
 
 
@@ -67,6 +73,10 @@ def report(prog, src=None):
             lines.append("")
         for row in rec["loops_at"]:
             lines.extend(_loop_record(key, row))
+            lines.append("")
+    for key in sorted(ann):
+        for site in ann[key]["sites"]:
+            lines.extend(_ptr_record(site))
             lines.append("")
     if src is not None:
         lines.append("--- source ---")
@@ -107,6 +117,7 @@ def _fn_record(key, rec, tag):
         f"  effect {eff}",
         f"  calls {_words(rec['calls'])}",
         f"  callers {_words(rec['callers'])}",
+        f"  invoked {_words(rec['invoked'])}",
     ]
     if tag:
         rows.append(f"  tag {tag}")
@@ -132,6 +143,24 @@ def _name_record(fn, name, row):
     ]
 
 
+def _ptr_record(site):
+    return [
+        "annptr {",
+        f"  id {site['id']}",
+        f"  kind {site['kind']}",
+        f"  name {site['name']}",
+        f"  line {site['line']}",
+        f"  caller {site['caller']}",
+        f"  decl {site['decl']}",
+        f"  decl_line {site['decl_line']}",
+        f"  instance {site['instance']}",
+        f"  recv {_words([site['recv']]) if site.get('recv') else '-'}",
+        f"  args {_words(site['args'])}",
+        f"  effect {site['effect']}",
+        "}",
+    ]
+
+
 def _loop_record(fn, row):
     return [
         "loop {",
@@ -149,6 +178,7 @@ def _annotate(src, ann):
     short_at = {}
     loop_at = {}
     fn_at = {}
+    ptr_at = {}
     for key, rec in ann.items():
         fn_at.setdefault(rec["line"], []).append(
             f"fn {key} shape {_words(rec['shape'])} complex {rec['complex']} "
@@ -175,11 +205,17 @@ def _annotate(src, ann):
                 if row["forward"]
                 else "loop not forward"
             )
+        for site in rec["sites"]:
+            ptr_at.setdefault(site["line"], []).append(
+                f"{site['id']} {site['kind']} {site['name']} decl {site['decl']} "
+                f"effect {site['effect']} args {_words(site['args'])}"
+            )
     out = []
     for n, line in enumerate(src.splitlines(), 1):
         parts = []
         parts.extend(fn_at.get(n, []))
         parts.extend(loop_at.get(n, []))
+        parts.extend(ptr_at.get(n, []))
         parts.extend(long_at.get(n, []))
         declared = set()
         for bit in long_at.get(n, []):
@@ -318,21 +354,64 @@ def _expr(e, rec, ids, write, line):
         _touch(rec, ids, e["id"], write, line)
         return
     if k == "call":
+        args = e.get("args") or []
         if e["name"] in ("print", "loadbmp", "loadbytes"):
             _add(rec, e["name"])
-        elif e["name"] not in ("size",):
+            _site(rec, ids, "call", e["name"], line, args, "-", e["name"])
+        else:
             if e["name"] not in rec["calls"]:
                 rec["calls"].append(e["name"])
-        for a in e.get("args") or []:
+            _site(rec, ids, "call", e["name"], line, args, e["name"], None)
+        for a in args:
             _expr(a, rec, ids, False, line)
         return
     if k == "method":
-        name = e.get("name")
-        if name and name not in rec["calls"]:
-            rec["calls"].append(name)
+        name = e.get("name") or "?"
+        decl = (e.get("obj") or "?") + "." + name
+        if decl not in rec["calls"]:
+            rec["calls"].append(decl)
         _expr(e.get("a"), rec, ids, False, line)
-        for a in e.get("args") or []:
+        args = e.get("args") or []
+        for a in args:
             _expr(a, rec, ids, False, line)
+        rec["sites"].append({
+            "kind": "method",
+            "name": name,
+            "line": line,
+            "caller": rec["key"],
+            "decl": decl,
+            "recv": _arg_name(e.get("a"), ids),
+            "args": [_arg_name(a, ids) for a in args],
+            "effect": None,
+        })
+        return
+    if k == "start":
+        _add(rec, "start")
+        if e["name"] not in rec["calls"]:
+            rec["calls"].append(e["name"])
+        _site(rec, ids, "start", e["name"], line, [], e["name"], None)
+        return
+    if k == "run":
+        _add(rec, "run")
+        if e["name"] not in rec["calls"]:
+            rec["calls"].append(e["name"])
+        words = ["int"]
+        if e.get("extra"):
+            words.append(ids.get(e["extra"], {}).get("name", "?"))
+        rec["sites"].append({
+            "kind": "run",
+            "name": e["name"],
+            "line": line,
+            "caller": rec["key"],
+            "decl": e["name"],
+            "recv": None,
+            "args": words,
+            "effect": None,
+        })
+        return
+    if k == "size":
+        _site(rec, ids, "call", "size", line, [e.get("a")], "-", "pure")
+        _expr(e.get("a"), rec, ids, False, line)
         return
     if k == "upd":
         _expr(e.get("a"), rec, ids, False, line)
@@ -352,17 +431,87 @@ def _expr(e, rec, ids, write, line):
         _add(rec, "loadbmp")
         if e.get("id"):
             _touch(rec, ids, e["id"], True, line)
+        _builtin_site(rec, ids, "loadbmp", line, e.get("id"))
         return
     if k == "loadbytes":
         _add(rec, "loadbytes")
         if e.get("id"):
             _touch(rec, ids, e["id"], True, line)
+        _builtin_site(rec, ids, "loadbytes", line, e.get("id"))
         return
     for key in ("a", "b", "i"):
         if isinstance(e.get(key), dict):
             _expr(e[key], rec, ids, False, line)
     for a in e.get("args") or []:
         _expr(a, rec, ids, False, line)
+
+
+def _builtin_site(rec, ids, name, line, iid):
+    arg = ids.get(iid, {}).get("name", "?") if iid else "-"
+    rec["sites"].append({
+        "kind": "call",
+        "name": name,
+        "line": line,
+        "caller": rec["key"],
+        "decl": "-",
+        "recv": None,
+        "args": [arg],
+        "effect": name,
+    })
+
+
+def _site(rec, ids, kind, name, line, args, decl, effect):
+    rec["sites"].append({
+        "kind": kind,
+        "name": name,
+        "line": line,
+        "caller": rec["key"],
+        "decl": decl,
+        "recv": None,
+        "args": [_arg_name(a, ids) for a in args],
+        "effect": effect,
+    })
+
+
+def _arg_name(e, ids):
+    if not isinstance(e, dict):
+        return "?"
+    k = e.get("k")
+    if k == "name":
+        return ids.get(e["id"], {}).get("name", "?")
+    if k == "int":
+        return "int"
+    if k == "f64":
+        return "f64"
+    if k == "bool":
+        return "bool"
+    return k or "?"
+
+
+def _effect_word(rec):
+    if rec["effects"]:
+        return ",".join(rec["effects"])
+    if rec["pure"]:
+        return "pure"
+    return "calls"
+
+
+def _number_sites(out):
+    n = 1
+    for rec in out.values():
+        for site in rec["sites"]:
+            site["id"] = f"ap{n}"
+            site["instance"] = site["id"]
+            n += 1
+            drec = out.get(site["decl"]) if site["decl"] != "-" else None
+            if drec is not None:
+                site["decl_line"] = drec["line"]
+                site["effect"] = _effect_word(drec)
+                drec["invoked"].append(site["id"])
+            else:
+                site["decl_line"] = 0
+                if not site.get("effect"):
+                    site["effect"] = "-"
 
 
 def _inc_id(st):
