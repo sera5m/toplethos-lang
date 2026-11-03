@@ -283,6 +283,9 @@ class Emit:
         if k == "loadbmp":
             self.loadbmp(e)
             return
+        if k == "savebmp":
+            self.savebmp(e)
+            return
         if k == "loadbytes":
             self.loadbytes(e)
             return
@@ -847,6 +850,26 @@ class Emit:
             self.w(f"    lea {self.slot[e['id']]}(%rbp), %rsi")
         self.w(f"    mov ${e['n']}, %edx")
         self.w("    call tp_loadbmp@PLT")
+
+    def savebmp(self, e):
+        self.gen(e["w"])
+        self.w("    sub $16, %rsp")
+        self.w("    mov %rax, (%rsp)")
+        self.gen(e["h"])
+        self.w("    sub $16, %rsp")
+        self.w("    mov %rax, (%rsp)")
+        lab = self.lit(e["path"])
+        info = self.prog["ids"][e["id"]]
+        self.w(f"    lea {lab}(%rip), %rdi")
+        if info.get("time") in ("static", "config"):
+            self.w(f"    lea {self.sym(e['id'])}(%rip), %rsi")
+        else:
+            self.w(f"    lea {self.slot[e['id']]}(%rbp), %rsi")
+        self.w(f"    mov ${e['n']}, %edx")
+        self.w("    mov 16(%rsp), %rcx")
+        self.w("    mov (%rsp), %r8")
+        self.w("    add $32, %rsp")
+        self.w("    call tp_savebmp@PLT")
 
     def loadbytes(self, e):
         lab = self.lit(e["path"])

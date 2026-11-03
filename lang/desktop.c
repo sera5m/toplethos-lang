@@ -7,6 +7,7 @@ extern "C" {
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 static double mark_time;
@@ -166,6 +167,62 @@ void tp_loadbmp(const char *path, void *cells, int n) {
             *(int64_t *)cell = p;
             cell[8] = 1;
         }
+    }
+    free(row);
+    fclose(f);
+}
+
+/* i32 cells, packed r<<16|g<<8|b, written as a 24-bit bottom-up bitmap. Pixel 0 is the top left. */
+void tp_savebmp(const char *path, void *cells, int n, int w, int h) {
+    FILE *f;
+    unsigned char hdr[54];
+    unsigned char *base, *row;
+    int stride, y, x, img;
+    uint32_t fsz;
+    if (w < 1 || h < 1 || (long long)w * h != n)
+        tp_fail("bitmap");
+    f = fopen(path, "wb");
+    if (!f)
+        tp_fail(path);
+    stride = (w * 3 + 3) & ~3;
+    img = stride * h;
+    fsz = 54u + (uint32_t)img;
+    memset(hdr, 0, 54);
+    hdr[0] = 'B';
+    hdr[1] = 'M';
+    hdr[2] = (unsigned char)fsz;
+    hdr[3] = (unsigned char)(fsz >> 8);
+    hdr[4] = (unsigned char)(fsz >> 16);
+    hdr[5] = (unsigned char)(fsz >> 24);
+    hdr[10] = 54;
+    hdr[14] = 40;
+    hdr[18] = (unsigned char)w;
+    hdr[19] = (unsigned char)(w >> 8);
+    hdr[20] = (unsigned char)(w >> 16);
+    hdr[21] = (unsigned char)(w >> 24);
+    hdr[22] = (unsigned char)h;
+    hdr[23] = (unsigned char)(h >> 8);
+    hdr[24] = (unsigned char)(h >> 16);
+    hdr[25] = (unsigned char)(h >> 24);
+    hdr[26] = 1;
+    hdr[28] = 24;
+    if (fwrite(hdr, 1, 54, f) != 54)
+        tp_fail("bitmap");
+    row = (unsigned char *)malloc((size_t)stride);
+    if (!row)
+        tp_fail("bitmap");
+    base = (unsigned char *)cells;
+    for (y = h - 1; y >= 0; y--) {
+        memset(row, 0, (size_t)stride);
+        for (x = 0; x < w; x++) {
+            unsigned char *cell = base + ((size_t)(y * w + x) << 4);
+            int32_t p = *(int32_t *)cell;
+            row[x * 3] = (unsigned char)p;
+            row[x * 3 + 1] = (unsigned char)(p >> 8);
+            row[x * 3 + 2] = (unsigned char)(p >> 16);
+        }
+        if (fwrite(row, 1, (size_t)stride, f) != (size_t)stride)
+            tp_fail("bitmap");
     }
     free(row);
     fclose(f);

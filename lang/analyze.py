@@ -458,7 +458,7 @@ def _expr(e, rec, ids, write, line):
             _add(rec, "swap")
             return ("tmp",)
         locs = [_expr(a, rec, ids, False, line) for a in args]
-        if e["name"] in ("print", "loadbmp", "loadbytes"):
+        if e["name"] in ("print", "loadbmp", "loadbytes", "savebmp"):
             _add(rec, e["name"])
             return _call_op(rec, ids, "call", e["name"], line, locs, "-", e["name"])
         if e["name"] not in rec["calls"]:
@@ -517,6 +517,11 @@ def _expr(e, rec, ids, write, line):
     if k == "loadbmp":
         _add(rec, "loadbmp")
         return _mem_call(rec, ids, "loadbmp", line, e.get("id"))
+    if k == "savebmp":
+        _add(rec, "savebmp")
+        _expr(e.get("w"), rec, ids, False, line)
+        _expr(e.get("h"), rec, ids, False, line)
+        return _mem_call(rec, ids, "savebmp", line, e.get("id"))
     if k == "loadbytes":
         _add(rec, "loadbytes")
         return _mem_call(rec, ids, "loadbytes", line, e.get("id"))
@@ -810,7 +815,7 @@ def _call_atom(op, out):
     if op.get("kind") in ("start", "run"):
         return "impure"
     if op.get("decl") in ("-", None):
-        if op.get("effect") in ("print", "loadbytes", "loadbmp"):
+        if op.get("effect") in ("print", "loadbytes", "loadbmp", "savebmp"):
             return "impure"
         return "pure"
     drec = out.get(op["decl"])
@@ -985,7 +990,7 @@ def _shape(rec):
         shape.append("repeat")
     if rec["decisions"]:
         shape.append("decision")
-    if any(x in rec["effects"] for x in ("print", "loadbmp", "loadbytes")):
+    if any(x in rec["effects"] for x in ("print", "loadbmp", "loadbytes", "savebmp")):
         shape.append("emit" if "print" in rec["effects"] else "absorb")
     if rec["calls"]:
         shape.append("sequence")

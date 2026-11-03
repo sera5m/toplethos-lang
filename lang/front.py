@@ -1039,7 +1039,7 @@ class Front:
         op = self.assign_op()
         if op:
             return self.finish_assign(expr, op, line)
-        if expr["k"] in ("call", "method", "loadbmp", "loadbytes", "upd"):
+        if expr["k"] in ("call", "method", "loadbmp", "loadbytes", "savebmp", "upd"):
             self.expect(";")
             return ("expr", expr, line)
         self.fail("a statement, other than a brace block, that does not end with ;")
@@ -1350,6 +1350,8 @@ class Front:
         if self.eat("in"):
             if name == "loadbmp":
                 return self.loadbmp()
+            if name == "savebmp":
+                return self.savebmp()
             if name == "loadbytes":
                 return self.loadbytes()
             args = self.arglist()
@@ -1574,6 +1576,22 @@ class Front:
         if arr["k"] != "name" or arr["ty"][0] != "arr" or arr["ty"][1] != ("i32",):
             self.fail("loadbmp takes a string and an i32 array")
         return {"k": "loadbmp", "path": path, "id": arr["id"], "n": arr["ty"][2], "ty": None}
+
+    def savebmp(self):
+        self.expect("[")
+        path = self.quoted()
+        self.expect(",")
+        arr = self.expr(None)
+        self.expect(",")
+        w = self.expr(("i32",))
+        self.expect(",")
+        h = self.expr(("i32",))
+        self.expect("]")
+        if arr["k"] != "name" or arr["ty"][0] != "arr" or arr["ty"][1] != ("i32",):
+            self.fail("savebmp takes a string, an i32 array, a width, and a height")
+        if w["ty"] != ("i32",) or h["ty"] != ("i32",):
+            self.fail("savebmp takes a string, an i32 array, a width, and a height")
+        return {"k": "savebmp", "path": path, "id": arr["id"], "n": arr["ty"][2], "w": w, "h": h, "ty": None}
 
     def loadbytes(self):
         self.expect("[")

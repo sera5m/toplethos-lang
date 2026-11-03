@@ -107,6 +107,49 @@ class Interp:
                 cell["v"] = (r << 16) | (g << 8) | b
                 cell["present"] = True
 
+    def save_bmp(self, e):
+        import struct
+        w = int(self.eval(e["w"]))
+        h = int(self.eval(e["h"]))
+        n = e["n"]
+        if w < 1 or h < 1 or w * h != n:
+            raise Failure("bitmap")
+        slot = None
+        for frame in reversed(self.frames):
+            if e["id"] in frame:
+                slot = frame[e["id"]]
+                break
+        if slot is None or not slot["present"]:
+            raise Failure("absent")
+        cells = slot["v"]
+        stride = (w * 3 + 3) & ~3
+        hdr = bytearray(54)
+        hdr[0:2] = b"BM"
+        fsz = 54 + stride * h
+        struct.pack_into("<I", hdr, 2, fsz)
+        struct.pack_into("<I", hdr, 10, 54)
+        struct.pack_into("<I", hdr, 14, 40)
+        struct.pack_into("<i", hdr, 18, w)
+        struct.pack_into("<i", hdr, 22, h)
+        struct.pack_into("<H", hdr, 26, 1)
+        struct.pack_into("<H", hdr, 28, 24)
+        try:
+            out = open(e["path"], "wb")
+        except OSError:
+            raise Failure(e["path"])
+        out.write(hdr)
+        pad = b"\0" * (stride - w * 3)
+        for y in range(h - 1, -1, -1):
+            row = bytearray(w * 3)
+            for x in range(w):
+                p = int(cells[y * w + x]["v"] or 0)
+                row[x * 3] = p & 255
+                row[x * 3 + 1] = (p >> 8) & 255
+                row[x * 3 + 2] = (p >> 16) & 255
+            out.write(row)
+            out.write(pad)
+        out.close()
+
     def load_bytes(self, e):
         n = e["n"]
         slot = None
@@ -568,6 +611,9 @@ class Interp:
             return self.call(self.prog["fns"][e["name"]], args)
         if k == "loadbmp":
             self.load_bmp(e)
+            return None
+        if k == "savebmp":
+            self.save_bmp(e)
             return None
         if k == "loadbytes":
             return self.load_bytes(e)

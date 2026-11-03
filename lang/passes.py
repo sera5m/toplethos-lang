@@ -82,7 +82,7 @@ def _fold_f64(op, a, b):
 def _expr(e, present, ids):
     if not isinstance(e, dict):
         return e
-    for key in ("a", "b", "i"):
+    for key in ("a", "b", "i", "w", "h"):
         if isinstance(e.get(key), dict):
             e[key] = _expr(e[key], present, ids)
     if e.get("k") == "name" and e.get("id") in present:
@@ -517,7 +517,7 @@ def _fold_stmts(stmts, consts):
         if not isinstance(e, dict):
             return e
         e = dict(e)
-        for key in ("a", "b", "i"):
+        for key in ("a", "b", "i", "w", "h"):
             if isinstance(e.get(key), dict):
                 e[key] = rec(e[key])
         if e.get("k") == "index" and e.get("a", {}).get("k") == "name":

@@ -1,0 +1,94 @@
+// Sort a bitmap by color name.
+// A name is a percentage box on r, g, b, each as a share of r+g+b.
+// 255,255,0 and 128,128,4 are both yellow: the ratio matches, the size does not matter.
+// Black, white, and grey are the flat colors, checked before the boxes.
+//
+// id  name     match
+// 0   red      r 50..100  g 0..35   b 0..35
+// 1   orange   r 45..85   g 15..45  b 0..25
+// 2   yellow   r 32..60   g 32..60  b 0..18
+// 3   green    r 0..40    g 45..100 b 0..40
+// 4   blue     r 0..35    g 0..35   b 45..100
+// 5   violet   r 25..60   g 0..30   b 25..70, and b leads g
+// 6   black    brightest channel <= 40
+// 7   white    dimmest channel >= 200, or flat and bright
+// 8   grey     flat, or no box matched
+//
+// Yellow is tested before orange, and orange before red, so a shared edge
+// stays with the tighter name. The output order is the id order above.
+// Pixel 0 of the result is the first red, then orange, yellow, green, blue,
+// violet, black, white, grey.
+
+fn pack in[i32 r, i32 g, i32 b] out[i32] {
+  return r * 65536 + g * 256 + b;
+}
+
+fn shade in[i32 p] out[i32] {
+  i32 r = p / 65536;
+  i32 g = p / 256 - r * 256;
+  i32 b = p - p / 256 * 256;
+  i32 mx = r;
+  if g > mx { mx = g; }
+  if b > mx { mx = b; }
+  i32 mn = r;
+  if g < mn { mn = g; }
+  if b < mn { mn = b; }
+  if mx <= 40 { return 6; }
+  if mn >= 200 { return 7; }
+  if (mx - mn) * 100 / mx <= 15 {
+    if mx >= 210 { return 7; }
+    return 8;
+  }
+  i32 s = r + g + b;
+  i32 rp = r * 100 / s;
+  i32 gp = g * 100 / s;
+  i32 bp = b * 100 / s;
+  if (rp >= 32 && rp <= 60) && (gp >= 32 && gp <= 60) && (bp <= 18) { return 2; }
+  if (rp >= 45 && rp <= 85) && (gp >= 15 && gp <= 45) && (bp <= 25) { return 1; }
+  if (rp >= 50) && (gp <= 35) && (bp <= 35) { return 0; }
+  if (gp >= 45) && (rp <= 40) && (bp <= 40) { return 3; }
+  if (bp >= 45) && (rp <= 35) && (gp <= 35) { return 4; }
+  if (rp >= 25 && rp <= 60) && (gp <= 30) && (bp >= 25 && bp <= 70) && (bp >= gp + 15) { return 5; }
+  return 8;
+}
+
+fn main in[] out[i32] {
+  print in[shade in[pack in[255, 0, 0]]];
+  print in[shade in[pack in[255, 128, 0]]];
+  print in[shade in[pack in[255, 255, 0]]];
+  print in[shade in[pack in[128, 128, 4]]];
+  print in[shade in[pack in[0, 255, 0]]];
+  print in[shade in[pack in[0, 0, 255]]];
+  print in[shade in[pack in[160, 40, 200]]];
+  print in[shade in[pack in[0, 0, 0]]];
+  print in[shade in[pack in[255, 255, 255]]];
+  print in[shade in[pack in[128, 128, 128]]];
+  i32 pix[2249868] @static;
+  i32 outp[2249868] @static;
+  i32 n = 2249868;
+  i32 w = 1732;
+  i32 h = 1299;
+  loadbmp in["examples/street.bmp", pix];
+  i32 count[9] = {0};
+  do n[2249868] {
+    i32 c = shade in[pix[i]];
+    count[c] = count[c] + 1;
+  }
+  i32 at[9];
+  i32 acc = 0;
+  do n[9] {
+    at[i] = acc;
+    acc = acc + count[i];
+  }
+  do n[2249868] {
+    i32 c = shade in[pix[i]];
+    i32 slot = at[c];
+    outp[slot] = pix[i];
+    at[c] = slot + 1;
+  }
+  savebmp in["examples/colorsort.bmp", outp, w, h];
+  do n[9] {
+    print in[count[i]];
+  }
+  return 0;
+}
