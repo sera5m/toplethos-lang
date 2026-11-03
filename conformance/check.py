@@ -235,6 +235,87 @@ fn main in[] out[i32] {
   return 0;
 }
 """),
+    ("ops", "1\n3\n2\n-3\n4\n1\n8\n3\n-3\n-2\n4\n-4\n2\n7\n5\n", """
+fn main in[] out[i32] {
+  i32 n = 1;
+  print in[n++];
+  print in[++n];
+  n--;
+  print in[n];
+  print in[-5//2];
+  print in[-2 ** 2];
+  print in[0 ** 0];
+  print in[2 ** 3];
+  print in[7 % 4];
+  print in[-7 % 4];
+  print in[~1];
+  print in[1 << 2];
+  print in[-8 >> 1];
+  print in[6 & 3];
+  print in[6 | 3];
+  print in[6 ^ 3];
+  return 0;
+}
+"""),
+    ("opsf", "8.000000000\n-3.000000000\n", """
+fn main in[] out[i32] {
+  print in[2.0 ** 3.0];
+  print in[-5.0//2.0];
+  return 0;
+}
+"""),
+    ("opsarr", "4\n5\n8\n", """
+fn main in[] out[i32] {
+  i32 a[2] = {4, 9};
+  print in[a[0]++];
+  print in[a[0]];
+  print in[--a[1]];
+  return 0;
+}
+"""),
+    ("inline", "36\n", """
+fn sq in[i32 a] out[i32] @inlined { return a * a; }
+fn main in[] out[i32] {
+  print in[sq in[6]];
+  return 0;
+}
+"""),
+    ("opt3", "40\n", """
+@globaloptimize[03];
+fn main in[] out[i32] {
+  i32 x = 5;
+  print in[x * 8];
+  return 0;
+}
+"""),
+    ("inline2", "6\n", """
+fn sum in[i32 n] out[i32] @inlined {
+  i32 s = 0;
+  i32 i = 0;
+  loop {
+    if !(i < n) { leave; }
+    s = s + i;
+    i++;
+  }
+  return s;
+}
+fn main in[] out[i32] {
+  print in[sum in[4]];
+  return 0;
+}
+"""),
+    ("opsi64", "1\n2\n-3\n", """
+fn main in[] out[i32] {
+  i64 n = 1;
+  print in[n++];
+  print in[n];
+  i64 a = 5;
+  a = -a;
+  i64 two = 2;
+  print in[a//two];
+  return 0;
+}
+"""),
 ]
 
 BAD = [
@@ -314,6 +395,38 @@ fn f in[i32 a] out[i32] @require[a > 0] { return a; }
 fn main in[] out[i32] {
   print in[f in[0]];
   return 0;
+}
+"""),
+    ("negpow", "negative power", """
+fn main in[] out[i32] {
+  i32 n = 2 ** -1;
+  return n;
+}
+"""),
+    ("shiftc", "shift count", """
+fn main in[] out[i32] {
+  i32 n = 1 << 32;
+  return n;
+}
+"""),
+    ("impure", "not pure", """
+fn bad in[i32 a] out[i32] @inlined {
+  print in[a];
+  return a;
+}
+fn main in[] out[i32] { return 0; }
+"""),
+    ("shift", "shift", """
+fn main in[] out[i32] {
+  i32 n = 40;
+  print in[1 << n];
+  return 0;
+}
+"""),
+    ("powbig", "power overflow", """
+fn main in[] out[i32] {
+  i32 n = 2 ** 31;
+  return n;
 }
 """),
 ]

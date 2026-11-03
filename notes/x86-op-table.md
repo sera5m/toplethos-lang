@@ -1,6 +1,6 @@
 # x86 op table
 
-This is the dependency named in [OPTIMIZER.dep](OPTIMIZER.dep). A phase-3 rule may exist only for a row in this table. `7etsuo/x86` is a reference, not a library, and it is not vendored. `sera5m/ikitaku` is not a dependency either: that repository is a reasoner with a read-only graph, not a code-pattern optimizer.
+This is the dependency named in [OPTIMIZER.dep](OPTIMIZER.dep). A phase-3 rule may exist only for a row in this table. `7etsuo/x86` is a reference, not a library, and it is not vendored. `sera5m/ikitaku` is not a dependency either: that repository is a reasoner with a read-only graph, not a code-pattern optimizer. `@globaloptimize[03]` uses the locked verb names as tags. It does not import the reasoner. The one rewrite that tag level adds is an integer multiply by a positive power of two, which becomes `shl`.
 
 ## What 7etsuo/x86 actually is
 
@@ -19,7 +19,13 @@ Similarity 5 means one opcode is the operation. Ambiguity 5 means the source for
 | i32 add / sub | `addl` / `subl` | 5 | 2 | 2 | yes | yes |
 | i32 mul | `imull` | 5 | 2 | 2 | yes | yes |
 | i32 div | `cdq`, then `idiv` | 3 | 4 | 2 | yes | yes |
-| i32 mod | same `idiv`, remainder in `edx` | 3 | 4 | 2 | specified, not emitted | yes |
+| i32 mod | same `idiv`, remainder in `edx` | 3 | 4 | 2 | yes | yes |
+| i32 floor div | `tp_floor`: truncating `idiv`, then adjust toward −∞ | 2 | 4 | 1 | yes | yes |
+| i32 power | `tp_ipow` | 2 | 3 | 1 | yes | yes |
+| i32 bitwise and/or/xor | `andl` `orl` `xorl` | 5 | 2 | 2 | yes | yes |
+| i32 not | `notl` | 5 | 1 | 2 | yes | yes |
+| i32 shift | `shl` / `sar` by `%cl`, count checked | 4 | 3 | 2 | yes | yes |
+| i32 `++` / `--` | `add $1` / `sub $1`. Postfix keeps the old value | 4 | 2 | 2 | yes | yes |
 | f64 add / sub / mul / div | `addsd` `subsd` `mulsd` `divsd` | 5 | 2 | 1 | yes | yes |
 | cmp to bool | `cmpl` or `ucomisd`, then `setcc` | 3 | 4 | 1 | yes | yes |
 | `&&` / `||` | `test` + `jcc` around the right side | 2 | 4 | 3 | yes | yes |

@@ -24,7 +24,7 @@ def compile_text(src, binary):
     asm_path = path.with_suffix(".s")
     asm_path.write_text(asm)
     rt = Path(__file__).resolve().parent / "desktop.c"
-    cmd = ["g++", "-pthread", "-o", str(path), str(asm_path), str(rt)]
+    cmd = ["g++", "-pthread", "-lm", "-o", str(path), str(asm_path), str(rt)]
     g = subprocess.run(cmd, text=True, capture_output=True)
     if g.returncode != 0:
         sys.stderr.write(g.stderr)

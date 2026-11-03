@@ -212,6 +212,9 @@ class Emit:
             self.gen(e["a"])
             self.unary(e)
             return
+        if k == "upd":
+            self.upd(e)
+            return
         if k == "bin":
             self.binop(e)
             return
@@ -410,6 +413,9 @@ class Emit:
         self.w("    movb $0, 8(%rax)")
 
     def unary(self, e):
+        if e["op"] == "~":
+            self.w("    not %rax" if e["ty"] == ("i64",) else "    not %eax")
+            return
         if e["op"] == "!":
             self.w("    xor $1, %eax")
             return
@@ -483,6 +489,9 @@ class Emit:
             self.w("    add $16, %rsp")
             if op in ("==", "!=", "<", ">", "<=", ">="):
                 self.fcmp(op)
+                return
+            if op in ("**", "//"):
+                self.fhelper(op)
                 return
             if op == "/":
                 zero = self.lab()
@@ -587,6 +596,22 @@ class Emit:
                 return
             self.idiv(bits)
             return
+        if op == "%":
+            self.idiv(bits, rem=True)
+            return
+        if op == "//":
+            self.ifloor(bits)
+            return
+        if op == "**":
+            self.ihelper("tp_ipow", bits)
+            return
+        if op in ("&", "|", "^"):
+            asm = {"&": "and", "|": "or", "^": "xor"}[op]
+            self.w(f"    {asm} %rcx, %rax" if bits == 64 else f"    {asm} %ecx, %eax")
+            return
+        if op in ("<<", ">>"):
+            self.ishift(bits, op)
+            return
         if bits == 32:
             self.w({"+" : "add %ecx, %eax", "-": "sub %ecx, %eax", "*": "imul %ecx, %eax"}[op])
         else:
@@ -623,7 +648,7 @@ class Emit:
         self.w("    add %rcx, %rax")
         self.w(f"    sar ${k}, %rax")
 
-    def idiv(self, bits):
+    def idiv(self, bits, rem=False):
         reg = "%ecx" if bits == 32 else "%rcx"
         zero = self.lab()
         done = self.lab()
@@ -642,18 +667,110 @@ class Emit:
         self.w(f"    jmp {done}")
         self.w(f"{zero}:")
         if bits == 32:
+            skip = self.lab()
             self.w("    cmp $-1, %ecx")
-            self.w("    jne 2f")
+            self.w(f"    jne {skip}")
             self.w("    cmp $0x80000000, %eax")
-            self.w("    jne 2f")
+            self.w(f"    jne {skip}")
             self.fail("division overflow")
-            self.w("2:")
+            self.w(f"{skip}:")
             self.w("    cdq")
             self.w("    idiv %ecx")
         else:
+            skip = self.lab()
+            self.w("    cmp $-1, %rcx")
+            self.w(f"    jne {skip}")
+            self.w("    movabs $0x8000000000000000, %rdx")
+            self.w("    cmp %rdx, %rax")
+            self.w(f"    jne {skip}")
+            self.fail("division overflow")
+            self.w(f"{skip}:")
             self.w("    cqto")
             self.w("    idiv %rcx")
+        if rem:
+            self.w("    mov %rdx, %rax" if bits == 64 else "    mov %edx, %eax")
         self.w(f"{done}:")
+
+    def ifloor(self, bits):
+        mode = {"0": 1, "max": 2}.get(self.cur.get("divzero"), 0)
+        self.w("    mov %rcx, %r10")
+        if bits == 32:
+            self.w("    movslq %eax, %rdi")
+            self.w("    movslq %r10d, %rsi")
+        else:
+            self.w("    mov %rax, %rdi")
+            self.w("    mov %r10, %rsi")
+        self.w(f"    mov ${bits}, %edx")
+        self.w(f"    mov ${mode}, %ecx")
+        self.w("    call tp_floor@PLT")
+
+    def ihelper(self, name, bits):
+        if bits == 32:
+            self.w("    movslq %eax, %rdi")
+            self.w("    movslq %ecx, %rsi")
+        else:
+            self.w("    mov %rax, %rdi")
+            self.w("    mov %rcx, %rsi")
+        self.w(f"    mov ${bits}, %edx")
+        self.w(f"    call {name}@PLT")
+
+    def fhelper(self, op):
+        mode = {"0": 1, "max": 2}.get(self.cur.get("divzero"), 0)
+        self.w("    movapd %xmm0, %xmm2")
+        self.w("    movapd %xmm1, %xmm0")
+        self.w("    movapd %xmm2, %xmm1")
+        if op == "**":
+            self.w("    call tp_fpow@PLT")
+            return
+        self.w(f"    mov ${mode}, %edi")
+        self.w("    call tp_ffloor@PLT")
+
+    def ishift(self, bits, op):
+        bad, ok = self.lab(), self.lab()
+        width = 32 if bits == 32 else 64
+        self.w(f"    cmp ${width}, %ecx")
+        self.w(f"    jae {bad}")
+        if bits == 32:
+            self.w("    shl %cl, %eax" if op == "<<" else "    sar %cl, %eax")
+        else:
+            self.w("    shl %cl, %rax" if op == "<<" else "    sar %cl, %rax")
+        self.w(f"    jmp {ok}")
+        self.w(f"{bad}:")
+        self.fail("shift")
+        self.w(f"{ok}:")
+
+    def upd(self, e):
+        dest = e["a"]
+        wide = dest["ty"] == ("i64",)
+        self.load_cell(dest)
+        if dest["k"] == "name":
+            self.w("    mov %rax, %rcx" if wide else "    mov %eax, %ecx")
+            if e["op"] == "++":
+                self.w("    add $1, %rax" if wide else "    add $1, %eax")
+            else:
+                self.w("    sub $1, %rax" if wide else "    sub $1, %eax")
+            self.place(dest, dest["ty"])
+            if not e["pre"]:
+                self.w("    mov %rcx, %rax" if wide else "    mov %ecx, %eax")
+            return
+        # The address is computed again, and that reuses rcx. Keep the old value on the stack.
+        self.w("    sub $16, %rsp")
+        self.w("    mov %rax, (%rsp)")
+        if e["op"] == "++":
+            self.w("    add $1, %rax" if wide else "    add $1, %eax")
+        else:
+            self.w("    sub $1, %rax" if wide else "    sub $1, %eax")
+        self.w("    mov %rax, %rbx")
+        self.rbx_hold += 1
+        self.addr(dest)
+        self.rbx_hold -= 1
+        self.w("    mov %rbx, (%rax)")
+        self.w("    movb $1, 8(%rax)")
+        if e["pre"]:
+            self.w("    mov %rbx, %rax")
+        else:
+            self.w("    mov (%rsp), %rax")
+        self.w("    add $16, %rsp")
 
     def loadbmp(self, e):
         lab = self.lit(e["path"])
@@ -1230,7 +1347,8 @@ class Emit:
             lab = seen["failure: " + msg + "\n"]
             tail.append(f".F{i}:")
             tail.append(f"    lea {lab}(%rip), %rdi")
-            tail.append("    mov stderr(%rip), %rsi")
+            tail.append("    mov stderr@GOTPCREL(%rip), %rsi")
+            tail.append("    mov (%rsi), %rsi")
             tail.append("    call fputs@PLT")
             tail.append("    mov $1, %edi")
             tail.append("    call exit@PLT")

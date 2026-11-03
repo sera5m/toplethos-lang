@@ -2,6 +2,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+#include <math.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -168,6 +169,64 @@ void tp_loadbmp(const char *path, void *cells, int n) {
     }
     free(row);
     fclose(f);
+}
+
+static int64_t fit_bits(int64_t n, int bits) {
+    if (bits == 32) return (int32_t)n;
+    return n;
+}
+
+int64_t tp_ipow(int64_t a, int64_t b, int bits) {
+    int64_t lo = bits == 32 ? (int64_t)INT32_MIN : INT64_MIN;
+    int64_t hi = bits == 32 ? (int64_t)INT32_MAX : INT64_MAX;
+    int64_t acc = 1, base, exp;
+    if (b < 0) tp_fail("negative power");
+    base = a;
+    exp = b;
+    while (exp) {
+        if (exp & 1) {
+            __int128 p = (__int128)acc * (__int128)base;
+            if (p < lo || p > hi) tp_fail("power overflow");
+            acc = (int64_t)p;
+        }
+        exp >>= 1;
+        if (exp) {
+            __int128 p = (__int128)base * (__int128)base;
+            if (p < lo || p > hi) tp_fail("power overflow");
+            base = (int64_t)p;
+        }
+    }
+    return fit_bits(acc, bits);
+}
+
+int64_t tp_floor(int64_t a, int64_t b, int bits, int mode) {
+    int64_t lo = bits == 32 ? (int64_t)INT32_MIN : INT64_MIN;
+    int64_t q, r;
+    if (b == 0) {
+        if (mode == 1) return 0;
+        if (mode == 2) return bits == 32 ? 2147483647LL : 9223372036854775807LL;
+        tp_fail("division by zero");
+    }
+    if (a == lo && b == -1) tp_fail("division overflow");
+    q = a / b;
+    r = a % b;
+    if (r != 0 && ((a < 0) != (b < 0))) q -= 1;
+    return fit_bits(q, bits);
+}
+
+double tp_fpow(double a, double b) {
+    double r = pow(a, b);
+    if (r != r) tp_fail("power");
+    return r;
+}
+
+double tp_ffloor(double a, double b, int mode) {
+    if (b == 0.0) {
+        if (mode == 1) return 0.0;
+        if (mode == 2) return 1.7976931348623157e+308;
+        tp_fail("division by zero");
+    }
+    return floor(a / b);
 }
 #ifdef __cplusplus
 }

@@ -27,6 +27,7 @@ def main(argv):
     ap.add_argument("-o", default="a.out", help="binary to write (assembly is written beside it as .s)")
     ap.add_argument("--asm-only", action="store_true", help="write the .s file and do not call g++")
     ap.add_argument("--dump", action="store_true", help="print the pipeline tag")
+    ap.add_argument("--analyze", action="store_true", help="print the reference table and stop")
     ap.add_argument("--run", action="store_true", help="run the binary after g++ links it")
     args = ap.parse_args(argv)
     try:
@@ -35,6 +36,12 @@ def main(argv):
         print(f"tpc: {e}", file=sys.stderr)
         return 1
     try:
+        from front import parse
+        from analyze import report
+        if args.analyze:
+            prog = parse(src)
+            sys.stdout.write(report(prog))
+            return 0
         text = compile_source(src)
     except CompileError as e:
         print(f"tpc: {args.source}: {e}", file=sys.stderr)
@@ -51,7 +58,7 @@ def main(argv):
     if args.asm_only:
         print(asm_path)
         return 0
-    cmd = ["g++", "-pthread", "-o", args.o, asm_path, str(ROOT / "lang" / "desktop.c")]
+    cmd = ["g++", "-pthread", "-lm", "-o", args.o, asm_path, str(ROOT / "lang" / "desktop.c")]
     print(" ".join(cmd), file=sys.stderr)
     g = subprocess.run(cmd, text=True, capture_output=True)
     if g.returncode != 0:

@@ -108,6 +108,8 @@ class Interp:
                 cell["present"] = True
 
     def call(self, fn, args):
+        if fn.get("inlined"):
+            return self.native(fn, args)
         frame = {}
         for param, arg in zip(fn["params"], args):
             slot = cell(param["ty"])
@@ -464,10 +466,17 @@ class Interp:
             arr = self.eval(e["a"])
             return len(arr)
         if k == "unary":
+            if e["op"] == "~":
+                v = self.eval(e["a"])
+                bits = 64 if e["ty"] == ("i64",) else 32
+                from arith import bitnot
+                return bitnot(v, bits)
             v = self.eval(e["a"])
             if e["op"] == "!":
                 return not v
             return self.neg(v, e["ty"])
+        if k == "upd":
+            return self.upd(e)
         if k == "bin":
             return self.binop(e)
         if k == "start":
@@ -513,6 +522,9 @@ class Interp:
         if op in ("==", "!=", "<", ">", "<=", ">="):
             return {"==": a == b, "!=": a != b, "<": a < b, ">": a > b, "<=": a <= b, ">=": a >= b}[op]
         if row == ("f64",):
+            if op in ("**", "//"):
+                from arith import fop
+                return fop(op, a, b, self.div_standin(row))
             if op == "/" and b == 0.0:
                 stood = self.div_standin(row)
                 if stood is None:
@@ -526,6 +538,9 @@ class Interp:
                 return a * b
             return a / b
         bits = 32 if row == ("i32",) else 64
+        if op in ("/", "%", "//", "**", "&", "|", "^", "<<", ">>"):
+            from arith import iop
+            return iop(op, a, b, bits, self.div_standin(row))
         if op == "/":
             if b == 0:
                 stood = self.div_standin(row)
@@ -543,6 +558,72 @@ class Interp:
         if op == "-":
             return wrap(a - b, bits)
         raise Failure("bad operator")
+
+    def upd(self, e):
+        from arith import wrap
+        slot = self.cell_of(e["a"])
+        if not slot["present"]:
+            raise Failure("absent")
+        old = slot["v"]
+        bits = 64 if e["ty"] == ("i64",) else 32
+        new = wrap(old + (1 if e["op"] == "++" else -1), bits)
+        slot["v"] = new
+        slot["present"] = True
+        return new if e["pre"] else old
+
+    def native(self, fn, args):
+        import ctypes
+        lib = self._so()
+        sym = getattr(lib, fn["name"])
+        cargs = []
+        argtypes = []
+        for p, a in zip(fn["params"], args):
+            if p["ty"] == ("f64",):
+                argtypes.append(ctypes.c_double)
+                cargs.append(float(a))
+            elif p["ty"] == ("i64",):
+                argtypes.append(ctypes.c_int64)
+                cargs.append(int(a))
+            else:
+                argtypes.append(ctypes.c_int32)
+                cargs.append(int(bool(a) if p["ty"] == ("bool",) else a))
+        sym.argtypes = argtypes
+        out = fn["out"]
+        if out == ("f64",):
+            sym.restype = ctypes.c_double
+        elif out == ("i64",):
+            sym.restype = ctypes.c_int64
+        elif out is None:
+            sym.restype = None
+        else:
+            sym.restype = ctypes.c_int32
+        val = sym(*cargs)
+        if out == ("bool",):
+            return bool(val)
+        return val
+
+    def _so(self):
+        if getattr(self, "_lib", None) is not None:
+            return self._lib
+        import ctypes
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        import copy
+        from emit import assemble
+        prog = copy.deepcopy(self.prog)
+        text = assemble(prog)
+        td = tempfile.mkdtemp(prefix="tpinline")
+        asm = str(Path(td) / "u.s")
+        so = str(Path(td) / "u.so")
+        Path(asm).write_text(text)
+        rt = Path(__file__).resolve().parent / "desktop.c"
+        cmd = ["g++", "-shared", "-fPIC", "-pthread", "-lm", "-o", so, asm, str(rt)]
+        g = subprocess.run(cmd, text=True, capture_output=True)
+        if g.returncode != 0:
+            raise Failure(g.stderr.strip() or "inlined compile")
+        self._lib = ctypes.CDLL(so)
+        return self._lib
 
     def promote(self, a, ta, b, tb, row):
         if row == ("f64",):

@@ -4,7 +4,7 @@ This is language spec 1.0. [MATRIX.md](MATRIX.md) is older and does not win wher
 
 `()` groups. It never calls and it never takes an attribute argument. `[]` does.
 
-`//` through the end of the line is a comment. A graph marker is a comment. It is not code.
+`//` followed by a space, a tab, or the end of the line is a comment. A graph marker is a comment. It is not code. `//` with no space after it, between two values, is floor division: `a//b`. `a // b` is the name `a` and then a comment.
 
 `$` is structural equality and nothing else. It is not a variable sigil. Unary `^` is not an operator. Binary `^` is bitwise xor. `^=` resolves and stores. `goto` is not in this version. Later, if it exists, it takes a pointer to a program position, not a text label.
 
@@ -14,19 +14,20 @@ A statement ends with `;`. A brace block does not. `return`, a declaration, a st
 
 | order | operators | associativity |
 |---|---|---|
-| 1 | `::` `.` `in[]` `[index]` | |
-| 2 | unary `+` `-` `!` `~` `*` `&`, and `as[T, v]` | |
-| 3 | `*` `/` `%` | left |
-| 4 | `+` `-` | left |
-| 5 | `<<` `>>` | left |
-| 6 | `<` `>` `<=` `>=` | left |
-| 7 | `==` `!=` `$=` `!$=` | left |
-| 8 | `&` | left |
-| 9 | `^` | left |
-| 10 | `\|` | left |
-| 11 | `&&` | left, and the right runs only when the left is true |
-| 12 | `\|\|` | left, and the right runs only when the left is false |
-| 13 | `=` `+=` `^=` | right |
+| 1 | `::` `.` `in[]` `[index]` `++` `--` | postfix `++` `--` |
+| 2 | unary `+` `-` `!` `~` `*` `&` `++` `--`, and `as[T, v]` | |
+| 3 | `**` | right |
+| 4 | `*` `/` `%` `//` | left |
+| 5 | `+` `-` | left |
+| 6 | `<<` `>>` | left |
+| 7 | `<` `>` `<=` `>=` | left |
+| 8 | `==` `!=` `$=` `!$=` | left |
+| 9 | `&` | left |
+| 10 | `^` | left |
+| 11 | `\|` | left |
+| 12 | `&&` | left, and the right runs only when the left is true |
+| 13 | `\|\|` | left, and the right runs only when the left is false |
+| 14 | `=` `+=` `^=` | right |
 
 `!`, `&&`, and `||` take `bool` and result in `bool`. An integer is not a `bool`. Unary `&` is the address. Binary `&`, `|`, and `^` are bitwise, and so are `~`, `<<`, and `>>`.
 
@@ -516,7 +517,13 @@ typeprimitive { ptr_to_elem, size, kind }
 | two `string` values | Append the bytes of the right to the left. | `string` |
 | anything else | No row, until you add one. | Compile error. |
 
-`-`, `*`, `/`, and `%` are `submagnitude`, `mulmagnitude`, `divmagnitude`, and `remmagnitude`. They use the same row rules, except `uf` subtraction has no built-in row: a negative result does not fit. Integer `/` truncates toward zero. `a % b` is `a - (a / b) * b`, so the remainder takes the sign of `a`. `/` or `%` by zero is a failure. Dividing or taking the remainder of the lowest signed value by `-1` is a failure. Unary `-` of that same value is a failure. Integer `+` and `-` wrap. That wrap is the result, and an optimizer may not delete it. `%` has no row for a float. `@divzero` applies to `%` by zero the same way it applies to `/`.
+`-`, `*`, `/`, and `%` are `submagnitude`, `mulmagnitude`, `divmagnitude`, and `remmagnitude`. They use the same row rules, except `uf` subtraction has no built-in row: a negative result does not fit. Integer `/` truncates toward zero. `a % b` is `a - (a / b) * b`, so the remainder takes the sign of `a`. `/` or `%` by zero is a failure. Dividing or taking the remainder of the lowest signed value by `-1` is a failure. Unary `-` of that same value is a failure. Integer `+` and `-` wrap. That wrap is the result, and an optimizer may not delete it. `%` has no row for a float. `@divzero` applies to `%` by zero and to `//` by zero the same way it applies to `/`. `a//b` is floor division, toward negative infinity, for two integers of the same width or two `f64` values. `a ** b` is `a` raised to `b`. An integer power with a negative exponent is a failure, and `0 ** 0` is `1`. A power that does not fit in the integer width is a failure. An `f64` power that is not a number is a failure. Unary `-` binds tighter than `**`, so `-2 ** 2` is `(-2) ** 2`.
+
+`++` and `--` add or subtract one from an integer cell and wrap the way `+` does. The prefix form's value is the new value. The postfix form's value is the old value. The cell must be one that can be stored.
+
+`@globaloptimize[01]` before the first function selects the passes. `02` selects `01`. `03` tags each function with a locked ikitaku verb and then turns an integer multiply by a positive power of two into a shift. The line ends with `;`. One per file. Omitted, the level is `01`.
+
+`@inlined` on a function tells the interpreter to compile that function and call the symbol. The function is scalar, not a method, and has no effect and no call. Otherwise both hosts reject it. The compiler still emits an ordinary call.
 
 Binary `&`, `^`, and `|`, and unary `~`, take two integer atoms of the same width, or one for `~`. The bits are the two's complement representation. A float, a `bool`, a pointer, or two different widths has no row. `<<` and `>>` take that integer and an `i32` count. The count must be from `0` through one less than the width. Outside that range is a failure, and a constant count outside it is a compile error. `<<` shifts the bits toward the high end and drops what leaves the width. `>>` on a signed atom fills with the sign bit. `>>` on an unsigned atom fills with zero. There is no row that turns a bitwise result into a float.
 

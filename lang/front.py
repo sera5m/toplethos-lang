@@ -32,6 +32,7 @@ class Front:
         self.do_depth = 0
         self.cur_fn = None
         self.ids = {}
+        self.opt = None
 
     def fail(self, msg):
         raise CompileError(f"line {self.line}: {msg}")
@@ -60,9 +61,12 @@ class Front:
                 self.get()
                 continue
             if self.s.startswith("//", self.i):
-                while self.peek() not in ("", "\n"):
-                    self.get()
-                continue
+                nxt = self.i + 2
+                if nxt >= len(self.s) or self.s[nxt] in " \t\r\n":
+                    while self.peek() not in ("", "\n"):
+                        self.get()
+                    continue
+                return
             return
 
     def starts(self, tok):
@@ -81,6 +85,20 @@ class Front:
         if tok == "!" and self.starts("!="):
             return False
         if tok == "=" and (self.starts("==") or self.starts("=>")):
+            return False
+        if tok == "+" and self.starts("++"):
+            return False
+        if tok == "-" and self.starts("--"):
+            return False
+        if tok == "*" and self.starts("**"):
+            return False
+        if tok == "/" and self.starts("//"):
+            return False
+        if tok == "&" and self.starts("&&"):
+            return False
+        if tok == "|" and self.starts("||"):
+            return False
+        if tok == "^" and self.starts("^="):
             return False
         if not self.starts(tok):
             return False
@@ -181,7 +199,7 @@ class Front:
         live = {
             "public", "private", "protected", "mut", "val", "xor",
             "ephemeral", "static", "config", "divzero", "ismutationof",
-            "require", "ensure", "childof", "mutex",
+            "require", "ensure", "childof", "mutex", "inlined",
         }
         while True:
             self.skip()
@@ -207,7 +225,7 @@ class Front:
                 self.later(f"@{name}")
             if name == "childof" and where != "object":
                 self.fail("@childof is for an object")
-            if name in ("divzero", "ismutationof", "require", "ensure") and where != "fn":
+            if name in ("divzero", "ismutationof", "require", "ensure", "inlined") and where != "fn":
                 self.fail(f"@{name} is for a function")
             if name in ("val", "xor", "ephemeral", "static", "config", "mutex") and where not in ("bind", "field"):
                 self.fail(f"@{name} is for a binding")
@@ -275,9 +293,11 @@ class Front:
                     self.fail("@ismutationof a missing id")
                 cur = nxt
 
-    def note_uses(self, e):
+    def note_uses(self, e, depth=0):
         if not isinstance(e, dict):
             return
+        if e.get("k") == "upd":
+            self.note_store(self.store_info(e["a"]), depth)
         if e.get("k") == "name":
             info = self.ids[e["id"]]
             if info.get("ephemeral"):
@@ -286,9 +306,9 @@ class Front:
                     self.fail("a second use of @ephemeral")
         for key in ("a", "b", "i"):
             if isinstance(e.get(key), dict):
-                self.note_uses(e[key])
+                self.note_uses(e[key], depth)
         for arg in e.get("args") or []:
-            self.note_uses(arg)
+            self.note_uses(arg, depth)
 
     def note_store(self, info, depth):
         if not info or not info.get("freeze"):
@@ -310,7 +330,7 @@ class Front:
                 op = st[0]
                 if op == "decl" and st[3] is not None:
                     self.note_store(self.ids[st[1]], depth)
-                    self.note_uses(st[3])
+                    self.note_uses(st[3], depth)
                 elif op == "store":
                     info = self.store_info(st[1])
                     self.note_store(info, depth)
@@ -318,23 +338,23 @@ class Front:
                         self.ids[st[1]["id"]]["uses"] = self.ids[st[1]["id"]].get("uses", 0) + 1
                         if self.ids[st[1]["id"]]["uses"] > 1:
                             self.fail("a second use of @ephemeral")
-                    self.note_uses(st[2])
+                    self.note_uses(st[2], depth)
                 elif op == "expr":
-                    self.note_uses(st[1])
+                    self.note_uses(st[1], depth)
                 elif op == "return" and st[1] is not None:
-                    self.note_uses(st[1])
+                    self.note_uses(st[1], depth)
                 elif op == "if":
-                    self.note_uses(st[1])
+                    self.note_uses(st[1], depth)
                     walk(st[2], depth)
                     walk(st[3], depth)
                 elif op == "loop":
                     walk(st[1], depth + 1)
                 elif op == "do":
-                    self.note_uses(st[1])
+                    self.note_uses(st[1], depth)
                     walk(st[3], depth + 1)
                     walk(st[4], depth)
                 elif op == "time":
-                    self.note_uses(st[2])
+                    self.note_uses(st[2], depth)
                     walk(st[3], depth)
         walk(fn["body"], 0)
         if isinstance(fn.get("require"), dict):
@@ -352,6 +372,24 @@ class Front:
             self.skip()
             if not self.peek():
                 break
+            if self.eat("@"):
+                self.expect("globaloptimize")
+                self.expect("[")
+                digits = []
+                self.skip()
+                while self.peek().isdigit():
+                    digits.append(self.get())
+                level = "".join(digits)
+                if level not in ("01", "02", "03"):
+                    self.fail("@globaloptimize level")
+                self.expect("]")
+                self.expect(";")
+                if self.opt is not None:
+                    self.fail("a second @globaloptimize")
+                if items:
+                    self.fail("@globaloptimize before the first function")
+                self.opt = level
+                continue
             if self.eat("fn"):
                 items.append(self.function(None))
                 continue
@@ -368,7 +406,17 @@ class Front:
         fn = self.fns["main"]
         if fn["params"] or fn["out"] != ("i32",):
             self.fail("main takes nothing and its result type is i32")
-        return {"fns": self.fns, "objects": self.objects, "ids": self.ids}
+        prog = {"fns": self.fns, "objects": self.objects, "ids": self.ids, "opt": self.opt or "01"}
+        from analyze import analyze, impure
+        prog["ann"] = analyze(prog)
+        for item in list(self.fns.values()) + [
+            m for obj in self.objects.values() for m in obj["methods"].values()
+        ]:
+            if item.get("inlined"):
+                why = impure(prog, item)
+                if why:
+                    self.fail(f"@inlined function is not pure ({why})")
+        return prog
 
     def type_name(self):
         self.skip()
@@ -445,6 +493,7 @@ class Front:
             "require": ms["require"] if isinstance(ms.get("require"), dict) else None,
             "ensure": ms["ensure"] if isinstance(ms.get("ensure"), dict) else None,
             "scope": "private" if "private" in ms else "protected" if "protected" in ms else "public",
+            "inlined": "inlined" in ms,
         }
         if ms.get("divzero") is True:
             self.fail("@divzero with an argument other than 0 or max")
@@ -834,7 +883,7 @@ class Front:
                 self.fail(f"cannot store {self.show(rhs['ty'])} in {self.show(expr['ty'])}")
             self.expect(";")
             return ("store", expr, rhs, line)
-        if expr["k"] == "call" or expr["k"] == "method" or expr["k"] == "loadbmp":
+        if expr["k"] in ("call", "method", "loadbmp", "upd"):
             self.expect(";")
             return ("expr", expr, line)
         self.fail("a statement, other than a brace block, that does not end with ;")
@@ -877,20 +926,45 @@ class Front:
             if left["ty"] != ("bool",) or right["ty"] != ("bool",):
                 self.fail("|| applied to a value that is not bool")
             left = {"k": "bin", "op": "||", "a": left, "b": right, "ty": ("bool",)}
-        if self.starts("|"):
-            self.later("bitwise |")
         return left
 
     def bin_and(self, expect):
-        left = self.bin_eq(None)
+        left = self.bin_bor(None)
         while self.eat("&&"):
-            right = self.bin_eq(None)
+            right = self.bin_bor(None)
             if left["ty"] != ("bool",) or right["ty"] != ("bool",):
                 self.fail("&& applied to a value that is not bool")
             left = {"k": "bin", "op": "&&", "a": left, "b": right, "ty": ("bool",)}
-        if self.starts("&"):
-            self.later("bitwise &")
         return left
+
+    def bin_bor(self, expect):
+        left = self.bin_xor(None)
+        while self.starts("|") and not self.starts("||"):
+            self.eat("|")
+            right = self.bin_xor(None)
+            left = self.bits(left, right, "|")
+        return left
+
+    def bin_xor(self, expect):
+        left = self.bin_band(None)
+        while self.starts("^") and not self.starts("^="):
+            self.eat("^")
+            right = self.bin_band(None)
+            left = self.bits(left, right, "^")
+        return left
+
+    def bin_band(self, expect):
+        left = self.bin_eq(None)
+        while self.starts("&") and not self.starts("&&"):
+            self.eat("&")
+            right = self.bin_eq(None)
+            left = self.bits(left, right, "&")
+        return left
+
+    def bits(self, left, right, op):
+        if left["ty"] != right["ty"] or left["ty"] not in (("i32",), ("i64",)):
+            self.fail("no row for these operands")
+        return {"k": "bin", "op": op, "a": left, "b": right, "ty": left["ty"], "row": left["ty"]}
 
     def bin_eq(self, expect):
         left = self.bin_rel(None)
@@ -901,18 +975,14 @@ class Front:
                     op = cand
                     break
             if not op:
-                if self.starts("^") and not self.starts("^="):
-                    self.later("bitwise ^")
                 return left
             right = self.bin_rel(None)
             ty = self.arith_ty(left["ty"], right["ty"], eq=True)
             left = {"k": "bin", "op": op, "a": left, "b": right, "ty": ("bool",), "row": ty}
 
     def bin_rel(self, expect):
-        left = self.bin_add(None)
+        left = self.bin_shift(None)
         while True:
-            if self.eat("<<") or self.eat(">>"):
-                self.later("shift")
             op = None
             for cand in ("<=", ">=", "<", ">"):
                 if self.eat(cand):
@@ -920,9 +990,21 @@ class Front:
                     break
             if not op:
                 return left
-            right = self.bin_add(None)
+            right = self.bin_shift(None)
             ty = self.arith_ty(left["ty"], right["ty"], eq=True)
             left = {"k": "bin", "op": op, "a": left, "b": right, "ty": ("bool",), "row": ty}
+
+    def bin_shift(self, expect):
+        left = self.bin_add(None)
+        while self.eat("<<") or self.eat(">>"):
+            op = "<<" if self.s.startswith("<<", self.i - 2) else ">>"
+            right = self.bin_add(None)
+            if left["ty"] not in (("i32",), ("i64",)) or right["ty"] != ("i32",):
+                self.fail("no row for these operands")
+            if right["k"] == "int" and not (0 <= right["n"] < (32 if left["ty"] == ("i32",) else 64)):
+                self.fail("a constant shift count outside 0 through one less than the width")
+            left = {"k": "bin", "op": op, "a": left, "b": right, "ty": left["ty"], "row": left["ty"]}
+        return left
 
     def bin_add(self, expect):
         left = self.bin_mul(None)
@@ -938,19 +1020,39 @@ class Front:
             left = {"k": "bin", "op": op, "a": left, "b": right, "ty": ty}
 
     def bin_mul(self, expect):
-        left = self.unary(None)
+        left = self.bin_pow(None)
         while True:
-            if self.eat("*"):
-                op = "*"
+            if self.eat("//"):
+                op = "//"
             elif self.eat("/"):
                 op = "/"
             elif self.eat("%"):
-                self.later("%")
+                op = "%"
+            elif self.eat("*"):
+                op = "*"
             else:
                 return left
-            right = self.unary(None)
-            ty = self.arith_ty(left["ty"], right["ty"], eq=False)
-            left = {"k": "bin", "op": op, "a": left, "b": right, "ty": ty}
+            right = self.bin_pow(None)
+            if op in ("//", "%"):
+                if left["ty"] != right["ty"] or left["ty"] not in (("i32",), ("i64",), ("f64",)):
+                    self.fail("no row for these operands")
+                if op == "%" and left["ty"] == ("f64",):
+                    self.fail("no row for these operands")
+                ty = left["ty"]
+            else:
+                ty = self.arith_ty(left["ty"], right["ty"], eq=False)
+            left = {"k": "bin", "op": op, "a": left, "b": right, "ty": ty, "row": ty}
+
+    def bin_pow(self, expect):
+        left = self.unary(None)
+        if not self.eat("**"):
+            return left
+        right = self.bin_pow(None)
+        if left["ty"] != right["ty"] or left["ty"] not in (("i32",), ("i64",), ("f64",)):
+            self.fail("no row for these operands")
+        if left["ty"] != ("f64",) and right["k"] == "int" and right["n"] < 0:
+            self.fail("negative power")
+        return {"k": "bin", "op": "**", "a": left, "b": right, "ty": left["ty"], "row": left["ty"]}
 
     def arith_ty(self, a, b, eq):
         if a == b and a[0] in ("i32", "i64", "f64"):
@@ -965,8 +1067,15 @@ class Front:
 
     def unary(self, expect):
         self.skip()
+        if self.eat("++"):
+            return self.bump(self.unary(None), 1, True)
+        if self.eat("--"):
+            return self.bump(self.unary(None), -1, True)
         if self.eat("~"):
-            self.later("~")
+            e = self.unary(None)
+            if e["ty"] not in (("i32",), ("i64",)):
+                self.fail("no row for these operands")
+            return {"k": "unary", "op": "~", "a": e, "ty": e["ty"]}
         if self.eat("!"):
             e = self.unary(None)
             if e["ty"] != ("bool",):
@@ -991,7 +1100,15 @@ class Front:
             if e["k"] == "name" and self.ids[e["id"]].get("xor"):
                 self.fail("a pointer to an @xor cell")
             return {"k": "addr", "a": e, "ty": ("ptr", e["ty"])}
-        return self.primary(expect)
+        return self.postfix(self.primary(expect))
+
+    def bump(self, e, delta, pre):
+        if e["k"] not in ("name", "field", "index", "deref"):
+            self.fail("++ of a value that is not a cell" if delta == 1 else "-- of a value that is not a cell")
+        if e["ty"] not in (("i32",), ("i64",)):
+            self.fail("++ of a value that is not an integer" if delta == 1 else "-- of a value that is not an integer")
+        self.write_target(e)
+        return {"k": "upd", "op": "++" if delta == 1 else "--", "pre": pre, "a": e, "ty": e["ty"]}
 
     def primary(self, expect):
         self.skip()
@@ -1111,6 +1228,12 @@ class Front:
                 if obj.get("field_marks", {}).get(field, {}).get("private") and owner != node["ty"][1]:
                     self.fail("a subclass naming a private field")
                 node = {"k": "field", "a": node, "field": field, "ty": fty}
+                continue
+            if self.eat("++"):
+                node = self.bump(node, 1, False)
+                continue
+            if self.eat("--"):
+                node = self.bump(node, -1, False)
                 continue
             return node
 

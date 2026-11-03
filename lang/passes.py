@@ -9,6 +9,15 @@ SCALARS = {("f64",), ("i32",), ("i64",), ("bool",)}
 
 
 def optimize(prog):
+    level = prog.get("opt") or "01"
+    if level == "02":
+        prog["opt_ran"] = "01"
+        level = "01"
+    else:
+        prog["opt_ran"] = level
+    if level == "03":
+        from ikitaku_opt import tag
+        tag(prog)
     _inline(prog)
     ids = prog["ids"]
     for fn in prog["fns"].values():
@@ -16,6 +25,9 @@ def optimize(prog):
     for obj in prog["objects"].values():
         for fn in obj["methods"].values():
             _fn(fn, ids)
+    if level == "03":
+        from ikitaku_opt import strength
+        strength(prog)
     return prog
 
 
@@ -40,23 +52,20 @@ def _idiv(a, b):
 
 
 def _fold_i32(op, a, b):
-    if op == "+":
-        return _wrap32(a + b)
-    if op == "-":
-        return _wrap32(a - b)
-    if op == "*":
-        return _wrap32(a * b)
-    if op == "/":
-        return _idiv(a, b)
-    if op == "%":
-        q = _idiv(a, b)
-        if q is None:
-            return None
-        return _wrap32(a - q * b)
-    return None
+    from arith import iop, Failure as Boom
+    try:
+        return iop(op, a, b, 32)
+    except Boom:
+        return None
 
 
 def _fold_f64(op, a, b):
+    if op in ("**", "//"):
+        from arith import fop, Failure as Boom
+        try:
+            return fop(op, a, b)
+        except Boom:
+            return None
     if op == "/" and b == 0.0:
         return None
     if op == "+":

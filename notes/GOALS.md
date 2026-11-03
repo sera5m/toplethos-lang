@@ -61,6 +61,8 @@ That is why the rewrite is not pointer chasing. The runtime already knows where 
 
 Ikitaku stays on the AI side of that line. A question to it is "is this rewrite the same as the old body?" The answers are a proof, a counterexample, or unknown. Unknown means do not apply. It is still not a compiler pass.
 
+The first slice of that split is in the hosts, and it is not the reasoner. `@globaloptimize[01]` is the default passes. `02` selects `01`. `03` tags each function with a locked verb from the shape the reference table already computed, then runs those passes, then turns an integer multiply by a positive power of two into a shift. The value does not change. `@inlined` on a pure scalar function makes the interpreter compile that function and call the symbol. A method, a pointer, an effect, or a call is rejected by both hosts. The C++ graph is not linked.
+
 A small kernel stays outside both. The verifier, the scorer, the effect gate, and the snapshot store cannot be rewritten by a mutation. If the AI can edit the thing that scores it, the score is not a score.
 
 These follow from that split, and are not built:
