@@ -61,12 +61,19 @@ class Front:
                 self.get()
                 continue
             if self.s.startswith("//", self.i):
-                nxt = self.i + 2
-                if nxt >= len(self.s) or self.s[nxt] in " \t\r\n":
-                    while self.peek() not in ("", "\n"):
-                        self.get()
-                    continue
-                return
+                while self.peek() not in ("", "\n"):
+                    self.get()
+                continue
+            if self.s.startswith("/*", self.i):
+                self.get()
+                self.get()
+                while not self.s.startswith("*/", self.i):
+                    if not self.peek():
+                        self.fail("unclosed comment")
+                    self.get()
+                self.get()
+                self.get()
+                continue
             return
 
     def starts(self, tok):
@@ -92,7 +99,7 @@ class Front:
             return False
         if tok == "*" and self.starts("**"):
             return False
-        if tok == "/" and self.starts("//"):
+        if tok == "/" and self.starts("/_/"):
             return False
         if tok == "&" and self.starts("&&"):
             return False
@@ -883,7 +890,7 @@ class Front:
                 self.fail(f"cannot store {self.show(rhs['ty'])} in {self.show(expr['ty'])}")
             self.expect(";")
             return ("store", expr, rhs, line)
-        if expr["k"] in ("call", "method", "loadbmp", "upd"):
+        if expr["k"] in ("call", "method", "loadbmp", "loadbytes", "upd"):
             self.expect(";")
             return ("expr", expr, line)
         self.fail("a statement, other than a brace block, that does not end with ;")
@@ -1022,7 +1029,7 @@ class Front:
     def bin_mul(self, expect):
         left = self.bin_pow(None)
         while True:
-            if self.eat("//"):
+            if self.eat("/_/"):
                 op = "//"
             elif self.eat("/"):
                 op = "/"
@@ -1153,6 +1160,8 @@ class Front:
         if self.eat("in"):
             if name == "loadbmp":
                 return self.loadbmp()
+            if name == "loadbytes":
+                return self.loadbytes()
             args = self.arglist()
             if name == "print":
                 if len(args) != 1:
@@ -1246,6 +1255,16 @@ class Front:
         if arr["k"] != "name" or arr["ty"][0] != "arr" or arr["ty"][1] != ("i32",):
             self.fail("loadbmp takes a string and an i32 array")
         return {"k": "loadbmp", "path": path, "id": arr["id"], "n": arr["ty"][2], "ty": None}
+
+    def loadbytes(self):
+        self.expect("[")
+        path = self.quoted()
+        self.expect(",")
+        arr = self.expr(None)
+        self.expect("]")
+        if arr["k"] != "name" or arr["ty"][0] != "arr" or arr["ty"][1] != ("i32",):
+            self.fail("loadbytes takes a string and an i32 array")
+        return {"k": "loadbytes", "path": path, "id": arr["id"], "n": arr["ty"][2], "ty": ("i32",)}
 
     def arglist(self):
         self.expect("[")

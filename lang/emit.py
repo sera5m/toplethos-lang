@@ -204,6 +204,8 @@ class Emit:
             src, dst = e["a"]["ty"], e["ty"]
             if src != dst and dst == ("f64",):
                 self.w("    cvtsi2sd %rax, %xmm0" if src == ("i64",) else "    cvtsi2sd %eax, %xmm0")
+            elif src == ("i32",) and dst == ("i64",):
+                self.w("    movslq %eax, %rax")
             return
         if k == "size":
             self.w(f"    mov ${e['a']['ty'][2]}, %eax")
@@ -223,6 +225,9 @@ class Emit:
             return
         if k == "loadbmp":
             self.loadbmp(e)
+            return
+        if k == "loadbytes":
+            self.loadbytes(e)
             return
         if k == "start":
             self.w("    call tp_start@PLT")
@@ -783,6 +788,17 @@ class Emit:
         self.w(f"    mov ${e['n']}, %edx")
         self.w("    call tp_loadbmp@PLT")
 
+    def loadbytes(self, e):
+        lab = self.lit(e["path"])
+        info = self.prog["ids"][e["id"]]
+        self.w(f"    lea {lab}(%rip), %rdi")
+        if info.get("time") in ("static", "config"):
+            self.w(f"    lea {self.sym(e['id'])}(%rip), %rsi")
+        else:
+            self.w(f"    lea {self.slot[e['id']]}(%rbp), %rsi")
+        self.w(f"    mov ${e['n']}, %edx")
+        self.w("    call tp_loadbytes@PLT")
+
     def call(self, e):
         if e["name"] == "print":
             self.gen(e["args"][0])
@@ -1187,7 +1203,7 @@ class Emit:
                 uses.setdefault(e["id"], []).append(pos)
                 if not e.get("fast"):
                     slow.add(e["id"])
-            if e.get("k") in ("call", "method", "loadbmp", "start", "run"):
+            if e.get("k") in ("call", "method", "loadbmp", "loadbytes", "start", "run"):
                 calls.append(pos)
             for v in e.values():
                 if isinstance(v, (dict, list)):

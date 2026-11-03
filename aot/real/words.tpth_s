@@ -1,0 +1,92 @@
+// Words in lipsum-cicero.txt. Open address, 32768 slots.
+// mix is straight, so the compiler pastes it into the scan loop.
+// The table is rebuilt 50 times. The checksum is one pass. The repeat
+// makes the scan, not the file read, what the clock sees.
+fn mix in[i32 h, i32 c] out[i32] {
+  return (h ^ c) * 16777619;
+}
+
+fn main in[] out[i32] {
+  i32 buf[140000] @static;
+  i32 off[32768] @static;
+  i32 span[32768] @static;
+  i32 cnt[32768] @static;
+  i32 hsh[32768] @static;
+  i32 n = loadbytes in["lipsum-cicero.txt", buf];
+  i32 rep = 0;
+  loop {
+    if !(rep < 50) { leave; }
+    do n[32768] {
+      off[i] = 0;
+      span[i] = 0;
+      cnt[i] = 0;
+      hsh[i] = 0;
+    }
+    i32 i = 0;
+  loop {
+    if !(i < n) { leave; }
+    i32 c = buf[i];
+    if (c >= 65) && (c <= 90) { c = c + 32; }
+    i32 letter = 0;
+    if (c >= 97) && (c <= 122) { letter = 1; }
+    if letter == 0 {
+      i = i + 1;
+    } else {
+      i32 beg = i;
+      i32 h = 0;
+      loop {
+        if !(i < n) { leave; }
+        c = buf[i];
+        if (c >= 65) && (c <= 90) { c = c + 32; }
+        letter = 0;
+        if (c >= 97) && (c <= 122) { letter = 1; }
+        if letter == 0 { leave; }
+        h = mix in[h, c];
+        i = i + 1;
+      }
+      i32 wlen = i - beg;
+      i32 slot = h & 32767;
+      loop {
+        if span[slot] == 0 {
+          off[slot] = beg;
+          span[slot] = wlen;
+          cnt[slot] = 1;
+          hsh[slot] = h;
+          leave;
+        }
+        if (hsh[slot] == h) && (span[slot] == wlen) {
+          i32 k = 0;
+          i32 same = 1;
+          loop {
+            if !(k < wlen) { leave; }
+            i32 a = buf[off[slot] + k];
+            i32 b = buf[beg + k];
+            if (a >= 65) && (a <= 90) { a = a + 32; }
+            if (b >= 65) && (b <= 90) { b = b + 32; }
+            if a != b { same = 0; leave; }
+            k = k + 1;
+          }
+          if same == 1 {
+            cnt[slot] = cnt[slot] + 1;
+            leave;
+          }
+        }
+        slot = slot + 1;
+        if slot == 32768 { slot = 0; }
+      }
+    }
+  }
+    rep = rep + 1;
+  }
+  i64 sum = 0;
+  i32 s = 0;
+  loop {
+    if !(s < 32768) { leave; }
+    if span[s] != 0 {
+      sum = sum + as[i64, hsh[s]] * as[i64, cnt[s]] + as[i64, span[s]];
+    }
+    s = s + 1;
+  }
+  print in[sum];
+  return 0;
+}

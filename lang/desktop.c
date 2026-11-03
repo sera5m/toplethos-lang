@@ -171,6 +171,33 @@ void tp_loadbmp(const char *path, void *cells, int n) {
     fclose(f);
 }
 
+/* File bytes into i32 cells, one byte each. A cell is 16 bytes. Returns the count. */
+int32_t tp_loadbytes(const char *path, void *cells, int n) {
+    FILE *f;
+    unsigned char *base;
+    int i, c;
+    f = fopen(path, "rb");
+    if (!f)
+        tp_fail(path);
+    base = (unsigned char *)cells;
+    for (i = 0; i < n; i++) {
+        unsigned char *cell;
+        c = fgetc(f);
+        if (c == EOF)
+            break;
+        cell = base + ((size_t)i << 4);
+        *(int64_t *)cell = c;
+        cell[8] = 1;
+    }
+    if (i == n) {
+        c = fgetc(f);
+        if (c != EOF)
+            tp_fail("file longer than the array");
+    }
+    fclose(f);
+    return i;
+}
+
 static int64_t fit_bits(int64_t n, int bits) {
     if (bits == 32) return (int32_t)n;
     return n;

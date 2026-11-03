@@ -242,7 +242,7 @@ fn main in[] out[i32] {
   print in[++n];
   n--;
   print in[n];
-  print in[-5//2];
+  print in[-5/_/2];
   print in[-2 ** 2];
   print in[0 ** 0];
   print in[2 ** 3];
@@ -260,7 +260,7 @@ fn main in[] out[i32] {
     ("opsf", "8.000000000\n-3.000000000\n", """
 fn main in[] out[i32] {
   print in[2.0 ** 3.0];
-  print in[-5.0//2.0];
+  print in[-5.0/_/2.0];
   return 0;
 }
 """),
@@ -312,13 +312,39 @@ fn main in[] out[i32] {
   i64 a = 5;
   a = -a;
   i64 two = 2;
-  print in[a//two];
+  print in[a/_/two];
+  return 0;
+}
+"""),
+    ("widen", "-5\n", """
+fn main in[] out[i32] {
+  i32 n = -5;
+  print in[as[i64, n]];
+  return 0;
+}
+"""),
+    ("comments", "4\n-3\n2\n", """
+fn main in[] out[i32] {
+  //comment with no space, and this whole line is not code
+  i32 n = 1 //2
+  + 3;
+  /* block
+     comment */
+  print in[n];
+  print in[-5/_/2];
+  print in[10 /* still */ /_/ 4];
   return 0;
 }
 """),
 ]
 
 BAD = [
+    ("unclosed", "unclosed comment", """
+fn main in[] out[i32] {
+  i32 n = 1 /* never ends
+  return n;
+}
+"""),
     ("return in out[]", "no designated type out[]", """
 fn add in[i32 a] out[] { return a + 1; }
 fn main in[] out[i32] { return 0; }

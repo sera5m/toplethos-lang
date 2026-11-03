@@ -149,7 +149,7 @@ def _expr(e, rec, ids, write):
             row["read"] += 1
         return
     if k == "call":
-        if e["name"] in ("print", "loadbmp"):
+        if e["name"] in ("print", "loadbmp", "loadbytes"):
             _add(rec, e["name"])
         elif e["name"] not in ("size",):
             if e["name"] not in rec["calls"]:
@@ -171,6 +171,8 @@ def _expr(e, rec, ids, write):
         return
     if k == "loadbmp":
         _add(rec, "loadbmp")
+    if k == "loadbytes":
+        _add(rec, "loadbytes")
     if k in ("start", "run"):
         _add(rec, k)
     for key in ("a", "b", "i"):
@@ -186,7 +188,7 @@ def _shape(rec):
         shape.append("repeat")
     if rec["decisions"]:
         shape.append("decision")
-    if any(x in rec["effects"] for x in ("print", "loadbmp")):
+    if any(x in rec["effects"] for x in ("print", "loadbmp", "loadbytes")):
         shape.append("emit" if "print" in rec["effects"] else "absorb")
     if rec["calls"]:
         shape.append("sequence")

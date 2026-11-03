@@ -80,6 +80,9 @@ sheet.save(out / "street.png")
 print("wrote", out / "street.png")
 PY
 
+echo "--- words, lipsum-cicero.txt, mix pasted vs call ---"
+sh "$REAL/words.sh"
+
 echo "--- rdp ---"
 cxx "$REAL/rdp.cpp" /tmp/rdp_cpp
 rsc "$REAL/rdp.rs" /tmp/rdp_rs

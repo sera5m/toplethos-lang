@@ -4,7 +4,7 @@ This is language spec 1.0. [MATRIX.md](MATRIX.md) is older and does not win wher
 
 `()` groups. It never calls and it never takes an attribute argument. `[]` does.
 
-`//` followed by a space, a tab, or the end of the line is a comment. A graph marker is a comment. It is not code. `//` with no space after it, between two values, is floor division: `a//b`. `a // b` is the name `a` and then a comment.
+`//` starts a comment that runs to the end of the line. No space is required: `//comment` and `// comment` are both comments. `/*` starts a comment that runs until `*/` and may cross lines. A comment does not nest. A comment is not code, and a `//<<<` graph marker is a comment. Floor division is the token `/_/`: `a/_/b`. `a / b` is division toward zero.
 
 `$` is structural equality and nothing else. It is not a variable sigil. Unary `^` is not an operator. Binary `^` is bitwise xor. `^=` resolves and stores. `goto` is not in this version. Later, if it exists, it takes a pointer to a program position, not a text label.
 
@@ -17,7 +17,7 @@ A statement ends with `;`. A brace block does not. `return`, a declaration, a st
 | 1 | `::` `.` `in[]` `[index]` `++` `--` | postfix `++` `--` |
 | 2 | unary `+` `-` `!` `~` `*` `&` `++` `--`, and `as[T, v]` | |
 | 3 | `**` | right |
-| 4 | `*` `/` `%` `//` | left |
+| 4 | `*` `/` `%` `/_/` | left |
 | 5 | `+` `-` | left |
 | 6 | `<<` `>>` | left |
 | 7 | `<` `>` `<=` `>=` | left |
@@ -517,7 +517,7 @@ typeprimitive { ptr_to_elem, size, kind }
 | two `string` values | Append the bytes of the right to the left. | `string` |
 | anything else | No row, until you add one. | Compile error. |
 
-`-`, `*`, `/`, and `%` are `submagnitude`, `mulmagnitude`, `divmagnitude`, and `remmagnitude`. They use the same row rules, except `uf` subtraction has no built-in row: a negative result does not fit. Integer `/` truncates toward zero. `a % b` is `a - (a / b) * b`, so the remainder takes the sign of `a`. `/` or `%` by zero is a failure. Dividing or taking the remainder of the lowest signed value by `-1` is a failure. Unary `-` of that same value is a failure. Integer `+` and `-` wrap. That wrap is the result, and an optimizer may not delete it. `%` has no row for a float. `@divzero` applies to `%` by zero and to `//` by zero the same way it applies to `/`. `a//b` is floor division, toward negative infinity, for two integers of the same width or two `f64` values. `a ** b` is `a` raised to `b`. An integer power with a negative exponent is a failure, and `0 ** 0` is `1`. A power that does not fit in the integer width is a failure. An `f64` power that is not a number is a failure. Unary `-` binds tighter than `**`, so `-2 ** 2` is `(-2) ** 2`.
+`-`, `*`, `/`, and `%` are `submagnitude`, `mulmagnitude`, `divmagnitude`, and `remmagnitude`. They use the same row rules, except `uf` subtraction has no built-in row: a negative result does not fit. Integer `/` truncates toward zero. `a % b` is `a - (a / b) * b`, so the remainder takes the sign of `a`. `/` or `%` by zero is a failure. Dividing or taking the remainder of the lowest signed value by `-1` is a failure. Unary `-` of that same value is a failure. Integer `+` and `-` wrap. That wrap is the result, and an optimizer may not delete it. `%` has no row for a float. `@divzero` applies to `%` by zero and to `/_/` by zero the same way it applies to `/`. `a/_/b` is floor division, toward negative infinity, for two integers of the same width or two `f64` values. `a ** b` is `a` raised to `b`. An integer power with a negative exponent is a failure, and `0 ** 0` is `1`. A power that does not fit in the integer width is a failure. An `f64` power that is not a number is a failure. Unary `-` binds tighter than `**`, so `-2 ** 2` is `(-2) ** 2`.
 
 `++` and `--` add or subtract one from an integer cell and wrap the way `+` does. The prefix form's value is the new value. The postfix form's value is the old value. The cell must be one that can be stored.
 
@@ -734,6 +734,13 @@ f64 unit = randf in[engine];
 ```text
 i32 pix[2249868] @static;
 loadbmp in["examples/street.bmp", pix];
+```
+
+`loadbytes` reads a file into an `i32` array, one byte per cell, and results in the number of bytes stored. The path is a string literal. A missing file is a failure. A file longer than the array is a failure. Cells past the end of the file are left as they were.
+
+```text
+i32 buf[140000] @static;
+i32 n = loadbytes in["lipsum-cicero.txt", buf];
 ```
 
 ## Flow

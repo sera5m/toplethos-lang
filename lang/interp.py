@@ -107,6 +107,28 @@ class Interp:
                 cell["v"] = (r << 16) | (g << 8) | b
                 cell["present"] = True
 
+    def load_bytes(self, e):
+        n = e["n"]
+        slot = None
+        for frame in reversed(self.frames):
+            if e["id"] in frame:
+                slot = frame[e["id"]]
+                break
+        if slot is None or not slot["present"]:
+            raise Failure("absent")
+        cells = slot["v"]
+        try:
+            data = open(e["path"], "rb").read()
+        except OSError:
+            raise Failure(e["path"])
+        if len(data) > n:
+            raise Failure("file longer than the array")
+        for i, b in enumerate(data):
+            cell = cells[i]
+            cell["v"] = b
+            cell["present"] = True
+        return len(data)
+
     def call(self, fn, args):
         if fn.get("inlined"):
             return self.native(fn, args)
@@ -495,6 +517,8 @@ class Interp:
         if k == "loadbmp":
             self.load_bmp(e)
             return None
+        if k == "loadbytes":
+            return self.load_bytes(e)
         if k == "method":
             args = [self.eval(a) for a in e["args"]]
             box = self.obj_of(e["a"])

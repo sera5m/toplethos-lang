@@ -76,4 +76,4 @@ These are not missing syntax. They are reasons a goal breaks if it is built the 
 
 ## Not a fix
 
-Bitwise, `%`, `//`, `**`, and `++`/`--` are in USE.md and in both hosts. No overloads, no traits, no vptr, no downcast, no borrow checker, no `goto`. The interpreter does not run the passes. That is the spec. Packing the 16-byte cell would be faster and would drop the present flag the spec counts. A pass that names a whole region is not a row in Known rewrites. It is a goal, not a 1.0 bug. `@globaloptimize[03]` tags a function and may turn a multiply by a power of two into a shift. That does not change the value.
+Bitwise, `%`, `/_/`, `**`, and `++`/`--` are in USE.md and in both hosts. No overloads, no traits, no vptr, no downcast, no borrow checker, no `goto`. The interpreter does not run the passes. That is the spec. Packing the 16-byte cell would be faster and would drop the present flag the spec counts. A pass that names a whole region is not a row in Known rewrites. It is a goal, not a 1.0 bug. `@globaloptimize[03]` tags a function and may turn a multiply by a power of two into a shift. That does not change the value.
