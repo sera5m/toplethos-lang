@@ -1,0 +1,45 @@
+#version 450
+// One workgroup, one 32*32 tile. 128 threads, each moves 8 values.
+// The compares are the bitonic network: same steps on every tile.
+layout(local_size_x = 128) in;
+
+layout(set = 0, binding = 0, std430) buffer Tiles {
+    uint values[];
+};
+
+shared uint tile[1024];
+
+void main() {
+    uint lid = gl_LocalInvocationID.x;
+    uint base = gl_WorkGroupID.x * 1024u;
+
+    for (uint k = 0u; k < 8u; k++) {
+        uint i = lid + k * 128u;
+        tile[i] = values[base + i];
+    }
+    barrier();
+
+    for (uint size = 2u; size <= 1024u; size <<= 1u) {
+        for (uint stride = size >> 1u; stride > 0u; stride >>= 1u) {
+            for (uint k = 0u; k < 8u; k++) {
+                uint i = lid + k * 128u;
+                uint partner = i ^ stride;
+                if (partner > i) {
+                    uint a = tile[i];
+                    uint b = tile[partner];
+                    bool up = (i & size) == 0u;
+                    if (up ? (a > b) : (a < b)) {
+                        tile[i] = b;
+                        tile[partner] = a;
+                    }
+                }
+            }
+            barrier();
+        }
+    }
+
+    for (uint k = 0u; k < 8u; k++) {
+        uint i = lid + k * 128u;
+        values[base + i] = tile[i];
+    }
+}
