@@ -1,0 +1,34 @@
+#version 450
+/* Two unrelated functions. WHICH is 0 for f and 1 for g.
+   Each lane reads its own x. Nothing is shared between lanes. */
+layout(local_size_x = 64) in;
+layout(constant_id = 0) const uint WHICH = 0u;
+
+layout(set = 0, binding = 0, std430) readonly buffer Xin { uint x[]; };
+layout(set = 0, binding = 1, std430) writeonly buffer Yout { uint y[]; };
+
+uint fn_f(uint v) {
+    for (uint i = 0u; i < 128u; i++) {
+        v ^= v << 13u;
+        v ^= v >> 17u;
+        v ^= v << 5u;
+        v *= 0x9E3779B1u;
+    }
+    return v;
+}
+
+uint fn_g(uint v) {
+    uint s = 0u;
+    for (uint i = 0u; i < 128u; i++) {
+        s += v * (i + 3u);
+        v = (v << 7u) | (v >> 25u);
+        v ^= 0xA5A5A5A5u;
+    }
+    return s ^ v;
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    uint v = x[i];
+    y[i] = WHICH == 0u ? fn_f(v) : fn_g(v);
+}
