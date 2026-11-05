@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -63,6 +64,36 @@ static int cmp_u32(const void *pa, const void *pb) {
     uint32_t a = *(const uint32_t *)pa;
     uint32_t b = *(const uint32_t *)pb;
     return (a > b) - (a < b);
+}
+
+static double now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
+
+/* Top byte is brightness. The low 24 bits are the color the terminal draws. */
+static uint32_t pack(uint32_t n) {
+    uint32_t r = mix(n * 3u + 1u) & 255u;
+    uint32_t g = mix(n * 3u + 2u) & 255u;
+    uint32_t b = mix(n * 3u + 3u) & 255u;
+    uint32_t y = (r * 54u + g * 183u + b * 19u) >> 8;
+    return (y << 24) | (r << 16) | (g << 8) | b;
+}
+
+static void draw_tile(const char *label, const uint32_t *tile) {
+    static const char ramp[] = " .:-=+*#%@";
+    uint32_t y, x;
+    printf("%s\n", label);
+    for (y = 0; y < 32; y++) {
+        for (x = 0; x < 32; x++) {
+            uint32_t p = tile[y * 32u + x];
+            unsigned lum = (p >> 24) & 255u;
+            char ch = ramp[lum * 10u / 256u];
+            printf("\033[38;2;%u;%u;%um%c", (p >> 16) & 255u, (p >> 8) & 255u, p & 255u, ch);
+        }
+        printf("\033[0m\n");
+    }
 }
 
 static int mem_type(const VkPhysicalDeviceMemoryProperties *mp, uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPropertyFlags reject) {
@@ -122,6 +153,12 @@ int main(void) {
     PFN_vkDestroyFence DestroyFence;
     PFN_vkQueueSubmit QueueSubmit;
     PFN_vkWaitForFences WaitForFences;
+    PFN_vkCreateQueryPool CreateQueryPool;
+    PFN_vkDestroyQueryPool DestroyQueryPool;
+    PFN_vkResetQueryPool ResetQueryPool;
+    PFN_vkCmdWriteTimestamp CmdWriteTimestamp;
+    PFN_vkGetQueryPoolResults GetQueryPoolResults;
+    VkQueryPool qpool = VK_NULL_HANDLE;
     VkApplicationInfo app;
     VkInstanceCreateInfo ici;
     VkInstance inst = VK_NULL_HANDLE;
@@ -173,6 +210,7 @@ int main(void) {
     size_t bytes = (size_t)k_tiles * k_tile * sizeof(uint32_t);
     uint32_t t;
     const char *kind;
+    double t0, upload_ms = 0, queue_ms = 0, check_ms = 0, gpu_ms = -1;
 
     lib = open_vulkan();
     if (!lib) fail("libvulkan did not load. The GPU driver is not installed, or this machine has no Vulkan loader.");
@@ -275,6 +313,20 @@ int main(void) {
     DestroyFence = (PFN_vkDestroyFence)must(get, inst, "vkDestroyFence");
     QueueSubmit = (PFN_vkQueueSubmit)must(get, inst, "vkQueueSubmit");
     WaitForFences = (PFN_vkWaitForFences)must(get, inst, "vkWaitForFences");
+    CreateQueryPool = (PFN_vkCreateQueryPool)get(inst, "vkCreateQueryPool");
+    DestroyQueryPool = (PFN_vkDestroyQueryPool)get(inst, "vkDestroyQueryPool");
+    ResetQueryPool = (PFN_vkResetQueryPool)get(inst, "vkResetQueryPool");
+    CmdWriteTimestamp = (PFN_vkCmdWriteTimestamp)get(inst, "vkCmdWriteTimestamp");
+    GetQueryPoolResults = (PFN_vkGetQueryPoolResults)get(inst, "vkGetQueryPoolResults");
+    if (CreateQueryPool && ResetQueryPool && CmdWriteTimestamp && GetQueryPoolResults && fams[family].timestampValidBits) {
+        VkQueryPoolCreateInfo qci_pool;
+        memset(&qci_pool, 0, sizeof qci_pool);
+        qci_pool.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+        qci_pool.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        qci_pool.queryCount = 2;
+        if (CreateQueryPool(dev, &qci_pool, NULL, &qpool) != VK_SUCCESS) qpool = VK_NULL_HANDLE;
+        else ResetQueryPool(dev, qpool, 0, 2);
+    }
     GetDeviceQueue(dev, family, 0, &queue);
 
     GetMemoryProperties(gpu, &memp);
@@ -308,14 +360,16 @@ int main(void) {
     src = (uint32_t *)malloc(bytes);
     ref = (uint32_t *)malloc(bytes);
     if (!src || !ref) fail("out of memory");
-    for (t = 0; t < (uint32_t)k_tiles * k_tile; t++) src[t] = mix(t + 1u);
+    for (t = 0; t < (uint32_t)k_tiles * k_tile; t++) src[t] = pack(t + 1u);
     memcpy(ref, src, bytes);
+    t0 = now_ms();
     {
         void *mapped = NULL;
         check(MapMemory(dev, stage_mem, 0, bytes, 0, &mapped), "map");
         memcpy(mapped, src, bytes);
         UnmapMemory(dev, stage_mem);
     }
+    upload_ms = now_ms() - t0;
 
     memset(&smi, 0, sizeof smi);
     smi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -405,7 +459,9 @@ int main(void) {
     CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 1, &bar, 0, NULL);
     CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
     CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &set, 0, NULL);
+    if (qpool) CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, qpool, 0);
     CmdDispatch(cmd, k_tiles, 1, 1);
+    if (qpool) CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, qpool, 1);
     bar.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     bar.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1, &bar, 0, NULL);
@@ -419,13 +475,21 @@ int main(void) {
     sub.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     sub.commandBufferCount = 1;
     sub.pCommandBuffers = &cmd;
+    t0 = now_ms();
     check(QueueSubmit(queue, 1, &sub, fence), "submit");
     check(WaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX), "wait");
+    queue_ms = now_ms() - t0;
+    if (qpool) {
+        uint64_t ticks[2];
+        if (GetQueryPoolResults(dev, qpool, 0, 2, sizeof ticks, ticks, sizeof ticks[0], VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS && ticks[1] > ticks[0])
+            gpu_ms = (double)(ticks[1] - ticks[0]) * (double)props.limits.timestampPeriod / 1e6;
+    }
 
     {
         void *mapped = NULL;
         check(MapMemory(dev, stage_mem, 0, bytes, 0, &mapped), "map result");
         got = (uint32_t *)mapped;
+        t0 = now_ms();
         for (t = 0; t < k_tiles; t++) {
             uint32_t *e = ref + (size_t)t * k_tile;
             uint32_t *g = got + (size_t)t * k_tile;
@@ -441,6 +505,10 @@ int main(void) {
                 fail("GPU result does not match the CPU sort");
             }
         }
+        check_ms = now_ms() - t0;
+        draw_tile("tile 0 before, noise", src);
+        draw_tile("tile 0 after, dark to bright", got);
+        draw_tile("tile 1 after", got + k_tile);
         UnmapMemory(dev, stage_mem);
     }
 
@@ -450,9 +518,22 @@ int main(void) {
     printf("memory: %s\n", (memp.memoryTypes[vram].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ? "device-local+host-visible" : "device-local");
     printf("tiles: %d\n", k_tiles);
     printf("tile: 32x32\n");
+    printf("pixels: %zu\n", (size_t)k_tiles * k_tile);
+    printf("buffer: %zu bytes, copied up and back\n", bytes);
+    printf("upload: %.3f ms\n", upload_ms);
+    printf("queue: %.3f ms\n", queue_ms);
+    if (gpu_ms >= 0) {
+        double elems = (double)k_tiles * k_tile;
+        printf("gpu: %.3f ms\n", gpu_ms);
+        printf("gpu rate: %.1f million pixels/s\n", elems / gpu_ms / 1000.0);
+    } else {
+        printf("gpu: no timestamp\n");
+    }
+    printf("check: %.3f ms\n", check_ms);
     printf("match: yes\n");
 
     DestroyFence(dev, fence, NULL);
+    if (qpool) DestroyQueryPool(dev, qpool, NULL);
     DestroyCommandPool(dev, cpool, NULL);
     DestroyDescriptorPool(dev, pool, NULL);
     DestroyPipeline(dev, pipe, NULL);
