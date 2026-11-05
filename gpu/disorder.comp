@@ -1,0 +1,45 @@
+#version 450
+/* Four different jobs in one dispatch. Neighboring lanes take
+   different paths, and two of the paths read other addresses. */
+layout(local_size_x = 256) in;
+layout(set = 0, binding = 0, std430) readonly buffer Xin { uint x[]; };
+layout(set = 0, binding = 1, std430) writeonly buffer Yout { uint y[]; };
+
+const uint NMASK = 33554431u;
+
+uint isqrt(uint v) {
+    uint g = v | 1u;
+    g = (g + v / g) >> 1u;
+    g = (g + v / g) >> 1u;
+    g = (g + v / g) >> 1u;
+    g = (g + v / g) >> 1u;
+    return g;
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    uint sel = i & 3u;
+    uint v = x[i];
+    uint r;
+    if (sel == 0u) {
+        r = 11u;
+        r = r * v + 7u;
+        r = r * v + 5u;
+        r = r * v + 3u;
+        r = r * v + 1u;
+    } else if (sel == 1u) {
+        r = isqrt(v | 1u);
+    } else if (sel == 2u) {
+        uint a = x[i];
+        uint b = x[(i + 64u) & NMASK];
+        uint c = x[(i + 4096u) & NMASK];
+        uint d = x[(i * 3u + 17u) & NMASK];
+        r = (a + (b << 1u) + (c << 2u)) ^ d;
+    } else {
+        uint a = x[(i - 1u) & NMASK];
+        uint b = v;
+        uint c = x[(i + 1u) & NMASK];
+        r = (a + b + b + c) >> 2u;
+    }
+    y[i] = r;
+}

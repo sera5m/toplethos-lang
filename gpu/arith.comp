@@ -1,0 +1,22 @@
+#version 450
+/* Almost no memory. One load, a long multiply chain, one store.
+   Four independent chains, so the card can overlap them. */
+layout(local_size_x = 256) in;
+layout(set = 0, binding = 0, std430) readonly buffer Xin { uint x[]; };
+layout(set = 0, binding = 1, std430) writeonly buffer Yout { uint y[]; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    uint v = x[i] | 1u;
+    uint a = v;
+    uint b = v + 1u;
+    uint c = v ^ 0x11111111u;
+    uint d = v * 7u + 3u;
+    for (uint k = 0u; k < 64u; k++) {
+        a = a * 0x9E3779B1u + 1u;
+        b = b * 0x85EBCA77u + 1u;
+        c = c * 0xC2B2AE3Du + 1u;
+        d = d * 0x27BB2EE7u + 1u;
+    }
+    y[i] = a ^ b ^ c ^ d;
+}

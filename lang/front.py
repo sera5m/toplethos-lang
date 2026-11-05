@@ -1245,7 +1245,7 @@ class Front:
         op = self.assign_op()
         if op:
             return self.finish_assign(expr, op, line)
-        if expr["k"] in ("call", "method", "loadbmp", "loadbytes", "savebmp", "upd"):
+        if expr["k"] in ("call", "method", "loadbmp", "loadbytes", "savebmp", "gputwo", "upd"):
             self.expect(";")
             return ("expr", expr, line)
         self.fail("a statement, other than a brace block, that does not end with ;")
@@ -1574,6 +1574,8 @@ class Front:
                 return self.savebmp()
             if name == "loadbytes":
                 return self.loadbytes()
+            if name == "gputwo":
+                return self.gputwo()
             args = self.arglist()
             if name == "print":
                 if len(args) != 1:
@@ -1822,6 +1824,25 @@ class Front:
         if arr["k"] != "name" or arr["ty"][0] != "arr" or arr["ty"][1] != ("i32",):
             self.fail("loadbytes takes a string and an i32 array")
         return {"k": "loadbytes", "path": path, "id": arr["id"], "n": arr["ty"][2], "ty": ("i32",)}
+
+    def gputwo(self):
+        self.expect("[")
+        xs = self.expr(None)
+        self.expect(",")
+        fs = self.expr(None)
+        self.expect(",")
+        gs = self.expr(None)
+        self.expect("]")
+        arrs = (xs, fs, gs)
+        for arr in arrs:
+            if arr["k"] != "name" or arr["ty"][0] != "arr" or arr["ty"][1] != ("i32",):
+                self.fail("gputwo takes three i32 arrays")
+        n = xs["ty"][2]
+        if fs["ty"][2] != n or gs["ty"][2] != n:
+            self.fail("gputwo arrays differ in length")
+        if n < 64 or n > (1 << 20) or n % 64 != 0:
+            self.fail("gputwo length must be a multiple of 64, at most 1048576")
+        return {"k": "gputwo", "xs": xs["id"], "fs": fs["id"], "gs": gs["id"], "n": n, "ty": None}
 
     def arglist(self):
         self.expect("[")

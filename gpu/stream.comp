@@ -1,0 +1,22 @@
+#version 450
+/* Sequential array work. Each lane reads one word, does a short
+   independent chain, and writes one word. No gathers. */
+layout(local_size_x = 256) in;
+layout(set = 0, binding = 0, std430) readonly buffer Xin { uint x[]; };
+layout(set = 0, binding = 1, std430) writeonly buffer Yout { uint y[]; };
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    uint v = x[i];
+    uint a = v;
+    uint b = v ^ 0x9e3779b9u;
+    uint c = v + 1u;
+    uint d = v * 3u;
+    for (uint k = 0u; k < 32u; k++) {
+        a = a * 0x9E3779B1u + b;
+        b = b * 0x85EBCA77u + c;
+        c = c * 0xC2B2AE3Du + d;
+        d = d * 0x27BB2EE7u + a;
+    }
+    y[i] = a ^ b ^ c ^ d;
+}

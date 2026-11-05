@@ -335,6 +335,9 @@ class Emit:
         if k == "loadbytes":
             self.loadbytes(e)
             return
+        if k == "gputwo":
+            self.gputwo(e)
+            return
         if k == "start":
             self.w("    call tp_start@PLT")
             return
@@ -928,6 +931,19 @@ class Emit:
         self.w(f"    mov ${e['n']}, %edx")
         self.w("    call tp_loadbytes@PLT")
 
+    def gputwo(self, e):
+        def addr(iid, reg):
+            info = self.prog["ids"][iid]
+            if info.get("time") in ("static", "config"):
+                self.w(f"    lea {self.sym(iid)}(%rip), {reg}")
+            else:
+                self.w(f"    lea {self.slot[iid]}(%rbp), {reg}")
+        addr(e["xs"], "%rdi")
+        addr(e["fs"], "%rsi")
+        addr(e["gs"], "%rdx")
+        self.w(f"    mov ${e['n']}, %ecx")
+        self.w("    call tp_gputwo@PLT")
+
     def call(self, e):
         if e["name"] in ("min", "max", "clamp", "abs", "swap"):
             self.builtin(e)
@@ -1507,7 +1523,7 @@ class Emit:
                 uses.setdefault(e["id"], []).append(pos)
                 if not e.get("fast"):
                     slow.add(e["id"])
-            if e.get("k") in ("call", "method", "loadbmp", "loadbytes", "start", "run"):
+            if e.get("k") in ("call", "method", "loadbmp", "loadbytes", "gputwo", "start", "run"):
                 calls.append(pos)
             for v in e.values():
                 if isinstance(v, (dict, list)):

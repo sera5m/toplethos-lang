@@ -172,6 +172,56 @@ class Interp:
             cell["present"] = True
         return len(data)
 
+    def gpu_two(self, e):
+        import os
+        import struct
+        import subprocess
+        from pathlib import Path
+
+        def slot_of(iid):
+            for frame in reversed(self.frames):
+                if iid in frame:
+                    return frame[iid]
+            return None
+
+        def cells_of(iid):
+            slot = slot_of(iid)
+            if slot is None or not slot["present"]:
+                raise Failure("absent")
+            return slot["v"]
+
+        def signed(u):
+            return u - 2**32 if u >= 2**31 else u
+
+        n = e["n"]
+        xs = cells_of(e["xs"])
+        fs = cells_of(e["fs"])
+        gs = cells_of(e["gs"])
+        raw = bytearray(struct.pack("<I", n))
+        for i in range(n):
+            cell = xs[i]
+            if not cell["present"] or cell["v"] is None:
+                raise Failure("absent")
+            raw += struct.pack("<I", int(cell["v"]) & 0xFFFFFFFF)
+        bin_path = None
+        for cand in (Path("two_funcs"), Path("gpu/two_funcs")):
+            if os.access(cand, os.X_OK):
+                bin_path = str(cand)
+                break
+        if bin_path is None:
+            raise Failure("two_funcs")
+        proc = subprocess.run([bin_path, "ffi"], input=bytes(raw), capture_output=True)
+        if proc.returncode != 0 or len(proc.stdout) != n * 8:
+            raise Failure("gputwo")
+        for i in range(n):
+            u = struct.unpack_from("<I", proc.stdout, i * 4)[0]
+            fs[i]["v"] = signed(u)
+            fs[i]["present"] = True
+        for i in range(n):
+            u = struct.unpack_from("<I", proc.stdout, n * 4 + i * 4)[0]
+            gs[i]["v"] = signed(u)
+            gs[i]["present"] = True
+
     def call(self, fn, args):
         self.note_call(fn)
         if fn.get("inlined"):
@@ -619,6 +669,9 @@ class Interp:
             return None
         if k == "loadbytes":
             return self.load_bytes(e)
+        if k == "gputwo":
+            self.gpu_two(e)
+            return None
         if k == "method":
             args = [self.eval(a) for a in e["args"]]
             box = self.obj_of(e["a"])

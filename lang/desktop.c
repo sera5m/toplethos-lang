@@ -9,6 +9,9 @@ extern "C" {
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 static double mark_time;
 
@@ -311,6 +314,76 @@ double tp_ffloor(double a, double b, int mode) {
         tp_fail("division by zero");
     }
     return floor(a / b);
+}
+
+/* Proof only. Runs ./two_funcs ffi. Not the foreign syntax. */
+void tp_gputwo(void *xs, void *fs, void *gs, int n) {
+    const char *cands[] = {"./two_funcs", "./gpu/two_funcs", NULL};
+    const char *bin = NULL;
+    char in_name[] = "/tmp/gputwo-inXXXXXX";
+    char out_name[] = "/tmp/gputwo-outXXXXXX";
+    int in_fd, out_fd, i, status;
+    FILE *f;
+    pid_t pid;
+    uint32_t count;
+    if (n < 64 || n > (1 << 20) || (n % 64) != 0) tp_fail("gputwo");
+    for (i = 0; cands[i]; i++) {
+        if (access(cands[i], X_OK) == 0) {
+            bin = cands[i];
+            break;
+        }
+    }
+    if (!bin) tp_fail("two_funcs");
+    in_fd = mkstemp(in_name);
+    out_fd = mkstemp(out_name);
+    if (in_fd < 0 || out_fd < 0) tp_fail("gputwo");
+    close(out_fd);
+    f = fdopen(in_fd, "wb");
+    if (!f) tp_fail("gputwo");
+    count = (uint32_t)n;
+    if (fwrite(&count, 4, 1, f) != 1) tp_fail("gputwo");
+    for (i = 0; i < n; i++) {
+        unsigned char *cell = (unsigned char *)xs + ((size_t)i << 4);
+        uint32_t u;
+        if (!cell[8]) tp_fail("absent");
+        u = (uint32_t)*(int64_t *)cell;
+        if (fwrite(&u, 4, 1, f) != 1) tp_fail("gputwo");
+    }
+    if (fclose(f) != 0) tp_fail("gputwo");
+    pid = fork();
+    if (pid < 0) tp_fail("gputwo");
+    if (pid == 0) {
+        int in = open(in_name, O_RDONLY);
+        int out = open(out_name, O_WRONLY | O_TRUNC);
+        if (in < 0 || out < 0) _exit(127);
+        dup2(in, 0);
+        dup2(out, 1);
+        execl(bin, "two_funcs", "ffi", (char *)0);
+        _exit(127);
+    }
+    if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+        tp_fail("gputwo");
+    f = fopen(out_name, "rb");
+    if (!f) tp_fail("gputwo");
+    for (i = 0; i < n; i++) {
+        uint32_t u;
+        unsigned char *cell;
+        if (fread(&u, 4, 1, f) != 1) tp_fail("gputwo");
+        cell = (unsigned char *)fs + ((size_t)i << 4);
+        *(int64_t *)cell = (int32_t)u;
+        cell[8] = 1;
+    }
+    for (i = 0; i < n; i++) {
+        uint32_t u;
+        unsigned char *cell;
+        if (fread(&u, 4, 1, f) != 1) tp_fail("gputwo");
+        cell = (unsigned char *)gs + ((size_t)i << 4);
+        *(int64_t *)cell = (int32_t)u;
+        cell[8] = 1;
+    }
+    fclose(f);
+    unlink(in_name);
+    unlink(out_name);
 }
 #ifdef __cplusplus
 }

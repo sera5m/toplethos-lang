@@ -138,7 +138,7 @@ static void *job_main(void *arg) {
 
 static void run_job(Job *j) { job_main(j); }
 
-int main(void) {
+int main(int argc, char **argv) {
     void *lib;
     PFN_vkGetInstanceProcAddr get;
     PFN_vkCreateInstance CreateInstance;
@@ -248,9 +248,11 @@ int main(void) {
     VkSemaphore sem_f = VK_NULL_HANDLE, sem_g = VK_NULL_HANDLE;
     VkSemaphoreCreateInfo sci;
     VkSubmitInfo sub;
-    uint32_t *xs = NULL, *scratch = NULL;
-    size_t bytes = (size_t)k_n * sizeof(uint32_t);
+    uint32_t *xs = NULL, *scratch = NULL, *fout = NULL, *gout = NULL;
+    size_t bytes = 0;
     uint32_t which;
+    uint32_t n = k_n;
+    int ffi = 0;
     Job job_f, job_g;
     double alone_f = 0, alone_g = 0, both = 0, t0;
     double fill_ms = 0, host_in_ms = 0, host_out_f = 0, host_out_g = 0;
@@ -258,6 +260,17 @@ int main(void) {
     double insert_wait = 0;
     int vram = -1, hostmem = -1;
     const char *kind;
+
+    if (argc > 1 && strcmp(argv[1], "ffi") == 0) {
+        uint32_t count = 0;
+        ffi = 1;
+        if (fread(&count, 4, 1, stdin) != 1) fail("ffi count");
+        if (count < 64u || count > (uint32_t)k_n || (count % 64u) != 0) fail("ffi count");
+        n = count;
+    } else if (argc > 1) {
+        fail("usage: ./two_funcs [ffi]");
+    }
+    bytes = (size_t)n * sizeof(uint32_t);
 
     lib = open_vulkan();
     if (!lib) fail("libvulkan did not load");
@@ -304,10 +317,10 @@ int main(void) {
     fams = (VkQueueFamilyProperties *)calloc(fam_n, sizeof *fams);
     if (!fams) fail("out of memory");
     GetQueueFamilies(gpu, &fam_n, fams);
-    printf("device: %s\n", props.deviceName);
+    if (!ffi) printf("device: %s\n", props.deviceName);
     for (i = 0; i < fam_n; i++) {
         if ((fams[i].queueFlags & VK_QUEUE_COMPUTE_BIT) == 0) continue;
-        printf("compute family %u: %u queue%s, flags 0x%x\n", i, fams[i].queueCount, fams[i].queueCount == 1 ? "" : "s", fams[i].queueFlags);
+        if (!ffi) printf("compute family %u: %u queue%s, flags 0x%x\n", i, fams[i].queueCount, fams[i].queueCount == 1 ? "" : "s", fams[i].queueFlags);
         if (fam_a < 0) fam_a = (int)i;
         else if (fam_b < 0) fam_b = (int)i;
     }
@@ -429,9 +442,17 @@ int main(void) {
 
     xs = (uint32_t *)malloc(bytes);
     scratch = (uint32_t *)malloc(bytes);
-    if (!xs || !scratch) fail("out of memory");
+    if (ffi) {
+        fout = (uint32_t *)malloc(bytes);
+        gout = (uint32_t *)malloc(bytes);
+    }
+    if (!xs || !scratch || (ffi && (!fout || !gout))) fail("out of memory");
     t0 = now_ms();
-    for (i = 0; i < k_n; i++) xs[i] = mix(i + 1u);
+    if (ffi) {
+        if (fread(xs, sizeof(uint32_t), n, stdin) != n) fail("ffi input");
+    } else {
+        for (i = 0; i < n; i++) xs[i] = mix(i + 1u);
+    }
     fill_ms = now_ms() - t0;
     t0 = now_ms();
     {
@@ -599,7 +620,7 @@ int main(void) {
         CmdResetQueryPool(cmd_f, qp_f, 0, 2);
         CmdWriteTimestamp(cmd_f, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp_f, 0);
     }
-    CmdDispatch(cmd_f, k_n / k_local, 1, 1);
+    CmdDispatch(cmd_f, n / k_local, 1, 1);
     if (qp_f) CmdWriteTimestamp(cmd_f, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp_f, 1);
     check(EndCommandBuffer(cmd_f), "end f");
     check(BeginCommandBuffer(cmd_g, &begin), "begin g");
@@ -610,7 +631,7 @@ int main(void) {
         CmdResetQueryPool(cmd_g, qp_g, 0, 2);
         CmdWriteTimestamp(cmd_g, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp_g, 0);
     }
-    CmdDispatch(cmd_g, k_n / k_local, 1, 1);
+    CmdDispatch(cmd_g, n / k_local, 1, 1);
     if (qp_g) CmdWriteTimestamp(cmd_g, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp_g, 1);
     check(EndCommandBuffer(cmd_g), "end g");
 
@@ -720,14 +741,15 @@ int main(void) {
         t0 = now_ms();
         memcpy(scratch, got, bytes);
         host_out_f = now_ms() - t0;
-        for (i = 0; i < k_n; i++) {
+        for (i = 0; i < n; i++) {
             uint32_t want = fn_f(xs[i]);
             if (got[i] != want) {
                 fprintf(stderr, "f mismatch at %u gpu %u cpu %u\n", i, got[i], want);
                 fail("f does not match");
             }
         }
-        printf("f(x0) = %u\n", got[0]);
+        if (ffi) memcpy(fout, got, bytes);
+        if (!ffi) printf("f(x0) = %u\n", got[0]);
         UnmapMemory(dev, ms);
     }
     sub.pCommandBuffers = &cmd_down_g;
@@ -743,17 +765,23 @@ int main(void) {
         t0 = now_ms();
         memcpy(scratch, got, bytes);
         host_out_g = now_ms() - t0;
-        for (i = 0; i < k_n; i++) {
+        for (i = 0; i < n; i++) {
             uint32_t want = fn_g(xs[i]);
             if (got[i] != want) {
                 fprintf(stderr, "g mismatch at %u gpu %u cpu %u\n", i, got[i], want);
                 fail("g does not match");
             }
         }
-        printf("g(x0) = %u\n", got[0]);
+        if (ffi) memcpy(gout, got, bytes);
+        if (!ffi) printf("g(x0) = %u\n", got[0]);
         UnmapMemory(dev, ms);
     }
 
+    if (ffi) {
+        if (fwrite(fout, sizeof(uint32_t), n, stdout) != n) fail("ffi output");
+        if (fwrite(gout, sizeof(uint32_t), n, stdout) != n) fail("ffi output");
+        fflush(stdout);
+    } else {
     kind = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? "discrete" : "integrated";
     printf("type: %s\n", kind);
     printf("lanes: %d   buffer: %.2f MiB each way\n", k_n, (double)bytes / (1024.0 * 1024.0));
@@ -788,6 +816,7 @@ int main(void) {
         printf("overlapped: no  (this GPU did not offer a second compute queue)\n");
     }
     printf("match: yes\n");
+    }
 
     DestroyFence(dev, fence_up, NULL);
     DestroyFence(dev, fence_f, NULL);
@@ -819,6 +848,8 @@ int main(void) {
     DestroyInstance(inst, NULL);
     free(xs);
     free(scratch);
+    free(fout);
+    free(gout);
     free(devs);
     free(fams);
     return 0;
