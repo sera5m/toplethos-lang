@@ -56,6 +56,14 @@ static double now_ms(void) {
     return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
 }
 
+static double span_ms(PFN_vkGetQueryPoolResults getres, VkDevice dev, VkQueryPool qp, float period) {
+    uint64_t ticks[2];
+    if (!qp) return -1;
+    if (getres(dev, qp, 0, 2, sizeof ticks, ticks, 8, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) != VK_SUCCESS) return -1;
+    if (ticks[1] < ticks[0]) return -1;
+    return (double)(ticks[1] - ticks[0]) * (double)period / 1e6;
+}
+
 static int mem_type(const VkPhysicalDeviceMemoryProperties *mp, uint32_t bits, VkMemoryPropertyFlags want) {
     uint32_t i;
     for (i = 0; i < mp->memoryTypeCount; i++) {
@@ -179,6 +187,13 @@ int main(void) {
     PFN_vkResetFences ResetFences;
     PFN_vkQueueSubmit QueueSubmit;
     PFN_vkWaitForFences WaitForFences;
+    PFN_vkCreateQueryPool CreateQueryPool;
+    PFN_vkDestroyQueryPool DestroyQueryPool;
+    PFN_vkCmdResetQueryPool CmdResetQueryPool;
+    PFN_vkCmdWriteTimestamp CmdWriteTimestamp;
+    PFN_vkGetQueryPoolResults GetQueryPoolResults;
+    VkQueryPool qp_up = VK_NULL_HANDLE, qp_f = VK_NULL_HANDLE, qp_g = VK_NULL_HANDLE;
+    VkQueryPool qp_df = VK_NULL_HANDLE, qp_dg = VK_NULL_HANDLE;
     VkApplicationInfo app;
     VkInstanceCreateInfo ici;
     VkInstance inst = VK_NULL_HANDLE;
@@ -233,11 +248,14 @@ int main(void) {
     VkSemaphore sem_f = VK_NULL_HANDLE, sem_g = VK_NULL_HANDLE;
     VkSemaphoreCreateInfo sci;
     VkSubmitInfo sub;
-    uint32_t *xs = NULL;
+    uint32_t *xs = NULL, *scratch = NULL;
     size_t bytes = (size_t)k_n * sizeof(uint32_t);
     uint32_t which;
     Job job_f, job_g;
     double alone_f = 0, alone_g = 0, both = 0, t0;
+    double fill_ms = 0, host_in_ms = 0, host_out_f = 0, host_out_g = 0;
+    double gpu_in_ms = -1, gpu_f_ms = -1, gpu_g_ms = -1, gpu_out_f = -1, gpu_out_g = -1;
+    double insert_wait = 0;
     int vram = -1, hostmem = -1;
     const char *kind;
 
@@ -363,6 +381,11 @@ int main(void) {
     ResetFences = (PFN_vkResetFences)must(get, inst, "vkResetFences");
     QueueSubmit = (PFN_vkQueueSubmit)must(get, inst, "vkQueueSubmit");
     WaitForFences = (PFN_vkWaitForFences)must(get, inst, "vkWaitForFences");
+    CreateQueryPool = (PFN_vkCreateQueryPool)get(inst, "vkCreateQueryPool");
+    DestroyQueryPool = (PFN_vkDestroyQueryPool)get(inst, "vkDestroyQueryPool");
+    CmdResetQueryPool = (PFN_vkCmdResetQueryPool)get(inst, "vkCmdResetQueryPool");
+    CmdWriteTimestamp = (PFN_vkCmdWriteTimestamp)get(inst, "vkCmdWriteTimestamp");
+    GetQueryPoolResults = (PFN_vkGetQueryPoolResults)get(inst, "vkGetQueryPoolResults");
     GetDeviceQueue(dev, (uint32_t)fam_a, 0, &queue_f);
     if (nq == 2 && fam_b >= 0) GetDeviceQueue(dev, (uint32_t)fam_b, 0, &queue_g);
     else if (nq == 2) GetDeviceQueue(dev, (uint32_t)fam_a, 1, &queue_g);
@@ -405,14 +428,19 @@ int main(void) {
     check(BindBufferMemory(dev, stage, ms, 0), "bind stage");
 
     xs = (uint32_t *)malloc(bytes);
-    if (!xs) fail("out of memory");
+    scratch = (uint32_t *)malloc(bytes);
+    if (!xs || !scratch) fail("out of memory");
+    t0 = now_ms();
     for (i = 0; i < k_n; i++) xs[i] = mix(i + 1u);
+    fill_ms = now_ms() - t0;
+    t0 = now_ms();
     {
         void *mapped = NULL;
         check(MapMemory(dev, ms, 0, bytes, 0, &mapped), "map");
         memcpy(mapped, xs, bytes);
         UnmapMemory(dev, ms);
     }
+    host_in_ms = now_ms() - t0;
 
     memset(&smi, 0, sizeof smi);
     smi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -522,12 +550,37 @@ int main(void) {
     check(AllocateCommandBuffers(dev, &cbai, &cmd_g), "cmd g");
     check(AllocateCommandBuffers(dev, &cbai, &cmd_down_g), "cmd down g");
 
+    if (CreateQueryPool && DestroyQueryPool && CmdResetQueryPool && CmdWriteTimestamp && GetQueryPoolResults &&
+        props.apiVersion >= VK_API_VERSION_1_2 && fams[fam_a].timestampValidBits &&
+        (fam_b < 0 || fams[fam_b].timestampValidBits)) {
+        VkQueryPoolCreateInfo qpi;
+        VkQueryPool *slots[5];
+        int s;
+        memset(&qpi, 0, sizeof qpi);
+        qpi.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+        qpi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        qpi.queryCount = 2;
+        slots[0] = &qp_up;
+        slots[1] = &qp_f;
+        slots[2] = &qp_g;
+        slots[3] = &qp_df;
+        slots[4] = &qp_dg;
+        for (s = 0; s < 5; s++) {
+            if (CreateQueryPool(dev, &qpi, NULL, slots[s]) != VK_SUCCESS) *slots[s] = VK_NULL_HANDLE;
+        }
+    }
+
     memset(&begin, 0, sizeof begin);
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     memset(&copy, 0, sizeof copy);
     copy.size = bytes;
     check(BeginCommandBuffer(cmd_up, &begin), "begin up");
+    if (qp_up) {
+        CmdResetQueryPool(cmd_up, qp_up, 0, 2);
+        CmdWriteTimestamp(cmd_up, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp_up, 0);
+    }
     CmdCopyBuffer(cmd_up, stage, xin, 1, &copy);
+    if (qp_up) CmdWriteTimestamp(cmd_up, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp_up, 1);
     check(EndCommandBuffer(cmd_up), "end up");
 
     memset(&bar, 0, sizeof bar);
@@ -542,13 +595,23 @@ int main(void) {
     CmdPipelineBarrier(cmd_f, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 1, &bar, 0, NULL);
     CmdBindPipeline(cmd_f, VK_PIPELINE_BIND_POINT_COMPUTE, pipe_f);
     CmdBindDescriptorSets(cmd_f, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &sets[0], 0, NULL);
+    if (qp_f) {
+        CmdResetQueryPool(cmd_f, qp_f, 0, 2);
+        CmdWriteTimestamp(cmd_f, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp_f, 0);
+    }
     CmdDispatch(cmd_f, k_n / k_local, 1, 1);
+    if (qp_f) CmdWriteTimestamp(cmd_f, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp_f, 1);
     check(EndCommandBuffer(cmd_f), "end f");
     check(BeginCommandBuffer(cmd_g, &begin), "begin g");
     CmdPipelineBarrier(cmd_g, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 1, &bar, 0, NULL);
     CmdBindPipeline(cmd_g, VK_PIPELINE_BIND_POINT_COMPUTE, pipe_g);
     CmdBindDescriptorSets(cmd_g, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &sets[1], 0, NULL);
+    if (qp_g) {
+        CmdResetQueryPool(cmd_g, qp_g, 0, 2);
+        CmdWriteTimestamp(cmd_g, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp_g, 0);
+    }
     CmdDispatch(cmd_g, k_n / k_local, 1, 1);
+    if (qp_g) CmdWriteTimestamp(cmd_g, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp_g, 1);
     check(EndCommandBuffer(cmd_g), "end g");
 
     check(BeginCommandBuffer(cmd_down_f, &begin), "begin down f");
@@ -556,12 +619,22 @@ int main(void) {
     bar.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     bar.buffer = yf;
     CmdPipelineBarrier(cmd_down_f, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1, &bar, 0, NULL);
+    if (qp_df) {
+        CmdResetQueryPool(cmd_down_f, qp_df, 0, 2);
+        CmdWriteTimestamp(cmd_down_f, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp_df, 0);
+    }
     CmdCopyBuffer(cmd_down_f, yf, stage, 1, &copy);
+    if (qp_df) CmdWriteTimestamp(cmd_down_f, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp_df, 1);
     check(EndCommandBuffer(cmd_down_f), "end down f");
     check(BeginCommandBuffer(cmd_down_g, &begin), "begin down g");
     bar.buffer = yg;
     CmdPipelineBarrier(cmd_down_g, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1, &bar, 0, NULL);
+    if (qp_dg) {
+        CmdResetQueryPool(cmd_down_g, qp_dg, 0, 2);
+        CmdWriteTimestamp(cmd_down_g, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp_dg, 0);
+    }
     CmdCopyBuffer(cmd_down_g, yg, stage, 1, &copy);
+    if (qp_dg) CmdWriteTimestamp(cmd_down_g, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qp_dg, 1);
     check(EndCommandBuffer(cmd_down_g), "end down g");
 
     memset(&fci, 0, sizeof fci);
@@ -583,9 +656,12 @@ int main(void) {
         sigs[0] = sem_f;
         sigs[1] = sem_g;
         sub.pSignalSemaphores = sigs;
+        t0 = now_ms();
         check(QueueSubmit(queue_f, 1, &sub, fence_up), "submit up");
     }
     check(WaitForFences(dev, 1, &fence_up, VK_TRUE, UINT64_MAX), "wait up");
+    insert_wait = now_ms() - t0;
+    if (qp_up) gpu_in_ms = span_ms(GetQueryPoolResults, dev, qp_up, props.limits.timestampPeriod);
 
     memset(&job_f, 0, sizeof job_f);
     memset(&job_g, 0, sizeof job_g);
@@ -607,9 +683,11 @@ int main(void) {
     run_job(&job_f);
     check(job_f.err, "f alone");
     alone_f = job_f.ms;
+    if (qp_f) gpu_f_ms = span_ms(GetQueryPoolResults, dev, qp_f, props.limits.timestampPeriod);
     run_job(&job_g);
     check(job_g.err, "g alone");
     alone_g = job_g.ms;
+    if (qp_g) gpu_g_ms = span_ms(GetQueryPoolResults, dev, qp_g, props.limits.timestampPeriod);
 
     if (nq == 2) {
         pthread_t th_f, th_g;
@@ -633,11 +711,15 @@ int main(void) {
     check(ResetFences(dev, 1, &fence_f), "reset f for copy");
     check(QueueSubmit(queue_f, 1, &sub, fence_f), "submit down f");
     check(WaitForFences(dev, 1, &fence_f, VK_TRUE, UINT64_MAX), "wait down f");
+    if (qp_df) gpu_out_f = span_ms(GetQueryPoolResults, dev, qp_df, props.limits.timestampPeriod);
     {
         void *mapped = NULL;
         uint32_t *got;
         check(MapMemory(dev, ms, 0, bytes, 0, &mapped), "map f");
         got = (uint32_t *)mapped;
+        t0 = now_ms();
+        memcpy(scratch, got, bytes);
+        host_out_f = now_ms() - t0;
         for (i = 0; i < k_n; i++) {
             uint32_t want = fn_f(xs[i]);
             if (got[i] != want) {
@@ -652,11 +734,15 @@ int main(void) {
     check(ResetFences(dev, 1, &fence_g), "reset g for copy");
     check(QueueSubmit(queue_g, 1, &sub, fence_g), "submit down g");
     check(WaitForFences(dev, 1, &fence_g, VK_TRUE, UINT64_MAX), "wait down g");
+    if (qp_dg) gpu_out_g = span_ms(GetQueryPoolResults, dev, qp_dg, props.limits.timestampPeriod);
     {
         void *mapped = NULL;
         uint32_t *got;
         check(MapMemory(dev, ms, 0, bytes, 0, &mapped), "map g");
         got = (uint32_t *)mapped;
+        t0 = now_ms();
+        memcpy(scratch, got, bytes);
+        host_out_g = now_ms() - t0;
         for (i = 0; i < k_n; i++) {
             uint32_t want = fn_g(xs[i]);
             if (got[i] != want) {
@@ -670,11 +756,26 @@ int main(void) {
 
     kind = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? "discrete" : "integrated";
     printf("type: %s\n", kind);
-    printf("lanes: %d   each x is its own input, from a fixed scramble\n", k_n);
+    printf("lanes: %d   buffer: %.2f MiB each way\n", k_n, (double)bytes / (1024.0 * 1024.0));
     printf("f: 128 rounds of a hash\n");
     printf("g: 128 rounds of a rotate and a sum, not the same math\n");
-    printf("f alone: %8.3f ms\n", alone_f);
-    printf("g alone: %8.3f ms\n", alone_g);
+    printf("host fill:      %8.3f ms\n", fill_ms);
+    printf("host insert:    %8.3f ms   (memcpy into staging)\n", host_in_ms);
+    if (gpu_in_ms >= 0) {
+        double mib = (double)bytes / (1024.0 * 1024.0);
+        printf("gpu insert:     %8.3f ms   %7.1f MiB/s\n", gpu_in_ms, gpu_in_ms > 0 ? mib / (gpu_in_ms / 1000.0) : 0);
+        printf("insert wait:    %8.3f ms   (submit through fence)\n", insert_wait);
+        printf("f calculate:    %8.3f ms\n", gpu_f_ms);
+        printf("g calculate:    %8.3f ms\n", gpu_g_ms);
+        printf("gpu extract f:  %8.3f ms   %7.1f MiB/s\n", gpu_out_f, gpu_out_f > 0 ? mib / (gpu_out_f / 1000.0) : 0);
+        printf("gpu extract g:  %8.3f ms   %7.1f MiB/s\n", gpu_out_g, gpu_out_g > 0 ? mib / (gpu_out_g / 1000.0) : 0);
+    } else {
+        printf("gpu timestamps unavailable\n");
+    }
+    printf("host extract f: %8.3f ms\n", host_out_f);
+    printf("host extract g: %8.3f ms\n", host_out_g);
+    printf("f queue wait:   %8.3f ms   (driver plus calculate)\n", alone_f);
+    printf("g queue wait:   %8.3f ms\n", alone_g);
     if (nq == 2) {
         printf("both:    %8.3f ms   (two host threads, two queues)\n", both);
         printf("sum:     %8.3f ms\n", alone_f + alone_g);
@@ -693,6 +794,11 @@ int main(void) {
     DestroyFence(dev, fence_g, NULL);
     DestroySemaphore(dev, sem_f, NULL);
     DestroySemaphore(dev, sem_g, NULL);
+    if (qp_up) DestroyQueryPool(dev, qp_up, NULL);
+    if (qp_f) DestroyQueryPool(dev, qp_f, NULL);
+    if (qp_g) DestroyQueryPool(dev, qp_g, NULL);
+    if (qp_df) DestroyQueryPool(dev, qp_df, NULL);
+    if (qp_dg) DestroyQueryPool(dev, qp_dg, NULL);
     if (pool_b != pool_a) DestroyCommandPool(dev, pool_b, NULL);
     DestroyCommandPool(dev, pool_a, NULL);
     DestroyDescriptorPool(dev, pool, NULL);
@@ -712,6 +818,7 @@ int main(void) {
     DestroyDevice(dev, NULL);
     DestroyInstance(inst, NULL);
     free(xs);
+    free(scratch);
     free(devs);
     free(fams);
     return 0;
