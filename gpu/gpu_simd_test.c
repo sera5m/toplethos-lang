@@ -211,7 +211,8 @@ int main(void) {
     uint32_t t;
     uint32_t show0[1024], show1[1024];
     const char *kind;
-    double t0, upload_ms = 0, queue_ms = 0, check_ms = 0, gpu_ms = -1;
+    double t0, fill_ms = 0, upload_ms = 0, queue_ms = 0, cpu_ms = 0;
+    double copy_up_ms = -1, sort_ms = -1, copy_down_ms = -1;
 
     lib = open_vulkan();
     if (!lib) fail("libvulkan did not load. The GPU driver is not installed, or this machine has no Vulkan loader.");
@@ -325,7 +326,7 @@ int main(void) {
         memset(&qci_pool, 0, sizeof qci_pool);
         qci_pool.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
         qci_pool.queryType = VK_QUERY_TYPE_TIMESTAMP;
-        qci_pool.queryCount = 2;
+        qci_pool.queryCount = 4;
         if (CreateQueryPool(dev, &qci_pool, NULL, &qpool) != VK_SUCCESS) qpool = VK_NULL_HANDLE;
     }
     GetDeviceQueue(dev, family, 0, &queue);
@@ -361,7 +362,9 @@ int main(void) {
     src = (uint32_t *)malloc(bytes);
     ref = (uint32_t *)malloc(bytes);
     if (!src || !ref) fail("out of memory");
+    t0 = now_ms();
     for (t = 0; t < (uint32_t)k_tiles * k_tile; t++) src[t] = pack(t + 1u);
+    fill_ms = now_ms() - t0;
     memcpy(ref, src, bytes);
     t0 = now_ms();
     {
@@ -446,7 +449,8 @@ int main(void) {
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check(BeginCommandBuffer(cmd, &begin), "begin");
-    if (qpool) CmdResetQueryPool(cmd, qpool, 0, 2);
+    if (qpool) CmdResetQueryPool(cmd, qpool, 0, 4);
+    if (qpool) CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qpool, 0);
     memset(&copy, 0, sizeof copy);
     copy.size = bytes;
     CmdCopyBuffer(cmd, stage, gpu_buf, 1, &copy);
@@ -459,15 +463,16 @@ int main(void) {
     bar.buffer = gpu_buf;
     bar.size = VK_WHOLE_SIZE;
     CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 1, &bar, 0, NULL);
+    if (qpool) CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qpool, 1);
     CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
     CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &set, 0, NULL);
-    if (qpool) CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, qpool, 0);
     CmdDispatch(cmd, k_tiles, 1, 1);
-    if (qpool) CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, qpool, 1);
+    if (qpool) CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qpool, 2);
     bar.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     bar.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1, &bar, 0, NULL);
     CmdCopyBuffer(cmd, gpu_buf, stage, 1, &copy);
+    if (qpool) CmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, qpool, 3);
     check(EndCommandBuffer(cmd), "end");
 
     memset(&fci, 0, sizeof fci);
@@ -482,9 +487,13 @@ int main(void) {
     check(WaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX), "wait");
     queue_ms = now_ms() - t0;
     if (qpool) {
-        uint64_t ticks[2];
-        if (GetQueryPoolResults(dev, qpool, 0, 2, sizeof ticks, ticks, sizeof ticks[0], VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS && ticks[1] > ticks[0])
-            gpu_ms = (double)(ticks[1] - ticks[0]) * (double)props.limits.timestampPeriod / 1e6;
+        uint64_t ticks[4];
+        float period = props.limits.timestampPeriod;
+        if (GetQueryPoolResults(dev, qpool, 0, 4, sizeof ticks, ticks, sizeof ticks[0], VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS) {
+            if (ticks[1] >= ticks[0]) copy_up_ms = (double)(ticks[1] - ticks[0]) * (double)period / 1e6;
+            if (ticks[2] >= ticks[1]) sort_ms = (double)(ticks[2] - ticks[1]) * (double)period / 1e6;
+            if (ticks[3] >= ticks[2]) copy_down_ms = (double)(ticks[3] - ticks[2]) * (double)period / 1e6;
+        }
     }
 
     {
@@ -492,11 +501,12 @@ int main(void) {
         check(MapMemory(dev, stage_mem, 0, bytes, 0, &mapped), "map result");
         got = (uint32_t *)mapped;
         t0 = now_ms();
+        for (t = 0; t < k_tiles; t++) qsort(ref + (size_t)t * k_tile, k_tile, sizeof(uint32_t), cmp_u32);
+        cpu_ms = now_ms() - t0;
         for (t = 0; t < k_tiles; t++) {
             uint32_t *e = ref + (size_t)t * k_tile;
             uint32_t *g = got + (size_t)t * k_tile;
             uint32_t j;
-            qsort(e, k_tile, sizeof(uint32_t), cmp_u32);
             if (memcmp(e, g, k_tile * sizeof(uint32_t)) != 0) {
                 for (j = 0; j < k_tile; j++) {
                     if (e[j] != g[j]) {
@@ -507,34 +517,39 @@ int main(void) {
                 fail("GPU result does not match the CPU sort");
             }
         }
-        check_ms = now_ms() - t0;
         memcpy(show0, got, sizeof show0);
         memcpy(show1, got + k_tile, sizeof show1);
         UnmapMemory(dev, stage_mem);
     }
 
     kind = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? "discrete" : "integrated";
-    printf("device: %s\n", props.deviceName);
-    printf("type: %s\n", kind);
-    printf("memory: %s\n", (memp.memoryTypes[vram].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ? "device-local+host-visible" : "device-local");
-    printf("tiles: %d\n", k_tiles);
-    printf("tile: 32x32\n");
-    printf("pixels: %zu\n", (size_t)k_tiles * k_tile);
-    printf("buffer: %zu bytes, copied up and back\n", bytes);
-    printf("upload: %.3f ms\n", upload_ms);
-    printf("queue: %.3f ms\n", queue_ms);
-    if (gpu_ms >= 0) {
-        double elems = (double)k_tiles * k_tile;
-        printf("gpu: %.3f ms\n", gpu_ms);
-        printf("gpu rate: %.1f million pixels/s\n", elems / gpu_ms / 1000.0);
-    } else {
-        printf("gpu: no timestamp\n");
-    }
-    printf("check: %.3f ms\n", check_ms);
-    printf("match: yes\n");
     draw_tile("tile 0 before, noise", src);
     draw_tile("tile 0 after, dark to bright", show0);
     draw_tile("tile 1 after", show1);
+    printf("\n");
+    printf("device: %s\n", props.deviceName);
+    printf("type: %s\n", kind);
+    printf("memory: %s\n", (memp.memoryTypes[vram].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ? "device-local+host-visible" : "device-local");
+    printf("tiles: %d   tile: 32x32   workgroup: 128 threads   shared: 4096 bytes\n", k_tiles);
+    printf("pixels: %zu   buffer: %.2f MiB, each way\n", (size_t)k_tiles * k_tile, (double)bytes / (1024.0 * 1024.0));
+    printf("host fill:     %8.3f ms\n", fill_ms);
+    printf("host upload:   %8.3f ms\n", upload_ms);
+    printf("queue wait:    %8.3f ms   (driver, both copies, and the sort)\n", queue_ms);
+    if (copy_up_ms >= 0 && sort_ms >= 0 && copy_down_ms >= 0) {
+        double elems = (double)k_tiles * (double)k_tile;
+        double mib = (double)bytes / (1024.0 * 1024.0);
+        printf("gpu copy up:   %8.3f ms   %7.1f MiB/s\n", copy_up_ms, copy_up_ms > 0 ? mib / (copy_up_ms / 1000.0) : 0);
+        printf("gpu sort:      %8.3f ms   %7.1f million pixels/s\n", sort_ms, sort_ms > 0 ? elems / sort_ms / 1000.0 : 0);
+        printf("gpu copy back: %8.3f ms   %7.1f MiB/s\n", copy_down_ms, copy_down_ms > 0 ? mib / (copy_down_ms / 1000.0) : 0);
+        printf("cpu qsort:     %8.3f ms   %7.1f million pixels/s\n", cpu_ms, cpu_ms > 0 ? elems / cpu_ms / 1000.0 : 0);
+        if (sort_ms > 0) printf("sort vs C:     %8.2fx  (gpu sort time against C qsort, same tiles)\n", cpu_ms / sort_ms);
+        if (queue_ms > 0) printf("wait vs C:     %8.2fx  (whole queue, copies included)\n", cpu_ms / queue_ms);
+    } else {
+        printf("gpu timestamps unavailable\n");
+        printf("cpu qsort:     %8.3f ms\n", cpu_ms);
+    }
+    printf("compare: C qsort in this process. No other language was timed.\n");
+    printf("match: yes\n");
 
     DestroyFence(dev, fence, NULL);
     if (qpool) DestroyQueryPool(dev, qpool, NULL);
