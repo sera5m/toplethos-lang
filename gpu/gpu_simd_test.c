@@ -155,7 +155,7 @@ int main(void) {
     PFN_vkWaitForFences WaitForFences;
     PFN_vkCreateQueryPool CreateQueryPool;
     PFN_vkDestroyQueryPool DestroyQueryPool;
-    PFN_vkResetQueryPool ResetQueryPool;
+    PFN_vkCmdResetQueryPool CmdResetQueryPool;
     PFN_vkCmdWriteTimestamp CmdWriteTimestamp;
     PFN_vkGetQueryPoolResults GetQueryPoolResults;
     VkQueryPool qpool = VK_NULL_HANDLE;
@@ -209,6 +209,7 @@ int main(void) {
     uint32_t *src, *ref, *got;
     size_t bytes = (size_t)k_tiles * k_tile * sizeof(uint32_t);
     uint32_t t;
+    uint32_t show0[1024], show1[1024];
     const char *kind;
     double t0, upload_ms = 0, queue_ms = 0, check_ms = 0, gpu_ms = -1;
 
@@ -221,7 +222,7 @@ int main(void) {
     memset(&app, 0, sizeof app);
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app.pApplicationName = "gpu_simd_test";
-    app.apiVersion = VK_API_VERSION_1_0;
+    app.apiVersion = VK_API_VERSION_1_2;
     memset(&ici, 0, sizeof ici);
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &app;
@@ -315,17 +316,17 @@ int main(void) {
     WaitForFences = (PFN_vkWaitForFences)must(get, inst, "vkWaitForFences");
     CreateQueryPool = (PFN_vkCreateQueryPool)get(inst, "vkCreateQueryPool");
     DestroyQueryPool = (PFN_vkDestroyQueryPool)get(inst, "vkDestroyQueryPool");
-    ResetQueryPool = (PFN_vkResetQueryPool)get(inst, "vkResetQueryPool");
+    CmdResetQueryPool = (PFN_vkCmdResetQueryPool)get(inst, "vkCmdResetQueryPool");
     CmdWriteTimestamp = (PFN_vkCmdWriteTimestamp)get(inst, "vkCmdWriteTimestamp");
     GetQueryPoolResults = (PFN_vkGetQueryPoolResults)get(inst, "vkGetQueryPoolResults");
-    if (CreateQueryPool && ResetQueryPool && CmdWriteTimestamp && GetQueryPoolResults && fams[family].timestampValidBits) {
+    if (CreateQueryPool && DestroyQueryPool && CmdResetQueryPool && CmdWriteTimestamp && GetQueryPoolResults &&
+        props.apiVersion >= VK_API_VERSION_1_2 && fams[family].timestampValidBits) {
         VkQueryPoolCreateInfo qci_pool;
         memset(&qci_pool, 0, sizeof qci_pool);
         qci_pool.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
         qci_pool.queryType = VK_QUERY_TYPE_TIMESTAMP;
         qci_pool.queryCount = 2;
         if (CreateQueryPool(dev, &qci_pool, NULL, &qpool) != VK_SUCCESS) qpool = VK_NULL_HANDLE;
-        else ResetQueryPool(dev, qpool, 0, 2);
     }
     GetDeviceQueue(dev, family, 0, &queue);
 
@@ -445,6 +446,7 @@ int main(void) {
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     check(BeginCommandBuffer(cmd, &begin), "begin");
+    if (qpool) CmdResetQueryPool(cmd, qpool, 0, 2);
     memset(&copy, 0, sizeof copy);
     copy.size = bytes;
     CmdCopyBuffer(cmd, stage, gpu_buf, 1, &copy);
@@ -506,9 +508,8 @@ int main(void) {
             }
         }
         check_ms = now_ms() - t0;
-        draw_tile("tile 0 before, noise", src);
-        draw_tile("tile 0 after, dark to bright", got);
-        draw_tile("tile 1 after", got + k_tile);
+        memcpy(show0, got, sizeof show0);
+        memcpy(show1, got + k_tile, sizeof show1);
         UnmapMemory(dev, stage_mem);
     }
 
@@ -531,6 +532,9 @@ int main(void) {
     }
     printf("check: %.3f ms\n", check_ms);
     printf("match: yes\n");
+    draw_tile("tile 0 before, noise", src);
+    draw_tile("tile 0 after, dark to bright", show0);
+    draw_tile("tile 1 after", show1);
 
     DestroyFence(dev, fence, NULL);
     if (qpool) DestroyQueryPool(dev, qpool, NULL);
