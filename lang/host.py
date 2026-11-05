@@ -49,3 +49,15 @@ def main_interp(src):
     except Failure as e:
         sys.stderr.write(str(e) + "\n")
         return 1
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.stderr.write("usage: python3 lang/host.py file.tpth_s\n")
+        sys.exit(2)
+    try:
+        text = open(sys.argv[1], encoding="utf-8").read()
+    except OSError as e:
+        sys.stderr.write(f"{e}\n")
+        sys.exit(1)
+    sys.exit(main_interp(text))

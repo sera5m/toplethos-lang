@@ -2,6 +2,7 @@
    The device stays open. The timed part is only the resubmits.
 
    gcc -O2 -o bench bench.c -ldl && ./bench 1
+   ./bench 1 cpu     same work, one CPU thread, no Vulkan
    1  sequential array work
    2  mixed math, divergent, some gathers
    3  long integer chains, one load and one store
@@ -131,6 +132,61 @@ static uint32_t cpu_arith(uint32_t v) {
     return a ^ b ^ c ^ d;
 }
 
+static int cpu_bench(const char *arg) {
+    int mode, m;
+    uint32_t *xs, *ys, i, sink = 0;
+    uint64_t reps[3] = {0, 0, 0};
+    uint64_t rng = 0x123456789abcdefu;
+    double t0, deadline, elapsed;
+    const char *title[] = {"", "stream", "disorder", "arith", "mixed"};
+    if (!arg || arg[0] < '1' || arg[0] > '4' || arg[1]) {
+        fprintf(stderr, "usage: ./bench 1|2|3|4 [cpu]\n");
+        return 1;
+    }
+    mode = arg[0] - '0';
+    xs = (uint32_t *)malloc((size_t)k_n * sizeof(uint32_t));
+    ys = (uint32_t *)malloc((size_t)k_n * sizeof(uint32_t));
+    if (!xs || !ys) fail("out of memory");
+    for (i = 0; i < k_n; i++) xs[i] = i * 0x9E3779B1u + 1u;
+    t0 = now_ms();
+    deadline = t0 + 5000.0;
+    while (now_ms() < deadline) {
+        int which = mode - 1;
+        if (mode == 4) {
+            rng = rng * 0x9E3779B97F4A7C15ull + 1u;
+            which = (int)((rng >> 33) % 3u);
+        }
+        if (which == 0) {
+            for (i = 0; i < k_n; i++) ys[i] = cpu_stream(xs[i]);
+        } else if (which == 1) {
+            for (i = 0; i < k_n; i++) ys[i] = cpu_disorder(xs, i);
+        } else {
+            for (i = 0; i < k_n; i++) ys[i] = cpu_arith(xs[i]);
+        }
+        sink ^= ys[0] ^ ys[k_n / 2] ^ ys[k_n - 1];
+        reps[which]++;
+    }
+    elapsed = now_ms() - t0;
+    printf("bench: %d %s\n", mode, title[mode]);
+    printf("device: this cpu, 1 thread\n");
+    printf("elements: %d   buffer: %.1f MiB in, %.1f MiB out\n", k_n, (double)k_n * 4 / (1024.0 * 1024.0), (double)k_n * 4 / (1024.0 * 1024.0));
+    printf("seconds: %.3f\n", elapsed / 1000.0);
+    if (mode != 4) {
+        double elems = (double)reps[mode - 1] * (double)k_n;
+        printf("passes: %llu\n", (unsigned long long)reps[mode - 1]);
+        printf("elements/s: %.3f billion\n", elems / (elapsed / 1000.0) / 1e9);
+        printf("moved: %.1f GiB/s   (one read and one write per element)\n", elems * 8.0 / (elapsed / 1000.0) / 1e9);
+        if (mode == 1) printf("counted ops/s: %.3f billion   (256 integer ops per element)\n", elems * 256.0 / (elapsed / 1000.0) / 1e9);
+        if (mode == 3) printf("counted ops/s: %.3f billion   (512 integer ops per element)\n", elems * 512.0 / (elapsed / 1000.0) / 1e9);
+    } else {
+        for (m = 0; m < 3; m++) printf("%s passes: %llu\n", title[m + 1], (unsigned long long)reps[m]);
+    }
+    printf("sink: %u\n", sink);
+    free(xs);
+    free(ys);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     int mode, repeats, family = -1;
     void *lib;
@@ -233,8 +289,9 @@ int main(int argc, char **argv) {
     int have = 0, vram, hostmem, m;
     const char *title[] = {"", "stream", "disorder", "arith", "mixed"};
 
+    if (argc == 3 && strcmp(argv[2], "cpu") == 0) return cpu_bench(argv[1]);
     if (argc != 2 || argv[1][0] < '1' || argv[1][0] > '4' || argv[1][1]) {
-        fprintf(stderr, "usage: ./bench 1|2|3|4\n");
+        fprintf(stderr, "usage: ./bench 1|2|3|4 [cpu]\n");
         return 1;
     }
     mode = argv[1][0] - '0';
