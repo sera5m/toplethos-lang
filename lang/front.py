@@ -1245,7 +1245,7 @@ class Front:
         op = self.assign_op()
         if op:
             return self.finish_assign(expr, op, line)
-        if expr["k"] in ("call", "method", "loadbmp", "loadbytes", "savebmp", "gputwo", "upd"):
+        if expr["k"] in ("call", "method", "loadbmp", "loadbytes", "savebmp", "gputwo", "gpubench", "upd"):
             self.expect(";")
             return ("expr", expr, line)
         self.fail("a statement, other than a brace block, that does not end with ;")
@@ -1576,6 +1576,8 @@ class Front:
                 return self.loadbytes()
             if name == "gputwo":
                 return self.gputwo()
+            if name == "gpubench":
+                return self.gpubench()
             args = self.arglist()
             if name == "print":
                 if len(args) != 1:
@@ -1843,6 +1845,12 @@ class Front:
         if n < 64 or n > (1 << 20) or n % 64 != 0:
             self.fail("gputwo length must be a multiple of 64, at most 1048576")
         return {"k": "gputwo", "xs": xs["id"], "fs": fs["id"], "gs": gs["id"], "n": n, "ty": None}
+
+    def gpubench(self):
+        self.expect("[")
+        mode = self.expr(("i32",))
+        self.expect("]")
+        return {"k": "gpubench", "mode": mode, "ty": None}
 
     def arglist(self):
         self.expect("[")

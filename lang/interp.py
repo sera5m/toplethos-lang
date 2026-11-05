@@ -222,6 +222,25 @@ class Interp:
             gs[i]["v"] = signed(u)
             gs[i]["present"] = True
 
+    def gpu_bench(self, e):
+        import os
+        import subprocess
+        from pathlib import Path
+
+        mode = int(self.eval(e["mode"]))
+        if mode < 1 or mode > 4:
+            raise Failure("gpubench")
+        bin_path = None
+        for cand in (Path("bench"), Path("gpu/bench")):
+            if os.access(cand, os.X_OK):
+                bin_path = str(cand)
+                break
+        if bin_path is None:
+            raise Failure("bench")
+        proc = subprocess.run([bin_path, str(mode)])
+        if proc.returncode != 0:
+            raise Failure("gpubench")
+
     def call(self, fn, args):
         self.note_call(fn)
         if fn.get("inlined"):
@@ -671,6 +690,9 @@ class Interp:
             return self.load_bytes(e)
         if k == "gputwo":
             self.gpu_two(e)
+            return None
+        if k == "gpubench":
+            self.gpu_bench(e)
             return None
         if k == "method":
             args = [self.eval(a) for a in e["args"]]

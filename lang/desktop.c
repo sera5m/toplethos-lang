@@ -385,6 +385,31 @@ void tp_gputwo(void *xs, void *fs, void *gs, int n) {
     unlink(in_name);
     unlink(out_name);
 }
+
+void tp_gpubench(int mode) {
+    const char *cands[] = {"./bench", "./gpu/bench", NULL};
+    const char *bin = NULL;
+    char arg[8];
+    int i, status;
+    pid_t pid;
+    if (mode < 1 || mode > 4) tp_fail("gpubench");
+    for (i = 0; cands[i]; i++) {
+        if (access(cands[i], X_OK) == 0) {
+            bin = cands[i];
+            break;
+        }
+    }
+    if (!bin) tp_fail("bench");
+    snprintf(arg, sizeof arg, "%d", mode);
+    pid = fork();
+    if (pid < 0) tp_fail("gpubench");
+    if (pid == 0) {
+        execl(bin, "bench", arg, (char *)0);
+        _exit(127);
+    }
+    if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+        tp_fail("gpubench");
+}
 #ifdef __cplusplus
 }
 #endif

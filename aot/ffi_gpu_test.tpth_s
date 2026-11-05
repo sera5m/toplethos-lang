@@ -1,0 +1,63 @@
+// Three staged trials. Each line from @time is: name seconds watched.
+// Each stage then runs ./bench 3, the five-second arith GPU trial.
+// The loop is 200000 adds. It is the host work, not the GPU's 32 million lanes.
+//
+// plain: the loop is written out in main.
+// call:  the loop is a normal function.
+// jit:   the loop is @inlined. The interpreter compiles it at the warmup
+//        call, before any @time. The compiler emits an ordinary call.
+//
+// sh aot/ffi_gpu.sh
+
+fn sum_n in[i32 n] out[i32] {
+  i32 acc = 0;
+  i32 i = 0;
+  loop {
+    if !(i < n) { leave; }
+    acc = acc + i;
+    i = i + 1;
+  }
+  return acc;
+}
+
+fn hot in[i32 n] out[i32] @inlined {
+  i32 acc = 0;
+  i32 i = 0;
+  loop {
+    if !(i < n) { leave; }
+    acc = acc + i;
+    i = i + 1;
+  }
+  return acc;
+}
+
+fn main in[] out[i32] {
+  f64 s = 0.0;
+  i32 n = 200000;
+  i32 acc = 0;
+  i32 i = 0;
+  i32 warm = hot in[1000];
+
+  @time["plain"] watch s {
+    acc = 0;
+    i = 0;
+    loop {
+      if !(i < n) { leave; }
+      acc = acc + i;
+      i = i + 1;
+    }
+    gpubench in[3];
+    s = as[f64, acc];
+  }
+  @time["call"] watch s {
+    acc = sum_n in[n];
+    gpubench in[3];
+    s = as[f64, acc];
+  }
+  @time["jit"] watch s {
+    acc = hot in[n];
+    gpubench in[3];
+    s = as[f64, acc];
+  }
+  return warm - warm;
+}

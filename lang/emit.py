@@ -338,6 +338,9 @@ class Emit:
         if k == "gputwo":
             self.gputwo(e)
             return
+        if k == "gpubench":
+            self.gpubench(e)
+            return
         if k == "start":
             self.w("    call tp_start@PLT")
             return
@@ -944,6 +947,11 @@ class Emit:
         self.w(f"    mov ${e['n']}, %ecx")
         self.w("    call tp_gputwo@PLT")
 
+    def gpubench(self, e):
+        self.gen(e["mode"])
+        self.w("    mov %eax, %edi")
+        self.w("    call tp_gpubench@PLT")
+
     def call(self, e):
         if e["name"] in ("min", "max", "clamp", "abs", "swap"):
             self.builtin(e)
@@ -1523,7 +1531,7 @@ class Emit:
                 uses.setdefault(e["id"], []).append(pos)
                 if not e.get("fast"):
                     slow.add(e["id"])
-            if e.get("k") in ("call", "method", "loadbmp", "loadbytes", "gputwo", "start", "run"):
+            if e.get("k") in ("call", "method", "loadbmp", "loadbytes", "gputwo", "gpubench", "start", "run"):
                 calls.append(pos)
             for v in e.values():
                 if isinstance(v, (dict, list)):
