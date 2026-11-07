@@ -1,4 +1,4 @@
-#include "tp/bytecode.hpp"
+#include "tp/arch.hpp"
 
 namespace tp {
 namespace {
@@ -19,12 +19,6 @@ std::string cxx_type(const Atom& atom) {
   return "";
 }
 
-void require_row(const Insn& in) {
-  if (!in.atom || cxx_type(*in.atom).empty()) {
-    throw Fail("cpp", "no C++ row for " + (in.atom ? in.atom->name : std::string("missing atom")) + " yet. The bytecode still has that atom.", in.line, 0);
-  }
-}
-
 std::string slot(uint32_t id) { return "t" + std::to_string(id); }
 
 std::string wrapped(const char* how, const Insn& in) {
@@ -40,7 +34,7 @@ std::string emit_cpp(const Program& prog) {
   out += stage_info("cpp").does;
   out += "\n#include <cstdint>\n";
   for (const BcFunc& fn : prog.fns) {
-    for (const Insn& in : fn.code) require_row(in);
+    for (const Insn& in : fn.code) arch_require(Target::Cpp, in);
     std::string ret = fn.shape.outputs.empty() ? "void" : cxx_type(*fn.shape.outputs[0].atom);
     out += ret + " " + fn.shape.name + "(";
     for (size_t i = 0; i < fn.shape.inputs.size(); ++i) {

@@ -28,6 +28,10 @@ test: tpcc
 	./tpcc --target spirv /tmp/tpcc_wide.spv tests/wide.tpth_s
 	grep -q 'OpConstant %i64 42' /tmp/tpcc_wide.spv
 	if grep -q OpIAdd /tmp/tpcc_wide.spv; then echo 'spirv ran before eval'; exit 1; fi
+	if ./tpcc --asm /tmp/tpcc_ui.s tests/ui.tpth_s >/tmp/tpcc_ui.err 2>&1; then echo 'amd64 accepted ui32'; exit 1; fi
+	grep -q 'no amd64 row for ui32' /tmp/tpcc_ui.err
+	./tpcc --target cpp /tmp/tpcc_ui.cpp tests/ui.tpth_s
+	grep -q uint32_t /tmp/tpcc_ui.cpp
 	./tpcc --dump-tokens ../examples/gputwo.tpth_s >/tmp/tpcc_tokens.txt
 	grep -q 'fn' /tmp/tpcc_tokens.txt
 

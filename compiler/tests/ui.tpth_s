@@ -1,0 +1,4 @@
+fn main in[] out[ui32] {
+  ui32 n = 20 + 22;
+  return n;
+}

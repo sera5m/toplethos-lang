@@ -1,14 +1,7 @@
-#include "tp/bytecode.hpp"
+#include "tp/arch.hpp"
 
 namespace tp {
 namespace {
-
-void require_row(const Insn& in) {
-  if (!in.atom) throw Fail("spirv", "opcode is missing its atom", in.line, 0);
-  if (in.atom->family != Family::SignedInt || (in.atom->bits != 32 && in.atom->bits != 64)) {
-    throw Fail("spirv", "no spirv row for " + in.atom->name + " yet. The bytecode still has that atom.", in.line, 0);
-  }
-}
 
 std::string id(uint32_t slot) { return "%" + std::to_string(slot + 1); }
 
@@ -19,7 +12,7 @@ std::string emit_spirv(const Program& prog) {
   out += stage_info("spirv").does;
   out += "\n; Vulkan loads this module. It does not switch on these opcodes.\n";
   for (const BcFunc& fn : prog.fns) {
-    for (const Insn& in : fn.code) require_row(in);
+    for (const Insn& in : fn.code) arch_require(Target::Spirv, in);
     out += "; " + shape_fn(fn.shape) + "\n";
     bool saw32 = false;
     bool saw64 = false;

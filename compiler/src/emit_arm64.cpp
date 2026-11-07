@@ -1,14 +1,7 @@
-#include "tp/bytecode.hpp"
+#include "tp/arch.hpp"
 
 namespace tp {
 namespace {
-
-void require_row(const Insn& in) {
-  if (!in.atom) throw Fail("arm64", "opcode is missing its atom", in.line, 0);
-  if (in.atom->family != Family::SignedInt || (in.atom->bits != 32 && in.atom->bits != 64)) {
-    throw Fail("arm64", "no arm64 row for " + in.atom->name + " yet. The bytecode still has that atom.", in.line, 0);
-  }
-}
 
 std::string imm_mov(bool wide, int64_t value) {
   uint64_t bits = static_cast<uint64_t>(value);
@@ -27,7 +20,7 @@ std::string emit_arm64(const Program& prog) {
   out += stage_info("arm64").does;
   out += "\n    .text\n";
   for (const BcFunc& fn : prog.fns) {
-    for (const Insn& in : fn.code) require_row(in);
+    for (const Insn& in : fn.code) arch_require(Target::Arm64, in);
     int frame = static_cast<int>(((fn.nslots * 8) + 15) & ~15);
     if (frame < 16) frame = 16;
     out += "    .globl " + fn.shape.name + "\n";

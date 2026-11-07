@@ -1,23 +1,13 @@
-#include "tp/bytecode.hpp"
+#include "tp/arch.hpp"
 
 namespace tp {
-namespace {
-
-void require_row(const Insn& in) {
-  if (!in.atom) throw Fail("amd64", "opcode is missing its atom", in.line, 0);
-  if (in.atom->family != Family::SignedInt || (in.atom->bits != 32 && in.atom->bits != 64)) {
-    throw Fail("amd64", "no amd64 row for " + in.atom->name + " yet. The bytecode still has that atom.", in.line, 0);
-  }
-}
-
-}  // namespace
 
 std::string emit_amd64(const Program& prog) {
   std::string out = "# target amd64\n# ";
   out += stage_info("amd64").does;
   out += "\n    .text\n";
   for (const BcFunc& fn : prog.fns) {
-    for (const Insn& in : fn.code) require_row(in);
+    for (const Insn& in : fn.code) arch_require(Target::Amd64, in);
     int frame = static_cast<int>(((fn.nslots * 8) + 15) & ~15);
     if (frame < 16) frame = 16;
     out += "    .globl " + fn.shape.name + "\n";
