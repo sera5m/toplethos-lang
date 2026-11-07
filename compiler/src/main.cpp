@@ -1,5 +1,6 @@
 #include "tp/bytecode.hpp"
 #include "tp/diag.hpp"
+#include "tp/target.hpp"
 
 #include <fstream>
 #include <iostream>
@@ -34,7 +35,8 @@ int main(int argc, char** argv) {
   bool dump_bind = false;
   bool dump_bc = false;
   bool do_run = false;
-  bool do_asm = false;
+  bool do_emit = false;
+  tp::Target target = tp::Target::Amd64;
   std::string out_path;
   std::string file;
   for (int i = 1; i < argc; ++i) {
@@ -51,10 +53,25 @@ int main(int argc, char** argv) {
       dump_bc = true;
     } else if (arg == "--run") {
       do_run = true;
-    } else if (arg == "--asm") {
-      do_asm = true;
+    } else if (arg == "--asm" || arg == "--target") {
+      do_emit = true;
+      if (arg == "--target") {
+        if (i + 1 >= argc) {
+          std::cerr << "stage: load\nwhy: --target needs amd64, arm64, cpp, or spirv\n";
+          return 1;
+        }
+        std::string name = argv[++i];
+        if (name == "amd64") target = tp::Target::Amd64;
+        else if (name == "arm64") target = tp::Target::Arm64;
+        else if (name == "cpp") target = tp::Target::Cpp;
+        else if (name == "spirv") target = tp::Target::Spirv;
+        else {
+          std::cerr << "stage: load\nwhy: unknown target " << name << "\n";
+          return 1;
+        }
+      }
       if (i + 1 >= argc) {
-        std::cerr << "stage: asm\nwhy: --asm needs an output path\n";
+        std::cerr << "stage: " << tp::target_name(target) << "\nwhy: needs an output path\n";
         return 1;
       }
       out_path = argv[++i];
@@ -66,7 +83,7 @@ int main(int argc, char** argv) {
     }
   }
   if (file.empty()) {
-    std::cerr << "usage: tpcc [--dump] [--dump-tokens] [--run] [--asm out.s] file.tpth_s\n";
+    std::cerr << "usage: tpcc [--dump] [--run] [--asm out.s | --target amd64|arm64|cpp|spirv out] file.tpth_s\n";
     return 2;
   }
 
@@ -93,7 +110,7 @@ int main(int argc, char** argv) {
                       << " specifics=" << atom.specifics << "\n";
           }
         }
-        if (dump_tokens && !dump_bind && !dump_bc && !do_run && !do_asm && !dump_types) return 0;
+        if (dump_tokens && !dump_bind && !dump_bc && !do_run && !do_emit && !dump_types) return 0;
         phase = Phase::Bind;
         [[fallthrough]];
       case Phase::Bind:
@@ -104,21 +121,21 @@ int main(int argc, char** argv) {
       case Phase::Bytecode:
         prog = tp::lower(unit);
         if (dump_bc) std::cout << tp::dump_program(prog);
-        phase = do_asm ? Phase::Assemble : Phase::Interpret;
-        if (!do_run && !do_asm) return 0;
+        phase = do_emit ? Phase::Assemble : Phase::Interpret;
+        if (!do_run && !do_emit) return 0;
         [[fallthrough]];
       case Phase::Interpret:
         if (do_run) {
           int64_t value = tp::interpret(prog, "main");
           std::cout << "result " << value << "\n";
         }
-        if (!do_asm) return 0;
+        if (!do_emit) return 0;
         phase = Phase::Assemble;
         [[fallthrough]];
       case Phase::Assemble: {
-        std::string text = tp::emit_asm(prog);
+        std::string text = tp::emit(target, prog);
         std::ofstream out(out_path);
-        if (!out) throw tp::Fail("asm", "cannot write " + out_path, 0, 0);
+        if (!out) throw tp::Fail(tp::target_name(target), "cannot write " + out_path, 0, 0);
         out << text;
         return 0;
       }

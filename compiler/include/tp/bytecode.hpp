@@ -36,8 +36,10 @@ struct Program {
 Program lower(const Unit& unit);
 std::string dump_program(const Program& prog);
 
-/* Device: run bytecode. Assembly: print amd64 from the same list. */
+Program lower(const Unit& unit);
+std::string dump_program(const Program& prog);
+
+/* CPU oracle. It runs the bytecode. It does not select instructions. */
 int64_t interpret(const Program& prog, const std::string& entry);
-std::string emit_asm(const Program& prog);
 
 }  // namespace tp
