@@ -1,0 +1,5 @@
+fn main in[] out[i64] {
+  i64 n = 20;
+  n = n + 22;
+  return n;
+}
