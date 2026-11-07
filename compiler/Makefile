@@ -1,7 +1,7 @@
 CXX = g++
 CXXFLAGS = -std=c++20 -Wall -Wextra -Werror -O2 -Iinclude
 
-SRC = src/diag.cpp src/types.cpp src/lex.cpp src/bind.cpp src/lower.cpp src/device.cpp \
+SRC = src/diag.cpp src/types.cpp src/lex.cpp src/bind.cpp src/lower.cpp src/arith.cpp src/eval.cpp src/device.cpp \
       src/emit.cpp src/emit_amd64.cpp src/emit_arm64.cpp src/emit_cpp.cpp src/emit_spirv.cpp src/main.cpp
 
 .PHONY: all test clean
@@ -18,13 +18,16 @@ test: tpcc
 	./tpcc --asm /tmp/tpcc_add.s tests/add.tpth_s
 	gcc -o /tmp/tpcc_add /tmp/tpcc_add.s
 	set +e; /tmp/tpcc_add; code=$$?; set -e; test $$code -eq 42
+	grep -q '$$42' /tmp/tpcc_add.s
+	if grep -q ' add ' /tmp/tpcc_add.s; then echo 'asm ran before eval'; exit 1; fi
 	./tpcc --target cpp /tmp/tpcc_add.cpp tests/add.tpth_s
 	g++ -o /tmp/tpcc_add_cpp /tmp/tpcc_add.cpp
 	set +e; /tmp/tpcc_add_cpp; code=$$?; set -e; test $$code -eq 42
 	./tpcc --target arm64 /tmp/tpcc_add.arm tests/add.tpth_s
-	grep -q 'add w8, w8, w9' /tmp/tpcc_add.arm
+	grep -q '#42' /tmp/tpcc_add.arm
 	./tpcc --target spirv /tmp/tpcc_wide.spv tests/wide.tpth_s
-	grep -q 'OpIAdd %i64' /tmp/tpcc_wide.spv
+	grep -q 'OpConstant %i64 42' /tmp/tpcc_wide.spv
+	if grep -q OpIAdd /tmp/tpcc_wide.spv; then echo 'spirv ran before eval'; exit 1; fi
 	./tpcc --dump-tokens ../examples/gputwo.tpth_s >/tmp/tpcc_tokens.txt
 	grep -q 'fn' /tmp/tpcc_tokens.txt
 

@@ -1,5 +1,6 @@
 #include "tp/bytecode.hpp"
 #include "tp/diag.hpp"
+#include "tp/eval.hpp"
 #include "tp/target.hpp"
 
 #include <fstream>
@@ -9,7 +10,7 @@
 
 namespace {
 
-enum class Phase { Load, Lex, Bind, Bytecode, Interpret, Assemble, Done };
+enum class Phase { Load, Lex, Bind, Bytecode, Eval, Interpret, Assemble, Done };
 
 std::string read_file(const std::string& path) {
   std::ifstream in(path);
@@ -120,10 +121,19 @@ int main(int argc, char** argv) {
         [[fallthrough]];
       case Phase::Bytecode:
         prog = tp::lower(unit);
-        if (dump_bc) std::cout << tp::dump_program(prog);
+        phase = Phase::Eval;
+        [[fallthrough]];
+      case Phase::Eval: {
+        tp::Evaluated ev = tp::evaluate(std::move(prog));
+        prog = std::move(ev.prog);
+        if (dump_bc) {
+          std::cout << ev.report;
+          std::cout << tp::dump_program(prog);
+        }
         phase = do_emit ? Phase::Assemble : Phase::Interpret;
         if (!do_run && !do_emit) return 0;
         [[fallthrough]];
+      }
       case Phase::Interpret:
         if (do_run) {
           int64_t value = tp::interpret(prog, "main");

@@ -18,6 +18,7 @@ const Stage& stage_info(const std::string& name) {
       {"lex", "Cuts the source into tokens. A number is still just digits. It is not i32 or i64 yet."},
       {"bind", "Looks each type name up in the type map and builds a typed unit. No registers, no opcodes."},
       {"bytecode", "Lowers the typed unit to three-address ops. Each op keeps the atom it computed."},
+      {"eval", "Rewrites that bytecode. Constant ops become immediates, then unread writes are dropped. Backends have not run yet."},
       {"interpret", "Runs the bytecode on this CPU, one opcode at a time. The atom picks the wrap. This is the oracle, not a GPU."},
       {"amd64", "Prints amd64 from the bytecode. It never reads a Toplethos keyword."},
       {"arm64", "Prints AArch64 from the same bytecode. The stage is the same walk as amd64, with different instructions."},
