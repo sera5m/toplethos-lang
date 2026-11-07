@@ -108,10 +108,14 @@ fn main in[] out[i32] {
   @time["async"] watch s {
     s = run worker in[4];
   }
-  @time["mutex"] watch shared {
+  f64 seen = 0.0;
+  @time["mutex"] watch seen {
     fork locked in[4] with[shared];
     f64 ignore = start locked;
     finish locked;
+    hold[shared] {
+      seen = shared;
+    }
   }
   return 0;
 }

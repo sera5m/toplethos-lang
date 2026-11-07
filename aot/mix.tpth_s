@@ -1,0 +1,70 @@
+// Intense mixed-ops kernel. One serial chain, N = 1000000.
+// Each step feeds the next, so the loop is not a pure Horner.
+// stew and spice each contain a loop, so the host does not paste them.
+// Integer work stays in a small positive range: add, sub, mul, div, mod,
+// shift, and, or, xor, not. Float work is add, sub, mul, div.
+// The tap is an array. bias and scale are object fields. The last store
+// takes one side of a data-dependent if.
+//
+// sh aot/mix.sh
+
+object Mix {
+  i32 bias;
+  f64 scale;
+}
+
+fn stew in[i32 a, i32 b] out[i32] {
+  i32 n = a;
+  do n[4] {
+    n = (n + b + i) & 255;
+    i32 sh = i & 3;
+    n = n ^ (b >> sh);
+  }
+  return n;
+}
+
+fn spice in[f64 x, i32 k] out[f64] {
+  f64 y = x;
+  do n[4] {
+    f64 t = as[f64, i + k];
+    y = (y * 1.25 + t) / (2.0 + as[f64, i]);
+    y = y - t * 0.125;
+  }
+  return y;
+}
+
+fn main in[] out[i32] {
+  i32 tap[8] = {3, 5, 7, 11, 13, 17, 19, 23};
+  Mix m;
+  m.bias = 9;
+  m.scale = 0.015625;
+  f64 s = 0.0;
+  i32 a = 1;
+  i32 b = 7;
+  @time["mix"] watch s {
+    s = 0.0;
+    do n[1000000] {
+      i32 k = i & 7;
+      i32 t = tap[k];
+      a = a + t + m.bias;
+      a = a - (a / 251) * 251;
+      b = ((b * 3) + t) & 255;
+      i32 sh = b & 3;
+      i32 c = (a << sh) & 511;
+      c = c ^ (b | t);
+      c = c % 97;
+      c = ~c & 127;
+      a = stew in[c, b];
+      f64 x = as[f64, a] * m.scale;
+      f64 y = spice in[x, t];
+      i32 odd = c & 1;
+      if odd == 0 {
+        y = y + x;
+      } else {
+        y = y - x * 0.5;
+      }
+      s = s + y;
+    }
+  }
+  return 0;
+}
