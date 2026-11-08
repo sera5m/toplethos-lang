@@ -1,4 +1,6 @@
 #!/bin/sh
+# Old Python host versus C++ and Rust. Not the unified compiler.
+# Interpreter, amd64, and JIT of one bytecode are compiler/tests/mix.tpth_s.
 # Mixed ops. One checksum, three languages. N = 1000000.
 # The integer and float formulas are the same in mix.cpp, mix.rs, and mix.tpth_s.
 cd "$(dirname "$0")/.." || exit 1
