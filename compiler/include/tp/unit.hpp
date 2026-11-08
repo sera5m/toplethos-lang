@@ -14,7 +14,7 @@ enum class ExprKind : uint8_t {
 };
 
 enum class StmtKind : uint8_t {
-  Decl, Assign, Return, If, Loop, Leave, Store, CallStmt, Do, Lock, Unlock, Hold, Fork, Finish
+  Decl, Assign, Return, If, Loop, Leave, Store, CallStmt, Do, Lock, Unlock, Hold, Fork, Finish, Time
 };
 
 struct Expr {
@@ -25,7 +25,7 @@ struct Expr {
   uint64_t bits = 0;
   bool is_float = false;
   /* Bump: 1 means prefix. Field: 1 means the object is an address (HERE).
-     Call: 1 means `start`. */
+     Call: 1 means `start`. Call: 2 means `run` (fork, then start). */
   int aux = 0;
   std::unique_ptr<Expr> lhs;
   std::unique_ptr<Expr> rhs;

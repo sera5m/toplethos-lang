@@ -152,7 +152,8 @@ void drop_unread(BcFunc& fn, int& dropped) {
     const Insn& in = fn.code[n - 1];
     bool writes = in.dst < fn.nslots && in.op != Op::Store;
     bool side = in.op == Op::Ret || in.op == Op::Store || in.op == Op::Call || in.op == Op::Print || in.op == Op::Trap ||
-                in.op == Op::StaticInit || in.op == Op::Fork || in.op == Op::Start || in.op == Op::Lock || in.op == Op::Unlock;
+                in.op == Op::StaticInit || in.op == Op::Fork || in.op == Op::Start || in.op == Op::Lock || in.op == Op::Unlock ||
+                in.op == Op::Watch;
     bool live = side || (writes && used[in.dst]);
     if (writes && in.op != Op::Ret) used[in.dst] = 0;
     if (!live) {
@@ -227,6 +228,7 @@ void drop_unread(BcFunc& fn, int& dropped) {
       case Op::Trap:
       case Op::StaticInit:
       case Op::Start:
+      case Op::Clock:
         break;
       default:
         if (in.lhs < fn.nslots) used[in.lhs] = 1;

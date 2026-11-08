@@ -58,6 +58,7 @@ inline constexpr ArchRow kArch[] = {
     {Target::Amd64, "i32", kCpuInt | kOpThreads},
     {Target::Amd64, "i64", kCpuInt | kOpFreemem},
     {Target::Amd64, "bool", kBoolOps},
+    {Target::Amd64, "f64", kOpImm | kOpMov | kOpAdd | kOpSub | kOpMul | kOpDiv | kOpNeg | kOpRet | kOpCall | kOpLoad | kOpStore},
     {Target::Arm64, "i32", kCpuInt | kOpThreads},
     {Target::Arm64, "i64", kCpuInt | kOpFreemem},
     {Target::Arm64, "bool", kBoolOps},
@@ -133,8 +134,21 @@ inline uint32_t arch_bit(Op op) {
       return kOpStore;
     case Op::Jmp:
     case Op::Label:
-      return 0;
-    default:
+    case Op::Pow:
+    case Op::FloorDiv:
+    case Op::BitNot:
+    case Op::Print:
+    case Op::Trap:
+    case Op::StaticInit:
+    case Op::Fork:
+    case Op::Start:
+    case Op::Lock:
+    case Op::Unlock:
+    case Op::Cast:
+    case Op::State:
+    case Op::SlotAdd:
+    case Op::Clock:
+    case Op::Watch:
       return 0;
   }
   return 0;
@@ -204,6 +218,36 @@ inline const char* arch_op_name(Op op) {
       return "load";
     case Op::Store:
       return "store";
+    case Op::Pow:
+      return "pow";
+    case Op::FloorDiv:
+      return "floordiv";
+    case Op::BitNot:
+      return "bitnot";
+    case Op::Print:
+      return "print";
+    case Op::Trap:
+      return "trap";
+    case Op::StaticInit:
+      return "static";
+    case Op::Fork:
+      return "fork";
+    case Op::Start:
+      return "start";
+    case Op::Lock:
+      return "lock";
+    case Op::Unlock:
+      return "unlock";
+    case Op::Cast:
+      return "cast";
+    case Op::State:
+      return "state";
+    case Op::SlotAdd:
+      return "slotadd";
+    case Op::Clock:
+      return "clock";
+    case Op::Watch:
+      return "watch";
     default:
       return "op";
   }
@@ -233,8 +277,28 @@ inline bool cell_op_ok(Target target, Op op) {
   }
 }
 
+inline bool amd64_host_op(Op op) {
+  switch (op) {
+    case Op::Cast:
+    case Op::SlotAdd:
+    case Op::Clock:
+    case Op::Watch:
+    case Op::Fork:
+    case Op::Start:
+    case Op::Lock:
+    case Op::Unlock:
+    case Op::Print:
+    case Op::StaticInit:
+    case Op::BitNot:
+      return true;
+    default:
+      return false;
+  }
+}
+
 inline void arch_require(Target target, const Insn& in) {
   if (in.op == Op::Jmp || in.op == Op::Label) return;
+  if (target == Target::Amd64 && amd64_host_op(in.op)) return;
   if (in.op == Op::Call && !in.atom) {
     if (target == Target::Spirv) {
       throw Fail("spirv", "a call has no SPIR-V calling convention yet", in.line, 0);
@@ -259,6 +323,12 @@ inline void arch_require(Target target, const Insn& in) {
     if (target == Target::Spirv) why += "A shader does not keep a host pointer.";
     else why += "The program loads and stores only cell.";
     throw Fail(target_name(target), why, in.line, 0);
+  }
+  /* A cell address is an i64 in the bytecode. The interpreter adds slot
+     counts. amd64 subtracts bytes, because the frame grows down. */
+  if (target == Target::Amd64 && (in.op == Op::Addr || in.op == Op::Load || in.op == Op::Store)) {
+    const Atom* held = in.op == Op::Addr ? in.atom : in.src;
+    if (held && held->family != Family::Pointer && std::string(held->name) == "i64") return;
   }
   if (in.atom && arch_supports(target, in.op, in.atom->name)) return;
   std::string why = "no ";

@@ -339,10 +339,10 @@ struct Lowerer {
     return dst;
   }
 
-  uint32_t add_i64(uint32_t lhs, uint32_t rhs, int line) {
-    uint32_t dst = fresh("add");
+  uint32_t slot_add(uint32_t lhs, uint32_t rhs, int line) {
+    uint32_t dst = fresh("slot");
     Insn in;
-    in.op = Op::Add;
+    in.op = Op::SlotAdd;
     in.atom = unit->atom_i64;
     in.src = unit->atom_i64;
     in.dst = dst;
@@ -362,7 +362,20 @@ struct Lowerer {
         base = address_of_slot(local(e.lhs->name), e.line);
       else
         base = emit_expr(*e.lhs);
-      return add_i64(base, emit_expr(*e.rhs), e.line);
+      uint32_t ix = emit_expr(*e.rhs);
+      if (!e.rhs->atom || e.rhs->atom->bits < 64) {
+        uint32_t wide = fresh("idx");
+        Insn cast;
+        cast.op = Op::Cast;
+        cast.atom = unit->atom_i64;
+        cast.src = e.rhs->atom ? e.rhs->atom : unit->atom_i32;
+        cast.dst = wide;
+        cast.lhs = ix;
+        cast.line = e.line;
+        put(cast);
+        ix = wide;
+      }
+      return slot_add(base, ix, e.line);
     }
     if (e.kind == ExprKind::Field) {
       uint32_t base = 0;
@@ -370,7 +383,7 @@ struct Lowerer {
       else if (e.lhs && e.lhs->kind == ExprKind::Name) base = address_of_slot(local(e.lhs->name), e.line);
       else base = address_expr(*e.lhs);
       if (e.bits == 0) return base;
-      return add_i64(base, imm_bits(unit->atom_i64, e.bits, e.line), e.line);
+      return slot_add(base, imm_bits(unit->atom_i64, e.bits, e.line), e.line);
     }
     throw Fail("bytecode", "not a place", e.line, e.col);
   }
@@ -634,6 +647,28 @@ struct Lowerer {
         return dst;
       }
       case ExprKind::Call: {
+        if (e.aux == 2) {
+          if (!fn_of) throw Fail("bytecode", "no function table", e.line, e.col);
+          auto found = fn_of->find(e.name);
+          if (found == fn_of->end()) throw Fail("bytecode", "'" + e.name + "' is not declared", e.line, e.col);
+          uint32_t count = emit_expr(*e.args[0]);
+          Insn fork;
+          fork.op = Op::Fork;
+          fork.imm = found->second;
+          fork.lhs = count;
+          fork.dst = 0xffffffffu;
+          fork.line = e.line;
+          put(fork);
+          uint32_t dst = fresh("run");
+          Insn started;
+          started.op = Op::Start;
+          started.atom = e.atom;
+          started.dst = dst;
+          started.imm = found->second;
+          started.line = e.line;
+          put(started);
+          return dst;
+        }
         if (e.aux == 1) {
           if (!fn_of) throw Fail("bytecode", "no function table", e.line, e.col);
           auto found = fn_of->find(e.name);
@@ -991,6 +1026,8 @@ struct Lowerer {
           emit_expr(*st.expr);
           break;
         case StmtKind::Do: {
+          bool had_i = slots.count("i") != 0;
+          uint32_t prev_i = had_i ? slots["i"] : 0;
           uint32_t idx = fresh("i");
           slots["i"] = idx;
           track(idx, kFlagTracked);
@@ -1040,6 +1077,8 @@ struct Lowerer {
           mark(done);
           loops.pop_back();
           emit_stmts(st.no);
+          if (had_i) slots["i"] = prev_i;
+          else slots.erase("i");
           break;
         }
         case StmtKind::Lock:
@@ -1091,6 +1130,41 @@ struct Lowerer {
         }
         case StmtKind::Finish:
           break;
+        case StmtKind::Time: {
+          uint32_t t0 = fresh("t0");
+          Insn c0;
+          c0.op = Op::Clock;
+          c0.atom = unit->atom_f64;
+          c0.dst = t0;
+          c0.line = st.line;
+          put(c0);
+          emit_stmts(st.yes);
+          uint32_t t1 = fresh("t1");
+          Insn c1 = c0;
+          c1.dst = t1;
+          put(c1);
+          uint32_t dt = fresh("dt");
+          Insn sub;
+          sub.op = Op::Sub;
+          sub.atom = unit->atom_f64;
+          sub.src = unit->atom_f64;
+          sub.dst = dt;
+          sub.lhs = t1;
+          sub.rhs = t0;
+          sub.line = st.line;
+          put(sub);
+          uint32_t val = emit_expr(*st.expr);
+          Insn watch;
+          watch.op = Op::Watch;
+          watch.atom = unit->atom_f64;
+          watch.lhs = dt;
+          watch.rhs = val;
+          watch.dst = 0xffffffffu;
+          watch.note = st.label;
+          watch.line = st.line;
+          put(watch);
+          break;
+        }
       }
     }
   }
@@ -1147,7 +1221,7 @@ struct Lowerer {
         else if (!scalar(in.atom)) why = "parameter";
       }
       for (const Insn& in : fn.code) {
-        if (in.op == Op::Call || in.op == Op::Print) why = "call";
+        if (in.op == Op::Call || in.op == Op::Print || in.op == Op::Watch) why = "call";
         else if (in.op == Op::Threads) why = "threads";
         else if (in.op == Op::Freemem) why = "freemem";
         else if (in.op == Op::Addr || in.op == Op::Load || in.op == Op::Store) why = "pointer";

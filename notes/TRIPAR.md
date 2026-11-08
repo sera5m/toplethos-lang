@@ -24,4 +24,6 @@ What this release runs, and only on the interpreter:
 
 `@NoFailTolerance`, `@gpuparallel`, and `namespace` are rejected on purpose.
 
-Not done: SPIR-V is still a listing. It is not a Vulkan module, and a new opcode has no SPIR-V, amd64, arm64, or C++ row until one is written. The interpreter runs those opcodes. A backend that is asked to print one throws. Scalar control stays on the CPU.
+`tpcc --asm` (amd64, then gcc) also prints the cross-language kernels: `sh aot/mix.sh`, `sh aot/battery.sh`, and the dict and table rows of `sh aot/tasks.sh`. That listing has f64 arithmetic, `as`, `print`, `@time["name"] watch`, and `do`. The index `i` belongs to that `do`, including a nested one. `run worker in[n]` is fork then start. The lanes still run one after another. Lock and unlock are empty there, so the mutex checksum matches and the time does not show contention. It is not an OS thread. `@static` in that listing is initialized on entry; those programs call `main` once. The interpreter is still the oracle, and it still keeps a real lock count and a sticky static. `sh aot/battery.sh` also runs `tpcc --run` on the same N=2000000 program. That interpreter stops after 10000000 steps. The numbers next to C++ and Rust are the `--asm` rows.
+
+Not done: SPIR-V is still a listing. It is not a Vulkan module. arm64 and C++ do not print f64, fork, or `@time`. Scalar control stays on the CPU. `sh aot/tasks.sh` still stops after table: glitch, blur, words, and rdp need host file calls this listing does not have.

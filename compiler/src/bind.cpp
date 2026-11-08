@@ -682,7 +682,9 @@ Stmt Binder::stmt() {
     st.kind = StmtKind::Do;
     st.expr = expr(types.find("i32"));
     c.expect(TokenKind::RBracket, "]");
-    if (locals.count("i")) throw Fail("bind", "'i' is already declared", st.line, st.col);
+    bool had_i = locals.count("i") != 0;
+    VarShape prev_i;
+    if (had_i) prev_i = locals["i"];
     VarShape idx;
     idx.name = "i";
     idx.atom = types.find("i32");
@@ -697,6 +699,8 @@ Stmt Binder::stmt() {
       st.no = block();
       c.expect(TokenKind::RBrace, "}");
     }
+    if (had_i) locals["i"] = prev_i;
+    else locals.erase("i");
     return st;
   }
   if (c.eat(TokenKind::KwFork)) {
@@ -759,6 +763,25 @@ Stmt Binder::stmt() {
   }
   if (c.eat(TokenKind::KwHold)) {
     lock_like(StmtKind::Hold);
+    c.expect(TokenKind::LBrace, "{");
+    st.yes = block();
+    c.expect(TokenKind::RBrace, "}");
+    return st;
+  }
+  if (c.cur().kind == TokenKind::At && c.cur().text == "time") {
+    ++c.i;
+    c.expect(TokenKind::LBracket, "[");
+    if (c.cur().kind != TokenKind::String) throw Fail("bind", "time wants a name", c.cur().line, c.cur().col);
+    st.kind = StmtKind::Time;
+    st.label = c.cur().text;
+    ++c.i;
+    c.expect(TokenKind::RBracket, "]");
+    if (c.cur().kind != TokenKind::Ident || c.cur().text != "watch") {
+      throw Fail("bind", "time wants watch", c.cur().line, c.cur().col);
+    }
+    ++c.i;
+    st.expr = expr(types.find("f64"));
+    if (!st.expr->atom || st.expr->atom->name != "f64") throw Fail("bind", "watch wants an f64", st.line, st.col);
     c.expect(TokenKind::LBrace, "{");
     st.yes = block();
     c.expect(TokenKind::RBrace, "}");
@@ -1306,6 +1329,37 @@ std::unique_ptr<Expr> Binder::primary(const Atom* expect) {
     return postfix(std::move(node));
   }
   if (c.cur().kind == TokenKind::Ident) {
+    if (c.cur().text == "run" && c.i + 1 < c.toks.size() && c.toks[c.i + 1].kind == TokenKind::Ident) {
+      int line = c.cur().line;
+      int col = c.cur().col;
+      ++c.i;
+      std::string worker = c.cur().text;
+      int wline = c.cur().line;
+      int wcol = c.cur().col;
+      ++c.i;
+      if (!fns.count(worker)) throw Fail("bind", "'" + worker + "' is not declared", wline, wcol);
+      const FnShape& sig = fns[worker];
+      if (sig.inputs.size() != 1 || !sig.inputs[0].atom || sig.inputs[0].atom->name != "i32") {
+        throw Fail("bind", "run wants a worker with one i32 lane", wline, wcol);
+      }
+      if (sig.outputs.empty() || !sig.outputs[0].atom || sig.outputs[0].atom->name != "f64") {
+        throw Fail("bind", "run wants an f64 worker", wline, wcol);
+      }
+      c.expect(TokenKind::KwIn, "in");
+      c.expect(TokenKind::LBracket, "[");
+      auto count = expr(types.find("i32"));
+      if (!count->atom || count->atom->name != "i32") mismatch(count->atom, types.find("i32"), count->line, count->col, "count is");
+      c.expect(TokenKind::RBracket, "]");
+      auto node = std::make_unique<Expr>();
+      node->kind = ExprKind::Call;
+      node->name = worker;
+      node->aux = 2;
+      node->atom = types.find("f64");
+      node->args.push_back(std::move(count));
+      node->line = line;
+      node->col = col;
+      return node;
+    }
     if (c.i + 1 < c.toks.size() && c.toks[c.i + 1].kind == TokenKind::KwIn) return postfix(call_expr(expect, true));
     if (c.cur().text == "state" && c.i + 1 < c.toks.size() && c.toks[c.i + 1].kind == TokenKind::LBracket) {
       int line = c.cur().line;

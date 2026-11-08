@@ -13,7 +13,10 @@ enum class Op : uint16_t {
   Imm, Mov, Add, Sub, Mul, Div, Rem, And, Or, Xor, Shl, Shr,
   Eq, Ne, Lt, Le, Gt, Ge, Not, Neg, Jmp, Br, BrRange, Label, Ret,
   Call, Threads, Freemem, Addr, Load, Store,
-  Pow, FloorDiv, BitNot, Print, Trap, StaticInit, Fork, Start, Lock, Unlock, Cast, State
+  Pow, FloorDiv, BitNot, Print, Trap, StaticInit, Fork, Start, Lock, Unlock, Cast, State,
+  /* SlotAdd is an address plus a slot count. The interpreter adds cells.
+     amd64 subtracts bytes (count * 8): the frame grows downward. */
+  SlotAdd, Clock, Watch
 };
 
 /* Slot flags. Tracked scalars can be absent. Ephemeral becomes empty after one read. */
@@ -39,6 +42,8 @@ struct Insn {
      stays on the CPU even when every opcode is a GPU opcode. */
   bool gpu = false;
   int line = 1;
+  /* Watch label. Empty for every other opcode. */
+  std::string note;
 };
 
 struct BcFunc {

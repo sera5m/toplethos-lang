@@ -353,6 +353,33 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
         else if (mem.locks[static_cast<size_t>(addr)] > 0) mem.locks[static_cast<size_t>(addr)]--;
         break;
       }
+      case Op::SlotAdd:
+        at_slot(in.dst) = at_slot(in.lhs) + at_slot(in.rhs);
+        note_slot(in.dst, in.line);
+        break;
+      case Op::Clock: {
+        timespec ts{};
+        if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) throw Fail("interpret", "clock: the host cannot ask", in.line, 0);
+        double sec = static_cast<double>(ts.tv_sec) + static_cast<double>(ts.tv_nsec) * 1e-9;
+        uint64_t bits = 0;
+        std::memcpy(&bits, &sec, 8);
+        at_slot(in.dst) = bits;
+        note_slot(in.dst, in.line);
+        break;
+      }
+      case Op::Watch: {
+        if (mem.printed) *mem.printed = true;
+        double dt = 0;
+        double val = 0;
+        uint64_t db = at_slot(in.lhs);
+        uint64_t vb = at_slot(in.rhs);
+        std::memcpy(&dt, &db, 8);
+        std::memcpy(&val, &vb, 8);
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "%s %.6f %.9f\n", in.note.c_str(), dt, val);
+        std::cout << buf;
+        break;
+      }
       case Op::Trap:
         throw Fail("interpret", "require failed", in.line, 0);
       default:
