@@ -190,6 +190,8 @@ std::string emit_arm64(const Program& prog) {
         case Op::Br:
         case Op::Label:
           break;
+        default:
+          throw Fail("arm64", "no row for this opcode yet", in.line, 0);
       }
     }
     if (fn.shape.outputs.empty()) {

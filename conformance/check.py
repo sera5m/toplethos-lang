@@ -676,6 +676,7 @@ def run_tpcc(src):
 
 
 def main():
+    Path("/tmp/tp_lib.tpth_s").write_text("fn twice in[i32 a] out[i32] { return a + a; }\n")
     ensure_tpcc()
     bad = 0
     for name, expect, src in OK:

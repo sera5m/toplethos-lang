@@ -4,9 +4,14 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <iostream>
+#include <string>
 #include <time.h>
+#include <unordered_map>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 namespace tp {
@@ -76,10 +81,27 @@ bool outside_range(const Insn& in, uint64_t raw) {
 
 struct Mem {
   std::vector<uint64_t> cell;
+  std::vector<uint8_t> live;
+  std::vector<uint8_t> flag;
+  std::vector<char> is_mutex;
+  std::vector<int> locks;
+  std::unordered_map<std::string, uint64_t> sticky;
+  std::unordered_map<uint32_t, std::pair<uint64_t, std::vector<uint64_t>>> forks;
+  bool* printed = nullptr;
+
+  void grow() {
+    size_t n = cell.size();
+    if (live.size() < n) live.resize(n, 1);
+    if (flag.size() < n) flag.resize(n, 0);
+    if (is_mutex.size() < n) is_mutex.resize(n, 0);
+    if (locks.size() < n) locks.resize(n, 0);
+  }
+
   uint32_t alloc(uint32_t n) {
     if (cell.empty()) cell.push_back(0);
     uint32_t base = static_cast<uint32_t>(cell.size());
     cell.resize(static_cast<size_t>(base) + n, 0);
+    grow();
     return base;
   }
 };
@@ -96,8 +118,60 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
     at[fn.code[i].imm] = static_cast<int>(i);
   }
   uint32_t base = mem.alloc(fn.nslots);
-  for (size_t i = 0; i < args.size(); ++i) mem.cell[base + i] = args[i];
+  for (uint32_t i = 0; i < fn.nslots; ++i) {
+    uint8_t f = i < fn.flag.size() ? fn.flag[i] : 0;
+    mem.flag[base + i] = f;
+    mem.live[base + i] = (f & kFlagTracked) ? 2 : 1;
+    mem.is_mutex[base + i] = 0;
+    mem.locks[base + i] = 0;
+  }
+  for (size_t i = 0; i < args.size(); ++i) {
+    mem.cell[base + i] = args[i];
+    mem.live[base + i] = 1;
+  }
   auto at_slot = [&](uint32_t slot) -> uint64_t& { return mem.cell[base + slot]; };
+  auto read_check = [&](uint32_t abs, int line) {
+    if (abs >= mem.flag.size()) return;
+    uint8_t f = mem.flag[abs];
+    if ((f & kFlagMutex) && mem.is_mutex[abs] && mem.locks[abs] == 0) throw Fail("interpret", "outside lock or hold", line, 0);
+    if (f & kFlagTracked) {
+      if (mem.live[abs] == 2) throw Fail("interpret", "absent", line, 0);
+      if (mem.live[abs] == 0 && (f & kFlagEphemeral)) throw Fail("interpret", "a second use of @ephemeral", line, 0);
+    }
+  };
+  auto consume = [&](uint32_t abs) {
+    if (abs >= mem.flag.size()) return;
+    uint8_t f = mem.flag[abs];
+    if ((f & kFlagTracked) && (f & kFlagEphemeral) && mem.live[abs] == 1) mem.live[abs] = 0;
+  };
+  auto note_slot = [&](uint32_t slot, int line) {
+    uint32_t abs = base + slot;
+    uint8_t f = slot < fn.flag.size() ? fn.flag[slot] : 0;
+    if ((f & kFlagMutex) && mem.is_mutex[abs] && mem.locks[abs] == 0) throw Fail("interpret", "outside lock or hold", line, 0);
+    if (f & kFlagTracked) mem.live[abs] = 1;
+    if (f & kFlagMutex) mem.is_mutex[abs] = 1;
+    if ((f & kFlagStatic) && slot < fn.slot_name.size()) mem.sticky[fn.shape.name + ":" + fn.slot_name[slot]] = mem.cell[abs];
+  };
+  auto note_abs = [&](uint32_t abs, int line) {
+    if (abs == 0 || abs >= mem.cell.size()) throw Fail("interpret", "absent pointer", line, 0);
+    uint8_t f = mem.flag[abs];
+    if ((f & kFlagMutex) && mem.is_mutex[abs] && mem.locks[abs] == 0) throw Fail("interpret", "outside lock or hold", line, 0);
+    if (f & kFlagTracked) mem.live[abs] = 1;
+    if (f & kFlagMutex) mem.is_mutex[abs] = 1;
+  };
+  auto apply_write = [&](const Insn& in) {
+    const Atom* numeric = in.src ? in.src : in.atom;
+    try {
+      at_slot(in.dst) = apply(in.op, *numeric, at_slot(in.lhs), in.op == Op::BitNot || in.op == Op::Not || in.op == Op::Neg ? 0 : at_slot(in.rhs), "interpret");
+    } catch (const Fail& err) {
+      if (fn.divzero && std::string(err.what()).find("division by zero") != std::string::npos) {
+        at_slot(in.dst) = div_stand_in(*numeric, fn.divzero);
+      } else {
+        throw Fail("interpret", err.what(), in.line, 0);
+      }
+    }
+    note_slot(in.dst, in.line);
+  };
   size_t ip = 0;
   while (ip < fn.code.size()) {
     if (++steps > 10000000) throw Fail("interpret", "stopped after 10000000 steps", 0, 0);
@@ -105,13 +179,21 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
     switch (in.op) {
       case Op::Imm:
         at_slot(in.dst) = in.imm;
+        note_slot(in.dst, in.line);
         break;
-      case Op::Mov:
-        at_slot(in.dst) = at_slot(in.lhs);
+      case Op::Mov: {
+        uint32_t src = base + in.lhs;
+        read_check(src, in.line);
+        uint64_t value = mem.cell[src];
+        consume(src);
+        at_slot(in.dst) = value;
+        note_slot(in.dst, in.line);
         break;
+      }
       case Op::Not:
       case Op::Neg:
-        at_slot(in.dst) = apply(in.op, *in.atom, at_slot(in.lhs), 0, "interpret");
+      case Op::BitNot:
+        apply_write(in);
         break;
       case Op::Label:
         break;
@@ -132,23 +214,31 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
         break;
       case Op::Threads:
         at_slot(in.dst) = host_threads();
+        note_slot(in.dst, in.line);
         break;
       case Op::Freemem:
         at_slot(in.dst) = host_freemem();
+        note_slot(in.dst, in.line);
         break;
       case Op::Addr:
         at_slot(in.dst) = static_cast<uint64_t>(base) + in.lhs;
+        note_slot(in.dst, in.line);
         break;
       case Op::Load: {
         uint64_t addr = at_slot(in.lhs);
         if (addr == 0 || addr >= mem.cell.size()) throw Fail("interpret", "absent pointer", in.line, 0);
+        read_check(static_cast<uint32_t>(addr), in.line);
         at_slot(in.dst) = mem.cell[static_cast<size_t>(addr)];
+        consume(static_cast<uint32_t>(addr));
+        note_slot(in.dst, in.line);
         break;
       }
       case Op::Store: {
         uint64_t addr = at_slot(in.lhs);
-        if (addr == 0 || addr >= mem.cell.size()) throw Fail("interpret", "absent pointer", in.line, 0);
+        note_abs(static_cast<uint32_t>(addr), in.line);
         mem.cell[static_cast<size_t>(addr)] = at_slot(in.rhs);
+        if ((mem.flag[static_cast<size_t>(addr)] & kFlagTracked)) mem.live[static_cast<size_t>(addr)] = 1;
+        if (mem.flag[static_cast<size_t>(addr)] & kFlagMutex) mem.is_mutex[static_cast<size_t>(addr)] = 1;
         break;
       }
       case Op::Call: {
@@ -172,17 +262,101 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
             jit_consider(*jit, prog, callee, call_args, got);
           }
         }
-        if (in.atom && in.dst < fn.nslots) at_slot(in.dst) = got;
+        if (in.atom && in.dst < fn.nslots) {
+          at_slot(in.dst) = got;
+          note_slot(in.dst, in.line);
+        }
         break;
       }
       case Op::Ret:
+        if (in.dst >= fn.nslots) return 0;
         return at_slot(in.dst);
-      default:
+      case Op::Print: {
+        if (mem.printed) *mem.printed = true;
+        const Atom& atom = *in.atom;
+        uint64_t bits = at_slot(in.lhs);
+        if (atom.family == Family::Bool || atom.name == "bool") {
+          std::cout << ((bits & 1ull) ? "true\n" : "false\n");
+        } else if (atom.family == Family::Float) {
+          double d = 0;
+          std::memcpy(&d, &bits, 8);
+          char buf[64];
+          std::snprintf(buf, sizeof buf, "%.9f", d);
+          std::cout << buf << '\n';
+        } else if (atom.family == Family::SignedInt || atom.family == Family::Enum) {
+          std::cout << static_cast<long long>(signed_result(bits, atom.family == Family::Enum ? atom : atom)) << '\n';
+        } else {
+          uint64_t m = mask_bits(atom.bits);
+          std::cout << static_cast<unsigned long long>(bits & m) << '\n';
+        }
+        break;
+      }
+      case Op::Cast:
         try {
-          at_slot(in.dst) = apply(in.op, *(in.src ? in.src : in.atom), at_slot(in.lhs), at_slot(in.rhs), "interpret");
+          at_slot(in.dst) = cast_bits(*in.src, *in.atom, at_slot(in.lhs), "interpret");
         } catch (const Fail& err) {
           throw Fail("interpret", err.what(), in.line, 0);
         }
+        note_slot(in.dst, in.line);
+        break;
+      case Op::State:
+        at_slot(in.dst) = mem.live[base + in.lhs];
+        note_slot(in.dst, in.line);
+        break;
+      case Op::StaticInit: {
+        std::string key = fn.shape.name + ":" + (in.dst < fn.slot_name.size() ? fn.slot_name[in.dst] : "");
+        if (in.imm == 0) {
+          auto hit = mem.sticky.find(key);
+          if (hit != mem.sticky.end()) {
+            at_slot(in.dst) = hit->second;
+            if (in.dst < fn.flag.size() && (fn.flag[in.dst] & kFlagTracked)) mem.live[base + in.dst] = 1;
+            ip = static_cast<size_t>(at.at(in.lhs));
+            continue;
+          }
+        } else {
+          mem.sticky[key] = at_slot(in.dst);
+        }
+        break;
+      }
+      case Op::Fork: {
+        std::vector<uint64_t> extra;
+        extra.reserve(in.args.size());
+        for (uint32_t arg : in.args) extra.push_back(at_slot(arg));
+        mem.forks[static_cast<uint32_t>(in.imm)] = {at_slot(in.lhs), std::move(extra)};
+        break;
+      }
+      case Op::Start: {
+        auto hit = mem.forks.find(static_cast<uint32_t>(in.imm));
+        uint64_t count = hit == mem.forks.end() ? 0 : hit->second.first;
+        const std::vector<uint64_t> extra = hit == mem.forks.end() ? std::vector<uint64_t>{} : hit->second.second;
+        double sum = 0;
+        for (uint64_t lane = 0; lane < count; ++lane) {
+          std::vector<uint64_t> call_args;
+          call_args.push_back(lane);
+          call_args.insert(call_args.end(), extra.begin(), extra.end());
+          uint64_t got = run_fn(prog, static_cast<int>(in.imm), call_args, index, active, steps, mem, jit);
+          double d = 0;
+          std::memcpy(&d, &got, 8);
+          sum += d;
+        }
+        uint64_t bits = 0;
+        std::memcpy(&bits, &sum, 8);
+        at_slot(in.dst) = bits;
+        note_slot(in.dst, in.line);
+        break;
+      }
+      case Op::Lock:
+      case Op::Unlock: {
+        uint64_t addr = at_slot(in.lhs);
+        if (addr == 0 || addr >= mem.locks.size()) throw Fail("interpret", "absent pointer", in.line, 0);
+        if (in.op == Op::Lock) mem.locks[static_cast<size_t>(addr)]++;
+        else if (mem.locks[static_cast<size_t>(addr)] > 0) mem.locks[static_cast<size_t>(addr)]--;
+        break;
+      }
+      case Op::Trap:
+        throw Fail("interpret", "require failed", in.line, 0);
+      default:
+        apply_write(in);
         break;
     }
     ++ip;
@@ -193,7 +367,7 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
 
 }  // namespace
 
-int64_t interpret(const Program& prog, const std::string& entry, Active* active, std::string* jit_log) {
+int64_t interpret(const Program& prog, const std::string& entry, Active* active, std::string* jit_log, bool* printed) {
   int index = find_fn(prog, entry);
   if (index < 0) throw Fail("interpret", "no function '" + entry + "'", 0, 0);
   const BcFunc& fn = prog.fns[static_cast<size_t>(index)];
@@ -206,6 +380,7 @@ int64_t interpret(const Program& prog, const std::string& entry, Active* active,
   }
   int steps = 0;
   Mem mem;
+  mem.printed = printed;
   Jit jit;
   jit_prepare(jit, prog);
   uint64_t bits = run_fn(prog, index, {}, -1, active, steps, mem, &jit);

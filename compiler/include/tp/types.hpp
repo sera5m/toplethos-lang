@@ -21,10 +21,12 @@ enum class Family : uint8_t {
   Char,
   Size,
   String,
-  Pointer
+  Pointer,
+  Enum,
+  Object
 };
 
-enum class Mutator : uint8_t { Const, Mutex, Static, Ephemeral, Freeze, Inlined };
+enum class Mutator : uint8_t { Const, Mutex, Static, Ephemeral, Freeze, Inlined, Val, Config, Xor };
 
 struct Atom {
   std::string name;
@@ -39,6 +41,8 @@ struct VarShape {
   std::string name;
   const Atom* atom = nullptr;
   std::vector<Mutator> mutators;
+  bool readonly = false;
+  int length = 0;
 };
 
 struct FnShape {
@@ -54,6 +58,7 @@ class TypeMap {
   const Atom* find(std::string_view name) const;
   /* T* is a cell pointer. The address width is the host pointer width, 64. */
   const Atom* pointer_to(const Atom* pointee);
+  const Atom* make(std::string name, Family family, int bits, std::string specifics);
   const std::vector<Atom>& atoms() const { return atoms_; }
   static const char* family_name(Family f);
   static const char* mutator_name(Mutator m);

@@ -148,10 +148,11 @@ int main(int argc, char** argv) {
         if (do_run) {
           tp::Active active;
           std::string jit_log;
-          int64_t value = tp::interpret(prog, "main", do_active ? &active : nullptr, do_jit ? &jit_log : nullptr);
+          bool printed = false;
+          int64_t value = tp::interpret(prog, "main", do_active ? &active : nullptr, do_jit ? &jit_log : nullptr, &printed);
           if (do_active) std::cout << tp::active_report(prog, active);
           if (do_jit && !jit_log.empty()) std::cout << jit_log;
-          std::cout << "result " << value << "\n";
+          if (!printed) std::cout << "result " << value << "\n";
         }
         if (!do_emit) return 0;
         phase = Phase::Assemble;

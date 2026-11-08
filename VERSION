@@ -1,4 +1,4 @@
 spec 1.0
 compiler tpcc
-release not 1.2
+release 1.2 tripar
 target 1.2 tripar

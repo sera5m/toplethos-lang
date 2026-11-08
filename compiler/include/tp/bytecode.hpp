@@ -12,8 +12,15 @@ namespace tp {
 enum class Op : uint16_t {
   Imm, Mov, Add, Sub, Mul, Div, Rem, And, Or, Xor, Shl, Shr,
   Eq, Ne, Lt, Le, Gt, Ge, Not, Neg, Jmp, Br, BrRange, Label, Ret,
-  Call, Threads, Freemem, Addr, Load, Store
+  Call, Threads, Freemem, Addr, Load, Store,
+  Pow, FloorDiv, BitNot, Print, Trap, StaticInit, Fork, Start, Lock, Unlock, Cast, State
 };
+
+/* Slot flags. Tracked scalars can be absent. Ephemeral becomes empty after one read. */
+constexpr uint8_t kFlagEphemeral = 1;
+constexpr uint8_t kFlagStatic = 2;
+constexpr uint8_t kFlagMutex = 4;
+constexpr uint8_t kFlagTracked = 8;
 
 struct Insn {
   Op op = Op::Imm;
@@ -51,10 +58,14 @@ struct BcFunc {
      `short`: one scalar result is not a large uniform run. */
   bool gpu_ops = false;
   bool scalar_ctrl = false;
+  /* 0 trap, 1 stand-in 0, 2 stand-in max. */
+  int divzero = 0;
+  std::vector<uint8_t> flag;
 };
 
 struct Program {
   std::vector<BcFunc> fns;
+  std::vector<std::string> traps;
 };
 
 /* Filled while the interpreter runs. Not a rewrite, and not a snapshot. */
@@ -67,8 +78,10 @@ Program lower(const Unit& unit);
 std::string dump_program(const Program& prog);
 
 /* CPU oracle. It runs the bytecode. It does not select instructions.
-   active may be null. When it is set, call counts and caller edges are recorded. */
-int64_t interpret(const Program& prog, const std::string& entry, Active* active = nullptr, std::string* jit_log = nullptr);
+   active may be null. When it is set, call counts and caller edges are recorded.
+   printed is set when the program printed, so the driver does not also print `result`. */
+int64_t interpret(const Program& prog, const std::string& entry, Active* active = nullptr, std::string* jit_log = nullptr,
+                  bool* printed = nullptr);
 std::string active_report(const Program& prog, const Active& active);
 
 }  // namespace tp

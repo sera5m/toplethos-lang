@@ -9,8 +9,13 @@
 
 namespace tp {
 
-enum class ExprKind : uint8_t { Imm, Name, Bin, Not, Neg, Call, Addr, Load };
-enum class StmtKind : uint8_t { Decl, Assign, Return, If, Loop, Leave, Store, CallStmt };
+enum class ExprKind : uint8_t {
+  Imm, Name, Bin, Not, Neg, Call, Addr, Load, Index, Field, Bump, Cast, State
+};
+
+enum class StmtKind : uint8_t {
+  Decl, Assign, Return, If, Loop, Leave, Store, CallStmt, Do, Lock, Unlock, Hold, Fork, Finish
+};
 
 struct Expr {
   ExprKind kind = ExprKind::Imm;
@@ -19,6 +24,9 @@ struct Expr {
   std::string op;
   uint64_t bits = 0;
   bool is_float = false;
+  /* Bump: 1 means prefix. Field: 1 means the object is an address (HERE).
+     Call: 1 means `start`. */
+  int aux = 0;
   std::unique_ptr<Expr> lhs;
   std::unique_ptr<Expr> rhs;
   std::vector<std::unique_ptr<Expr>> args;
@@ -33,6 +41,8 @@ struct Stmt {
   std::unique_ptr<Expr> other;
   std::vector<Stmt> yes;
   std::vector<Stmt> no;
+  std::vector<std::unique_ptr<Expr>> list;
+  std::string label;
   int line = 1;
   int col = 1;
 };
@@ -40,10 +50,19 @@ struct Stmt {
 struct Function {
   FnShape shape;
   std::vector<Stmt> body;
+  std::unique_ptr<Expr> require;
+  int divzero = 0;
+  int parallel = 0;
+  bool method = false;
+  const Atom* here = nullptr;
 };
 
 struct Unit {
   std::vector<Function> fns;
+  const Atom* atom_i32 = nullptr;
+  const Atom* atom_i64 = nullptr;
+  const Atom* atom_bool = nullptr;
+  const Atom* atom_f64 = nullptr;
 };
 
 /* Bind names to the type map. The tree still has every width. */

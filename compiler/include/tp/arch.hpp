@@ -134,6 +134,8 @@ inline uint32_t arch_bit(Op op) {
     case Op::Jmp:
     case Op::Label:
       return 0;
+    default:
+      return 0;
   }
   return 0;
 }
@@ -202,6 +204,8 @@ inline const char* arch_op_name(Op op) {
       return "load";
     case Op::Store:
       return "store";
+    default:
+      return "op";
   }
   return "unset";
 }

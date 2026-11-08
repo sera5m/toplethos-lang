@@ -26,6 +26,8 @@ bool folds(Op op) {
     case Op::Le:
     case Op::Gt:
     case Op::Ge:
+    case Op::Pow:
+    case Op::FloorDiv:
       return true;
     default:
       return false;
@@ -44,6 +46,10 @@ void fold_const(BcFunc& fn, int& folded) {
         known[in.dst] = in.imm;
         break;
       case Op::Mov:
+        if ((in.lhs < fn.flag.size()) && (fn.flag[in.lhs] & (kFlagEphemeral | kFlagMutex))) {
+          known[in.dst].reset();
+          break;
+        }
         if (known[in.lhs]) {
           in.op = Op::Imm;
           in.imm = *known[in.lhs];
@@ -57,6 +63,7 @@ void fold_const(BcFunc& fn, int& folded) {
         break;
       case Op::Not:
       case Op::Neg:
+      case Op::BitNot:
         if (known[in.lhs]) {
           try {
             in.imm = apply(in.op, *in.atom, *known[in.lhs], 0, "eval");
@@ -87,6 +94,9 @@ void fold_const(BcFunc& fn, int& folded) {
         if (in.dst < fn.nslots) known[in.dst].reset();
         break;
       case Op::Call:
+      case Op::Start:
+        known.assign(fn.nslots, std::nullopt);
+        break;
       case Op::Threads:
       case Op::Freemem:
         if (in.dst < fn.nslots) known[in.dst].reset();
@@ -98,7 +108,16 @@ void fold_const(BcFunc& fn, int& folded) {
           try {
             value = apply(in.op, *numeric, *known[in.lhs], *known[in.rhs], "eval");
           } catch (const Fail& err) {
-            throw Fail("eval", err.what(), in.line, 0);
+            if (std::string(err.what()).find("division by zero") != std::string::npos) {
+              if (fn.divzero) {
+                value = div_stand_in(*numeric, fn.divzero);
+              } else {
+                if (in.dst < fn.nslots) known[in.dst].reset();
+                break;
+              }
+            } else {
+              throw Fail("eval", err.what(), in.line, 0);
+            }
           }
           in.op = Op::Imm;
           in.imm = value;
@@ -132,7 +151,9 @@ void drop_unread(BcFunc& fn, int& dropped) {
   for (size_t n = fn.code.size(); n > 0; --n) {
     const Insn& in = fn.code[n - 1];
     bool writes = in.dst < fn.nslots && in.op != Op::Store;
-    bool live = in.op == Op::Ret || in.op == Op::Store || in.op == Op::Call || (writes && used[in.dst]);
+    bool side = in.op == Op::Ret || in.op == Op::Store || in.op == Op::Call || in.op == Op::Print || in.op == Op::Trap ||
+                in.op == Op::StaticInit || in.op == Op::Fork || in.op == Op::Start || in.op == Op::Lock || in.op == Op::Unlock;
+    bool live = side || (writes && used[in.dst]);
     if (writes && in.op != Op::Ret) used[in.dst] = 0;
     if (!live) {
       ++dropped;
@@ -167,11 +188,29 @@ void drop_unread(BcFunc& fn, int& dropped) {
         break;
       case Op::Not:
       case Op::Neg:
+      case Op::BitNot:
       case Op::Br:
       case Op::BrRange:
       case Op::Load:
       case Op::Addr:
+      case Op::Cast:
+      case Op::State:
         used[in.lhs] = 1;
+        break;
+      case Op::Pow:
+      case Op::FloorDiv:
+        used[in.lhs] = 1;
+        used[in.rhs] = 1;
+        break;
+      case Op::Print:
+      case Op::Lock:
+      case Op::Unlock:
+        if (in.lhs < fn.nslots) used[in.lhs] = 1;
+        break;
+      case Op::Fork:
+        if (in.lhs < fn.nslots) used[in.lhs] = 1;
+        for (uint32_t arg : in.args)
+          if (arg < fn.nslots) used[arg] = 1;
         break;
       case Op::Store:
         used[in.lhs] = 1;
@@ -185,6 +224,15 @@ void drop_unread(BcFunc& fn, int& dropped) {
       case Op::Label:
       case Op::Threads:
       case Op::Freemem:
+      case Op::Trap:
+      case Op::StaticInit:
+      case Op::Start:
+        break;
+      default:
+        if (in.lhs < fn.nslots) used[in.lhs] = 1;
+        if (in.rhs < fn.nslots) used[in.rhs] = 1;
+        for (uint32_t arg : in.args)
+          if (arg < fn.nslots) used[arg] = 1;
         break;
     }
   }

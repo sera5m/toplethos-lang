@@ -9,9 +9,9 @@ compiler/tpcc --asm out.s file.tpth_s
 compiler/tpcc --jit file.tpth_s
 ```
 
-`python3 conformance/check.py` is the 1.0 suite. A green run is release **1.2 tripar**. This tree is not that release. The gap is [notes/TRIPAR.md](notes/TRIPAR.md).
+`python3 conformance/check.py` is the 1.0 suite. A green run is release **1.2 tripar**. This tree is that release. What the name covers, and what it does not, is [notes/TRIPAR.md](notes/TRIPAR.md).
 
-The Horner battery's C++ and Rust rows are `sh aot/battery.sh`. The other cross-language rows are `sh aot/tasks.sh`. A 1.0 Toplethos program in those scripts is compiled with `tpcc`, which still rejects most of that surface.
+The Horner battery's C++ and Rust rows are `sh aot/battery.sh`. The other cross-language rows are `sh aot/tasks.sh`. A 1.0 Toplethos program in those scripts is compiled with `tpcc`. The conformance suite is the release gate; those batteries are not.
 
 This repo is the language. It is not the ESP32 watch firmware and not the IDE. The watch links it from [OIRIA_OS_espIDF](https://github.com/sera5m/OIRIA_OS_espIDF). The desktop editor is [toplethos-ide](https://github.com/sera5m/toplethos-ide).
 

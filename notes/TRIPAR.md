@@ -1,28 +1,27 @@
 # 1.2 tripar
 
-Not this tree. The name is reserved for one compiler, `compiler/tpcc`, on the day `python3 conformance/check.py` prints `1.2 tripar`.
+This tree. `python3 conformance/check.py` prints `1.2 tripar`. The compiler is `compiler/tpcc`. There is no second compiler.
 
-That program already has the three modes. `--run` interprets the bytecode. `--asm` and `--target` compile that same bytecode. `--jit` compiles an `@inlined` function from it while the interpreter is still running, checks the native result against that oracle, and flips the dispatch slot. There is no second compiler.
+`--run` interprets the bytecode. That interpreter is the oracle. `--asm` and `--target` compile that same bytecode. `--jit` compiles an `@inlined` function from it while the interpreter is still running, checks the native result against the oracle, and flips the dispatch slot. A native result that disagrees is dropped.
 
-The Python compiler is gone. `lang/` no longer has a parser, an interpreter, or an emitter. `aot/tpc.py` is gone. Those programs do not come back.
+The Python compiler is gone. `lang/` has no parser, interpreter, or emitter. `aot/tpc.py` is gone. Those programs do not come back.
 
-The suite is the 1.0 texts in `conformance/check.py`, including the rows that must be rejected. This run is `not 1.2 tripar: 63 gaps`. Four rows already match: an unclosed comment, division by zero, a shift count past the width, and a scalar call that returns 3.
+The suite is the 1.0 texts in `conformance/check.py`, including the rows that must be rejected. `make -C compiler test` is still the older battery and stays green. Spec text is still 1.0 in [USE.md](../USE.md). 1.2 is the compiler release, not a new spec.
 
-What the other rows stop on:
+What this release runs, and only on the interpreter:
 
-| programs | first reason |
-|---:|---|
-| 19 | `print` is not declared |
-| 9 | `expected =` |
-| 6 | `expected fn` |
-| 5 | `:` is not a token |
-| 3 | `.` is not a token |
-| 3 | `do` is not lowered |
-| 2 | arrays are not lowered |
-| 2 | `@require` is not in this stage |
-| 2 | `@divzero` is not in this stage |
-| 1 | `@parallel` is not in this stage |
+- Arithmetic the suite asks for: `**`, `/_/`, `~`, `+=`, `$=`, `!$=`, and `as`.
+- `print`. If the program printed, stdout is the prints and there is no `result` line.
+- Objects, fields, methods, `@childof`, and `@ismutationof`. A method receives `HERE` as an address. The program still loads and stores only pointer kind `cell`.
+- Arrays, `do`, and named `leave`.
+- Enums and `match @total`, desugared to `if`.
+- `@static` and `@config` stick for the process. `@val` and `@config` reject a later store. `@xor` is a copy.
+- `@ephemeral`, `state`, and absent slots.
+- `@divzero` stand-in. A bare `1/0` is still division by zero.
+- `@require`.
+- `fork` / `start` / `finish`, `@mutex`, `lock`, `unlock`, and `hold`. Workers run one after another on the interpreter. The lock is a count the interpreter checks. It is not an OS thread and not a GPU dispatch.
+- `include`. The suite writes `/tmp/tp_lib.tpth_s` before that row.
 
-Objects, enums, `include`, and `@mutex` are inside those rows. They are not a separate compiler. They are the rest of this one.
+`@NoFailTolerance`, `@gpuparallel`, and `namespace` are rejected on purpose.
 
-The 1.1 rows are not a pass by themselves. Pointer `cell`, the static counts, active call edges, `threads`, and `freemem` are in `tpcc`. `ffi`, `jit-fn`, `neuron`, and `manager` are records, not addresses a program can load. `inc`, `reuse`, and `forward` are counted, not lowered. None of that turns this tree into 1.2.
+Not done: SPIR-V is still a listing. It is not a Vulkan module, and a new opcode has no SPIR-V, amd64, arm64, or C++ row until one is written. The interpreter runs those opcodes. A backend that is asked to print one throws. Scalar control stays on the CPU.

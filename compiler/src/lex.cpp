@@ -14,6 +14,10 @@ const std::unordered_map<std::string, TokenKind>& keywords() {
       {"return", TokenKind::KwReturn}, {"if", TokenKind::KwIf}, {"else", TokenKind::KwElse},
       {"loop", TokenKind::KwLoop}, {"leave", TokenKind::KwLeave}, {"true", TokenKind::KwTrue},
       {"false", TokenKind::KwFalse}, {"as", TokenKind::KwAs},   {"do", TokenKind::KwDo},
+      {"object", TokenKind::KwObject}, {"enum", TokenKind::KwEnum}, {"match", TokenKind::KwMatch},
+      {"fork", TokenKind::KwFork}, {"finish", TokenKind::KwFinish}, {"lock", TokenKind::KwLock},
+      {"unlock", TokenKind::KwUnlock}, {"hold", TokenKind::KwHold}, {"start", TokenKind::KwStart},
+      {"namespace", TokenKind::KwNamespace}, {"include", TokenKind::KwInclude},
   };
   return map;
 }
@@ -264,6 +268,7 @@ class Lexer {
         return;
       case '+':
         if (two('+', TokenKind::PlusPlus, "++")) return;
+        if (two('=', TokenKind::PlusEq, "+=")) return;
         emit(TokenKind::Plus, "+", line, col, false, 0);
         return;
       case '-':
@@ -304,7 +309,23 @@ class Lexer {
         return;
       case '!':
         if (two('=', TokenKind::NotEq, "!=")) return;
+        if (n == '$') {
+          get();
+          if (peek() != '=') throw Fail("lex", "character not in the token set: $", line, col);
+          get();
+          emit(TokenKind::NotDollarEq, "!$=", line, col, false, 0);
+          return;
+        }
         emit(TokenKind::Not, "!", line, col, false, 0);
+        return;
+      case '$':
+        if (two('=', TokenKind::DollarEq, "$=")) return;
+        throw Fail("lex", "character not in the token set: $", line, col);
+      case ':':
+        emit(TokenKind::Colon, ":", line, col, false, 0);
+        return;
+      case '.':
+        emit(TokenKind::Dot, ".", line, col, false, 0);
         return;
       default:
         throw Fail("lex", std::string("character not in the token set: ") + c, line, col);
@@ -398,6 +419,16 @@ const char* token_name(TokenKind k) {
       return "++";
     case TokenKind::MinusMinus:
       return "--";
+    case TokenKind::PlusEq:
+      return "+=";
+    case TokenKind::DollarEq:
+      return "$=";
+    case TokenKind::NotDollarEq:
+      return "!$=";
+    case TokenKind::Colon:
+      return ":";
+    case TokenKind::Dot:
+      return ".";
     case TokenKind::KwFn:
       return "fn";
     case TokenKind::KwIn:
@@ -422,6 +453,28 @@ const char* token_name(TokenKind k) {
       return "as";
     case TokenKind::KwDo:
       return "do";
+    case TokenKind::KwObject:
+      return "object";
+    case TokenKind::KwEnum:
+      return "enum";
+    case TokenKind::KwMatch:
+      return "match";
+    case TokenKind::KwFork:
+      return "fork";
+    case TokenKind::KwFinish:
+      return "finish";
+    case TokenKind::KwLock:
+      return "lock";
+    case TokenKind::KwUnlock:
+      return "unlock";
+    case TokenKind::KwHold:
+      return "hold";
+    case TokenKind::KwStart:
+      return "start";
+    case TokenKind::KwNamespace:
+      return "namespace";
+    case TokenKind::KwInclude:
+      return "include";
     case TokenKind::At:
       return "at";
   }

@@ -160,6 +160,8 @@ std::string emit_spirv(const Program& prog) {
         case Op::BrRange:
         case Op::Label:
           break;
+        default:
+          throw Fail("spirv", "no row for this opcode yet", in.line, 0);
       }
     }
   }

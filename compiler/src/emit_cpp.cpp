@@ -202,6 +202,8 @@ std::string emit_cpp(const Program& prog) {
         case Op::Ret:
           out += "  return " + slot(in.dst) + ";\n";
           break;
+        default:
+          throw Fail("cpp", "no row for this opcode yet", in.line, 0);
       }
     }
     out += "}\n";

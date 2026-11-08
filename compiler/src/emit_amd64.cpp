@@ -214,6 +214,8 @@ std::string emit_amd64(const Program& prog) {
         case Op::Br:
         case Op::Label:
           break;
+        default:
+          throw Fail("amd64", "no row for this opcode yet", in.line, 0);
       }
     }
     if (fn.shape.outputs.empty()) out += "    leave\n    ret\n";

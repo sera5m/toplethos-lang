@@ -66,6 +66,18 @@ const Atom* TypeMap::pointer_to(const Atom* pointee) {
   return &atom;
 }
 
+const Atom* TypeMap::make(std::string name, Family family, int bits, std::string specifics) {
+  if (const Atom* found = find(name)) return found;
+  extra_.push_back(Atom{});
+  Atom& atom = extra_.back();
+  atom.name = std::move(name);
+  atom.family = family;
+  atom.bits = bits;
+  atom.specifics = std::move(specifics);
+  extra_by_name_[atom.name] = &atom;
+  return &atom;
+}
+
 const char* TypeMap::family_name(Family f) {
   switch (f) {
     case Family::SignedInt:
@@ -90,6 +102,10 @@ const char* TypeMap::family_name(Family f) {
       return "string";
     case Family::Pointer:
       return "pointer";
+    case Family::Enum:
+      return "enum";
+    case Family::Object:
+      return "object";
   }
   return "unset";
 }
@@ -108,6 +124,12 @@ const char* TypeMap::mutator_name(Mutator m) {
       return "freeze";
     case Mutator::Inlined:
       return "inlined";
+    case Mutator::Val:
+      return "val";
+    case Mutator::Config:
+      return "config";
+    case Mutator::Xor:
+      return "xor";
   }
   return "unset";
 }

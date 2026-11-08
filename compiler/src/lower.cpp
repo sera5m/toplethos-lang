@@ -90,12 +90,21 @@ void collect_names(const Expr& e, std::unordered_map<std::string, int>& reads) {
     case ExprKind::Call:
       for (const auto& arg : e.args)
         if (arg) collect_names(*arg, reads);
+      if (e.lhs) collect_names(*e.lhs, reads);
       break;
     case ExprKind::Addr:
       if (!e.name.empty()) reads[e.name]++;
       break;
     case ExprKind::Load:
+    case ExprKind::Index:
+    case ExprKind::Field:
+    case ExprKind::Bump:
+    case ExprKind::Cast:
       if (e.lhs) collect_names(*e.lhs, reads);
+      if (e.rhs) collect_names(*e.rhs, reads);
+      break;
+    case ExprKind::State:
+      if (!e.name.empty()) reads[e.name]++;
       break;
     case ExprKind::Imm:
       break;
@@ -120,13 +129,20 @@ void range_walk(const Expr& e, int& range_n) {
     case ExprKind::Call:
       for (const auto& arg : e.args)
         if (arg) range_walk(*arg, range_n);
+      if (e.lhs) range_walk(*e.lhs, range_n);
       break;
     case ExprKind::Load:
+    case ExprKind::Index:
+    case ExprKind::Field:
+    case ExprKind::Bump:
+    case ExprKind::Cast:
       if (e.lhs) range_walk(*e.lhs, range_n);
+      if (e.rhs) range_walk(*e.rhs, range_n);
       break;
     case ExprKind::Imm:
     case ExprKind::Name:
     case ExprKind::Addr:
+    case ExprKind::State:
       break;
   }
 }
@@ -246,11 +262,16 @@ void tally_loops(const std::vector<Stmt>& body, int& inc_n, int& forward_n) {
 void require_returns(const BcFunc& fn);
 
 struct Lowerer {
+  const Unit* unit = nullptr;
   BcFunc fn;
   std::unordered_map<std::string, uint32_t> slots;
   const std::unordered_map<std::string, uint32_t>* fn_of = nullptr;
   uint32_t nlab = 0;
-  std::vector<uint32_t> breaks;
+  struct LoopFrame {
+    uint32_t exit = 0;
+    std::string name;
+  };
+  std::vector<LoopFrame> loops;
 
   uint32_t lab() { return nlab++; }
 
@@ -282,7 +303,228 @@ struct Lowerer {
   uint32_t fresh(const std::string& name) {
     uint32_t id = fn.nslots++;
     fn.slot_name.push_back(name);
+    fn.flag.push_back(0);
     return id;
+  }
+
+  void track(uint32_t slot, uint8_t flags) { fn.flag[slot] = flags; }
+
+  static bool hasm(const VarShape& v, Mutator m) {
+    for (Mutator x : v.mutators)
+      if (x == m) return true;
+    return false;
+  }
+
+  uint32_t imm_bits(const Atom* atom, uint64_t bits, int line) {
+    uint32_t dst = fresh("imm");
+    Insn in;
+    in.op = Op::Imm;
+    in.atom = atom;
+    in.dst = dst;
+    in.imm = bits;
+    in.line = line;
+    put(in);
+    return dst;
+  }
+
+  uint32_t address_of_slot(uint32_t slot, int line) {
+    uint32_t dst = fresh("addr");
+    Insn in;
+    in.op = Op::Addr;
+    in.atom = unit->atom_i64;
+    in.dst = dst;
+    in.lhs = slot;
+    in.line = line;
+    put(in);
+    return dst;
+  }
+
+  uint32_t add_i64(uint32_t lhs, uint32_t rhs, int line) {
+    uint32_t dst = fresh("add");
+    Insn in;
+    in.op = Op::Add;
+    in.atom = unit->atom_i64;
+    in.src = unit->atom_i64;
+    in.dst = dst;
+    in.lhs = lhs;
+    in.rhs = rhs;
+    in.line = line;
+    put(in);
+    return dst;
+  }
+
+  uint32_t address_expr(const Expr& e) {
+    if (e.kind == ExprKind::Name) return address_of_slot(local(e.name), e.line);
+    if (e.kind == ExprKind::Load) return emit_expr(*e.lhs);
+    if (e.kind == ExprKind::Index) {
+      uint32_t base = 0;
+      if (e.lhs && e.lhs->kind == ExprKind::Name && (!e.lhs->atom || e.lhs->atom->family != Family::Pointer))
+        base = address_of_slot(local(e.lhs->name), e.line);
+      else
+        base = emit_expr(*e.lhs);
+      return add_i64(base, emit_expr(*e.rhs), e.line);
+    }
+    if (e.kind == ExprKind::Field) {
+      uint32_t base = 0;
+      if (e.aux == 1) base = emit_expr(*e.lhs);
+      else if (e.lhs && e.lhs->kind == ExprKind::Name) base = address_of_slot(local(e.lhs->name), e.line);
+      else base = address_expr(*e.lhs);
+      if (e.bits == 0) return base;
+      return add_i64(base, imm_bits(unit->atom_i64, e.bits, e.line), e.line);
+    }
+    throw Fail("bytecode", "not a place", e.line, e.col);
+  }
+
+  struct Located {
+    bool direct = false;
+    uint32_t id = 0;
+  };
+
+  Located locate(const Expr& e) {
+    if (e.kind == ExprKind::Name) return {true, local(e.name)};
+    if (e.kind == ExprKind::Index && e.lhs && e.lhs->kind == ExprKind::Name && e.rhs && e.rhs->kind == ExprKind::Imm && !e.rhs->is_float)
+      return {true, local(e.lhs->name) + static_cast<uint32_t>(e.rhs->bits)};
+    if (e.kind == ExprKind::Field && e.aux == 0 && e.lhs && e.lhs->kind == ExprKind::Name)
+      return {true, local(e.lhs->name) + static_cast<uint32_t>(e.bits)};
+    return {false, address_expr(e)};
+  }
+
+  uint32_t read_place(const Expr& e) {
+    if (e.kind == ExprKind::Load) return emit_expr(e);
+    Located loc = locate(e);
+    uint32_t dst = fresh("ld");
+    Insn in;
+    in.dst = dst;
+    in.line = e.line;
+    in.atom = e.atom;
+    if (loc.direct) {
+      in.op = Op::Mov;
+      in.lhs = loc.id;
+    } else {
+      in.op = Op::Load;
+      in.src = unit->atom_i64;
+      in.lhs = loc.id;
+    }
+    put(in);
+    return dst;
+  }
+
+  void store_value(const Expr& place, uint32_t val, int line) {
+    Located loc = locate(place);
+    Insn in;
+    in.atom = place.atom;
+    in.line = line;
+    if (loc.direct) {
+      in.op = Op::Mov;
+      in.dst = loc.id;
+      in.lhs = val;
+    } else {
+      in.op = Op::Store;
+      in.src = unit->atom_i64;
+      in.lhs = loc.id;
+      in.rhs = val;
+      in.dst = 0xffffffffu;
+    }
+    put(in);
+  }
+
+  uint32_t emit_builtin(const Expr& e) {
+    auto pick = [&](uint32_t lhs, uint32_t rhs, Op pred, uint32_t yes_v, uint32_t no_v) {
+      uint32_t cond = fresh("cmp");
+      Insn cmp;
+      cmp.op = pred;
+      cmp.atom = unit->atom_bool;
+      cmp.src = e.args[0]->atom;
+      cmp.dst = cond;
+      cmp.lhs = lhs;
+      cmp.rhs = rhs;
+      cmp.line = e.line;
+      put(cmp);
+      uint32_t dst = fresh(e.name);
+      uint32_t other = lab();
+      uint32_t end = lab();
+      branch_false(cond, other, unit->atom_bool);
+      Insn y;
+      y.op = Op::Mov;
+      y.atom = e.atom;
+      y.dst = dst;
+      y.lhs = yes_v;
+      y.line = e.line;
+      put(y);
+      jump(end);
+      mark(other);
+      Insn n;
+      n.op = Op::Mov;
+      n.atom = e.atom;
+      n.dst = dst;
+      n.lhs = no_v;
+      n.line = e.line;
+      put(n);
+      mark(end);
+      return dst;
+    };
+    if (e.name == "min" || e.name == "max") {
+      uint32_t a = emit_expr(*e.args[0]);
+      uint32_t b = emit_expr(*e.args[1]);
+      if (e.name == "min") return pick(a, b, Op::Lt, a, b);
+      return pick(a, b, Op::Gt, a, b);
+    }
+    if (e.name == "abs") {
+      uint32_t a = emit_expr(*e.args[0]);
+      uint32_t neg = fresh("neg");
+      Insn n;
+      n.op = Op::Neg;
+      n.atom = e.atom;
+      n.dst = neg;
+      n.lhs = a;
+      n.line = e.line;
+      put(n);
+      uint32_t zero = imm_bits(e.atom, 0, e.line);
+      return pick(a, zero, Op::Lt, neg, a);
+    }
+    if (e.name == "clamp") {
+      uint32_t x = emit_expr(*e.args[0]);
+      uint32_t lo = emit_expr(*e.args[1]);
+      uint32_t hi = emit_expr(*e.args[2]);
+      uint32_t raised = pick(x, lo, Op::Gt, x, lo);
+      return pick(raised, hi, Op::Lt, raised, hi);
+    }
+    if (e.name == "swap") {
+      uint32_t p = emit_expr(*e.args[0]);
+      uint32_t q = emit_expr(*e.args[1]);
+      const Atom* pointee = e.args[0]->atom->pointee;
+      uint32_t vp = fresh("sw");
+      uint32_t vq = fresh("sw");
+      Insn ld;
+      ld.op = Op::Load;
+      ld.atom = pointee;
+      ld.src = e.args[0]->atom;
+      ld.dst = vp;
+      ld.lhs = p;
+      ld.line = e.line;
+      put(ld);
+      Insn ld2 = ld;
+      ld2.dst = vq;
+      ld2.lhs = q;
+      ld2.src = e.args[1]->atom;
+      put(ld2);
+      Insn st;
+      st.op = Op::Store;
+      st.atom = pointee;
+      st.src = e.args[0]->atom;
+      st.lhs = p;
+      st.rhs = vq;
+      st.dst = 0xffffffffu;
+      st.line = e.line;
+      put(st);
+      Insn st2 = st;
+      st2.lhs = q;
+      st2.rhs = vp;
+      st2.src = e.args[1]->atom;
+      put(st2);
+      return imm_bits(unit->atom_i32, 0, e.line);
+    }
+    throw Fail("bytecode", "builtin", e.line, e.col);
   }
 
   uint32_t local(const std::string& name) {
@@ -337,6 +579,16 @@ struct Lowerer {
       }
       case ExprKind::Bin: {
         if (e.op == "&&" || e.op == "||") return emit_logic(e);
+        if (e.op == "=") {
+          uint32_t val = emit_expr(*e.rhs);
+          store_value(*e.lhs, val, e.line);
+          return val;
+        }
+        if (e.op == "$=" || e.op == "!$=") {
+          emit_expr(*e.lhs);
+          emit_expr(*e.rhs);
+          return imm_bits(unit->atom_bool, e.op == "!$=" ? 1 : 0, e.line);
+        }
         uint32_t lhs = emit_expr(*e.lhs);
         uint32_t rhs = emit_expr(*e.rhs);
         uint32_t dst = fresh("bin");
@@ -352,6 +604,8 @@ struct Lowerer {
         else if (e.op == "*") in.op = Op::Mul;
         else if (e.op == "/") in.op = Op::Div;
         else if (e.op == "%") in.op = Op::Rem;
+        else if (e.op == "/_/") in.op = Op::FloorDiv;
+        else if (e.op == "**") in.op = Op::Pow;
         else if (e.op == "&") in.op = Op::And;
         else if (e.op == "|") in.op = Op::Or;
         else if (e.op == "^") in.op = Op::Xor;
@@ -369,9 +623,9 @@ struct Lowerer {
       }
       case ExprKind::Neg: {
         uint32_t lhs = emit_expr(*e.lhs);
-        uint32_t dst = fresh("neg");
+        uint32_t dst = fresh(e.op == "~" ? "not" : "neg");
         Insn in;
-        in.op = Op::Neg;
+        in.op = e.op == "~" ? Op::BitNot : Op::Neg;
         in.atom = e.atom;
         in.dst = dst;
         in.lhs = lhs;
@@ -380,6 +634,32 @@ struct Lowerer {
         return dst;
       }
       case ExprKind::Call: {
+        if (e.aux == 1) {
+          if (!fn_of) throw Fail("bytecode", "no function table", e.line, e.col);
+          auto found = fn_of->find(e.name);
+          if (found == fn_of->end()) throw Fail("bytecode", "'" + e.name + "' is not declared", e.line, e.col);
+          uint32_t dst = fresh("start");
+          Insn in;
+          in.op = Op::Start;
+          in.atom = e.atom;
+          in.dst = dst;
+          in.imm = found->second;
+          in.line = e.line;
+          put(in);
+          return dst;
+        }
+        if (e.name == "print") {
+          uint32_t val = emit_expr(*e.args[0]);
+          Insn in;
+          in.op = Op::Print;
+          in.atom = e.args[0]->atom;
+          in.lhs = val;
+          in.dst = 0xffffffffu;
+          in.line = e.line;
+          put(in);
+          return imm_bits(unit->atom_i32, 0, e.line);
+        }
+        if (e.name == "min" || e.name == "max" || e.name == "clamp" || e.name == "abs" || e.name == "swap") return emit_builtin(e);
         if (e.name == "threads" || e.name == "freemem") {
           uint32_t dst = fresh(e.name);
           Insn in;
@@ -394,7 +674,24 @@ struct Lowerer {
         auto found = fn_of->find(e.name);
         if (found == fn_of->end()) throw Fail("bytecode", "'" + e.name + "' is not declared", e.line, e.col);
         std::vector<uint32_t> args;
-        args.reserve(e.args.size());
+        args.reserve(e.args.size() + 1);
+        if (e.lhs) {
+          if (e.lhs->kind == ExprKind::Name && e.lhs->name == "HERE") {
+            args.push_back(emit_expr(*e.lhs));
+          } else if (e.lhs->kind == ExprKind::Name) {
+            uint32_t dst = fresh("recv");
+            Insn ad;
+            ad.op = Op::Addr;
+            ad.atom = unit->atom_i64;
+            ad.dst = dst;
+            ad.lhs = local(e.lhs->name);
+            ad.line = e.line;
+            put(ad);
+            args.push_back(dst);
+          } else {
+            throw Fail("bytecode", "method receiver", e.line, e.col);
+          }
+        }
         for (const auto& arg : e.args) args.push_back(emit_expr(*arg));
         bool void_call = e.atom == nullptr;
         uint32_t dst = void_call ? 0xffffffffu : fresh(e.name);
@@ -428,6 +725,49 @@ struct Lowerer {
         in.src = e.lhs->atom;
         in.dst = dst;
         in.lhs = ptr;
+        in.line = e.line;
+        put(in);
+        return dst;
+      }
+      case ExprKind::Index:
+      case ExprKind::Field:
+        return read_place(e);
+      case ExprKind::Bump: {
+        uint32_t old = read_place(*e.lhs);
+        uint32_t one = imm_bits(e.atom, 1, e.line);
+        uint32_t neu = fresh("bump");
+        Insn in;
+        in.op = e.op == "--" ? Op::Sub : Op::Add;
+        in.atom = e.atom;
+        in.src = e.atom;
+        in.dst = neu;
+        in.lhs = old;
+        in.rhs = one;
+        in.line = e.line;
+        put(in);
+        store_value(*e.lhs, neu, e.line);
+        return e.aux == 1 ? neu : old;
+      }
+      case ExprKind::Cast: {
+        uint32_t lhs = emit_expr(*e.lhs);
+        uint32_t dst = fresh("as");
+        Insn in;
+        in.op = Op::Cast;
+        in.atom = e.atom;
+        in.src = e.lhs->atom;
+        in.dst = dst;
+        in.lhs = lhs;
+        in.line = e.line;
+        put(in);
+        return dst;
+      }
+      case ExprKind::State: {
+        uint32_t dst = fresh("state");
+        Insn in;
+        in.op = Op::State;
+        in.atom = e.atom;
+        in.dst = dst;
+        in.lhs = local(e.name);
         in.line = e.line;
         put(in);
         return dst;
@@ -485,30 +825,86 @@ struct Lowerer {
     for (const Stmt& st : body) {
       switch (st.kind) {
         case StmtKind::Decl: {
-          uint32_t id = fresh(st.var.name);
-          slots[st.var.name] = id;
-          uint32_t val = emit_expr(*st.expr);
-          Insn in;
-          in.op = Op::Mov;
-          in.atom = st.var.atom;
-          in.dst = id;
-          in.lhs = val;
-          in.line = st.line;
-          put(in);
+          int n = st.var.length > 0 ? st.var.length : 1;
+          bool scalar = st.var.atom && st.var.atom->family != Family::Object && st.var.length == 0;
+          bool object = st.var.atom && st.var.atom->family == Family::Object;
+          uint8_t flags = kFlagTracked;
+          if (scalar) {
+            if (hasm(st.var, Mutator::Ephemeral)) flags |= kFlagEphemeral;
+            if (hasm(st.var, Mutator::Static) || hasm(st.var, Mutator::Config)) flags |= kFlagStatic;
+            if (hasm(st.var, Mutator::Mutex)) flags |= kFlagMutex;
+          }
+          uint32_t base = fresh(st.var.name);
+          slots[st.var.name] = base;
+          track(base, flags);
+          for (int i = 1; i < n; ++i) track(fresh(st.var.name), kFlagTracked);
+          uint32_t skip = 0;
+          if (flags & kFlagStatic) {
+            skip = lab();
+            Insn chk;
+            chk.op = Op::StaticInit;
+            chk.dst = base;
+            chk.lhs = skip;
+            chk.imm = 0;
+            chk.atom = st.var.atom;
+            chk.line = st.line;
+            put(chk);
+          }
+          auto mov_at = [&](uint32_t slot, uint32_t val) {
+            Insn mv;
+            mv.op = Op::Mov;
+            mv.atom = st.var.atom;
+            mv.dst = slot;
+            mv.lhs = val;
+            mv.line = st.line;
+            put(mv);
+          };
+          if (!st.list.empty()) {
+            for (int i = 0; i < n; ++i) {
+              uint32_t val = i < static_cast<int>(st.list.size()) ? emit_expr(*st.list[static_cast<size_t>(i)]) : imm_bits(st.var.atom, 0, st.line);
+              mov_at(base + static_cast<uint32_t>(i), val);
+            }
+          } else if (st.expr) {
+            mov_at(base, emit_expr(*st.expr));
+          } else if (!object && st.var.length > 0) {
+            for (int i = 0; i < n; ++i) mov_at(base + static_cast<uint32_t>(i), imm_bits(st.var.atom, 0, st.line));
+          }
+          if (flags & kFlagStatic) {
+            Insn sav;
+            sav.op = Op::StaticInit;
+            sav.dst = base;
+            sav.imm = 1;
+            sav.atom = st.var.atom;
+            sav.line = st.line;
+            put(sav);
+            mark(skip);
+          }
           break;
         }
         case StmtKind::Assign: {
           uint32_t val = emit_expr(*st.expr);
-          Insn in;
-          in.op = Op::Mov;
-          in.atom = st.var.atom;
-          in.dst = local(st.var.name);
-          in.lhs = val;
-          in.line = st.line;
-          put(in);
+          if (st.other) {
+            store_value(*st.other, val, st.line);
+          } else {
+            Insn in;
+            in.op = Op::Mov;
+            in.atom = st.var.atom;
+            in.dst = local(st.var.name);
+            in.lhs = val;
+            in.line = st.line;
+            put(in);
+          }
           break;
         }
         case StmtKind::Return: {
+          if (!st.expr) {
+            Insn in;
+            in.op = Op::Ret;
+            in.dst = 0xffffffffu;
+            in.line = st.line;
+            put(in);
+            break;
+          }
           uint32_t val = emit_expr(*st.expr);
           if (fn.shape.outputs.empty() || st.expr->atom != fn.shape.outputs[0].atom) {
             throw Fail("bytecode", "return atom does not match the function output", st.line, st.col);
@@ -552,18 +948,31 @@ struct Lowerer {
         case StmtKind::Loop: {
           uint32_t head = lab();
           uint32_t exit = lab();
-          breaks.push_back(exit);
+          loops.push_back({exit, st.label});
           mark(head);
           emit_stmts(st.yes);
           jump(head);
           mark(exit);
-          breaks.pop_back();
+          loops.pop_back();
           break;
         }
-        case StmtKind::Leave:
-          if (breaks.empty()) throw Fail("bytecode", "leave is not inside a loop", st.line, st.col);
-          jump(breaks.back());
+        case StmtKind::Leave: {
+          if (loops.empty()) throw Fail("bytecode", "leave is not inside a loop", st.line, st.col);
+          if (st.label.empty()) {
+            jump(loops.back().exit);
+            break;
+          }
+          bool found = false;
+          for (size_t i = loops.size(); i > 0; --i) {
+            if (loops[i - 1].name == st.label) {
+              jump(loops[i - 1].exit);
+              found = true;
+              break;
+            }
+          }
+          if (!found) throw Fail("bytecode", "leave is not inside a loop", st.line, st.col);
           break;
+        }
         case StmtKind::Store: {
           uint32_t ptr = emit_expr(*st.expr);
           uint32_t val = emit_expr(*st.other);
@@ -581,20 +990,143 @@ struct Lowerer {
         case StmtKind::CallStmt:
           emit_expr(*st.expr);
           break;
+        case StmtKind::Do: {
+          uint32_t idx = fresh("i");
+          slots["i"] = idx;
+          track(idx, kFlagTracked);
+          Insn zero;
+          zero.op = Op::Imm;
+          zero.atom = unit->atom_i32;
+          zero.dst = idx;
+          zero.imm = 0;
+          zero.line = st.line;
+          put(zero);
+          uint32_t count = emit_expr(*st.expr);
+          uint32_t head = lab();
+          uint32_t done = lab();
+          loops.push_back({done, ""});
+          mark(head);
+          uint32_t cond = fresh("cmp");
+          Insn lt;
+          lt.op = Op::Lt;
+          lt.atom = unit->atom_bool;
+          lt.src = unit->atom_i32;
+          lt.dst = cond;
+          lt.lhs = idx;
+          lt.rhs = count;
+          lt.line = st.line;
+          put(lt);
+          branch_false(cond, done, unit->atom_bool);
+          emit_stmts(st.yes);
+          uint32_t one = imm_bits(unit->atom_i32, 1, st.line);
+          uint32_t next = fresh("bump");
+          Insn add;
+          add.op = Op::Add;
+          add.atom = unit->atom_i32;
+          add.src = unit->atom_i32;
+          add.dst = next;
+          add.lhs = idx;
+          add.rhs = one;
+          add.line = st.line;
+          put(add);
+          Insn step;
+          step.op = Op::Mov;
+          step.atom = unit->atom_i32;
+          step.dst = idx;
+          step.lhs = next;
+          step.line = st.line;
+          put(step);
+          jump(head);
+          mark(done);
+          loops.pop_back();
+          emit_stmts(st.no);
+          break;
+        }
+        case StmtKind::Lock:
+        case StmtKind::Unlock: {
+          uint32_t addr = emit_expr(*st.expr);
+          Insn in;
+          in.op = st.kind == StmtKind::Lock ? Op::Lock : Op::Unlock;
+          in.lhs = addr;
+          in.dst = 0xffffffffu;
+          in.line = st.line;
+          put(in);
+          break;
+        }
+        case StmtKind::Hold: {
+          uint32_t addr = emit_expr(*st.expr);
+          Insn in;
+          in.op = Op::Lock;
+          in.lhs = addr;
+          in.dst = 0xffffffffu;
+          in.line = st.line;
+          put(in);
+          emit_stmts(st.yes);
+          in.op = Op::Unlock;
+          put(in);
+          break;
+        }
+        case StmtKind::Fork: {
+          if (!fn_of || !unit) throw Fail("bytecode", "no function table", st.line, st.col);
+          auto found = fn_of->find(st.label);
+          if (found == fn_of->end()) throw Fail("bytecode", "'" + st.label + "' is not declared", st.line, st.col);
+          const Function* worker = nullptr;
+          for (const Function& f : unit->fns)
+            if (f.shape.name == st.label) worker = &f;
+          uint32_t count = 0;
+          if (st.expr) count = emit_expr(*st.expr);
+          else if (worker && worker->parallel > 0) count = imm_bits(unit->atom_i32, static_cast<uint64_t>(worker->parallel), st.line);
+          else throw Fail("bytecode", "fork wants a count", st.line, st.col);
+          std::vector<uint32_t> extras;
+          for (const auto& arg : st.list) extras.push_back(emit_expr(*arg));
+          Insn in;
+          in.op = Op::Fork;
+          in.imm = found->second;
+          in.lhs = count;
+          in.args = std::move(extras);
+          in.dst = 0xffffffffu;
+          in.line = st.line;
+          put(in);
+          break;
+        }
+        case StmtKind::Finish:
+          break;
       }
     }
   }
 
   void run(const Function& src) {
     fn.shape = src.shape;
+    fn.divzero = src.divzero;
+    if (src.method && src.here) {
+      VarShape here;
+      here.name = "HERE";
+      here.atom = src.here;
+      fn.shape.inputs.insert(fn.shape.inputs.begin(), here);
+    }
     tally_exprs(src.body, fn.drop_n, fn.reuse_n, fn.range_n);
     tally_loops(src.body, fn.inc_n, fn.forward_n);
-    for (const VarShape& in : src.shape.inputs) {
+    for (const VarShape& in : fn.shape.inputs) {
       uint32_t id = fresh(in.name);
       slots[in.name] = id;
+      track(id, kFlagTracked);
+    }
+    if (src.require) {
+      uint32_t cond = emit_expr(*src.require);
+      uint32_t bad = lab();
+      uint32_t ok = lab();
+      branch_false(cond, bad, unit->atom_bool);
+      jump(ok);
+      mark(bad);
+      Insn trap;
+      trap.op = Op::Trap;
+      trap.imm = 0;
+      trap.line = src.require->line;
+      put(trap);
+      mark(ok);
     }
     emit_stmts(src.body);
-    for (const VarShape& in : src.shape.inputs) {
+    for (const VarShape& in : fn.shape.inputs) {
       if (in.atom && in.atom->family == Family::Pointer) fn.cell_ptr = true;
     }
     for (const Insn& in : fn.code) {
@@ -610,12 +1142,12 @@ struct Lowerer {
         return atom && (atom->name == "i32" || atom->name == "i64" || atom->name == "bool");
       };
       if (!src.shape.outputs.empty() && !scalar(src.shape.outputs[0].atom)) why = "result";
-      for (const VarShape& in : src.shape.inputs) {
+      for (const VarShape& in : fn.shape.inputs) {
         if (in.atom && in.atom->family == Family::Pointer) why = "pointer";
         else if (!scalar(in.atom)) why = "parameter";
       }
       for (const Insn& in : fn.code) {
-        if (in.op == Op::Call) why = "call";
+        if (in.op == Op::Call || in.op == Op::Print) why = "call";
         else if (in.op == Op::Threads) why = "threads";
         else if (in.op == Op::Freemem) why = "freemem";
         else if (in.op == Op::Addr || in.op == Op::Load || in.op == Op::Store) why = "pointer";
@@ -648,7 +1180,7 @@ void require_returns(const BcFunc& fn) {
     if (seen[ip]) continue;
     seen[ip] = 1;
     const Insn& in = fn.code[ip];
-    if (in.op == Op::Ret) {
+    if (in.op == Op::Ret || in.op == Op::Trap) {
       ret = true;
       continue;
     }
@@ -673,6 +1205,7 @@ Program lower(const Unit& unit) {
   Program prog;
   for (const Function& fn : unit.fns) {
     Lowerer low;
+    low.unit = &unit;
     low.fn_of = &fn_of;
     low.run(fn);
     prog.fns.push_back(std::move(low.fn));
