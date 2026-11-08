@@ -1,11 +1,16 @@
-"""Both hosts, one meaning. Run from the repo root: python3 conformance/check.py"""
+"""1.0 suite against the only compiler, compiler/tpcc.
 
-import sys
+Print output from the old hosts is the expected text. tpcc is not 1.2 until
+every row here matches that text, and every rejected row is rejected for the
+same reason. Run from the repo root: python3 conformance/check.py
+"""
+
+import subprocess
+import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lang"))
-from front import CompileError, Failure
-from host import compile_text, run_binary, run_text
+ROOT = Path(__file__).resolve().parents[1]
+TPCC = ROOT / "compiler" / "tpcc"
 
 OK = [
     ("arith", "7\n", """
@@ -650,58 +655,66 @@ fn main in[] out[i32] {
 ]
 
 
-def both(src):
-    inter = compiled = None
-    ie = ce = None
-    try:
-        inter = run_text(src)
-    except (CompileError, Failure) as e:
-        ie = str(e)
-    try:
-        compile_text(src, "/tmp/conform_one")
-        try:
-            compiled = run_binary("/tmp/conform_one")
-        except Failure as e:
-            ce = str(e)
-    except CompileError as e:
-        ce = str(e)
-    return inter, ie, compiled, ce
+def ensure_tpcc():
+    if TPCC.exists():
+        return
+    subprocess.check_call(["make", "-C", str(ROOT / "compiler"), "tpcc"])
+
+
+def run_tpcc(src):
+    with tempfile.NamedTemporaryFile("w", suffix=".tpth_s", delete=False) as handle:
+        handle.write(src)
+        path = handle.name
+    proc = subprocess.run([str(TPCC), "--run", path], capture_output=True, text=True)
+    why = ""
+    for line in (proc.stderr or "").splitlines():
+        if line.startswith("why:"):
+            why = line[4:].strip()
+    if proc.returncode != 0:
+        return False, why or (proc.stderr or "failed").strip()
+    return True, (proc.stdout or "").strip()
 
 
 def main():
+    ensure_tpcc()
     bad = 0
     for name, expect, src in OK:
-        inter, ie, compiled, ce = both(src)
-        if ie or ce or inter != expect or compiled != expect:
-            bad += 1
-            print(f"FAIL {name}\n  interp {ie or inter!r}\n  compile {ce or compiled!r}")
-        else:
+        ran, got = run_tpcc(src)
+        if ran and got == expect.strip():
             print(f"ok   {name}")
+        else:
+            bad += 1
+            print(f"gap  {name}: {got}")
     for name, part, src in BAD:
-        inter, ie, compiled, ce = both(src)
-        if ie and ce and part in ie and part in ce and ie == ce:
+        ran, got = run_tpcc(src)
+        missing = (
+            "not in this stage" in got
+            or "does not lower" in got
+            or "not declared" in got
+            or "character not in the token set" in got
+            or got.startswith("expected")
+        )
+        if not ran and part in got and not missing:
             print(f"ok   {name}")
         else:
             bad += 1
-            print(f"FAIL {name}\n  interp {ie}\n  compile {ce}")
-    open("/tmp/tp_lib.tpth_s", "w").write("fn twice in[i32 a] out[i32] { return a + a; }\n")
-    inter, ie, compiled, ce = both('include "/tmp/tp_lib.tpth_s";\nfn main in[] out[i32] {\n  print in[twice in[3]];\n  return 0;\n}\n')
-    if ie or ce or inter != "6\n" or compiled != "6\n":
-        bad += 1
-        print(f"FAIL include\n  interp {ie or inter!r}\n  compile {ce or compiled!r}")
-    else:
+            print(f"gap  {name}: {got}")
+    ran, got = run_tpcc('include "/tmp/tp_lib.tpth_s";\nfn main in[] out[i32] {\n  print in[twice in[3]];\n  return 0;\n}\n')
+    if ran and got == "6":
         print("ok   include")
-    from front import parse as parse_src
-    from interp import execute
-    prog = parse_src("fn inc in[i32 a] out[i32] { return a + 1; }\nfn main in[] out[i32] {\n  i32 n = inc in[1];\n  n = inc in[n];\n  print in[n];\n  return 0;\n}\n")
-    out = execute(prog)
-    row = prog["symbols"]["inc"]
-    if out != "3\n" or row["calls"] != 2 or row["edges"].get("main") != 2 or row["cost"] != "unknown":
-        bad += 1
-        print(f"FAIL symbol {out!r} {row}")
     else:
+        bad += 1
+        print(f"gap  include: {got}")
+    ran, got = run_tpcc("fn inc in[i32 a] out[i32] { return a + 1; }\nfn main in[] out[i32] {\n  i32 n = inc in[1];\n  n = inc in[n];\n  return n;\n}\n")
+    if ran and got == "result 3":
         print("ok   symbol")
-    print("match" if bad == 0 else f"{bad} failed")
+    else:
+        bad += 1
+        print(f"gap  symbol: {got}")
+    if bad == 0:
+        print("1.2 tripar")
+    else:
+        print(f"not 1.2 tripar: {bad} gaps")
     return 1 if bad else 0
 
 

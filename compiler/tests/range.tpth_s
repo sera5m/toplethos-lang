@@ -1,0 +1,8 @@
+fn main in[] out[i32] {
+  i32 n = 3;
+  i32 r = 0;
+  if n >= 1 && n <= 4 {
+    r = 7;
+  }
+  return r;
+}

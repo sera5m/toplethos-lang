@@ -1,0 +1,4 @@
+fn main in[] out[i64] {
+  i64 n = freemem in[];
+  return n;
+}

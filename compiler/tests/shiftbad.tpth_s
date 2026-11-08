@@ -1,0 +1,3 @@
+fn main in[] out[i32] {
+  return 1 << 32;
+}

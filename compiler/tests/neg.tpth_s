@@ -1,0 +1,4 @@
+fn main in[] out[i32] {
+  i32 n = 5;
+  return -n;
+}

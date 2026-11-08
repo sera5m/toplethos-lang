@@ -1,0 +1,74 @@
+// Same integer mix, two functions, one bytecode.
+// mix stays on the interpreter. hot is @inlined, so the first call is the
+// oracle and the next call is native code compiled from that bytecode.
+// Arrays, objects, do, and f64 are not in this stage. The ops are the
+// ones the bytecode already has: add, sub, mul, div, rem, and, or, xor,
+// shl, shr, and a data-dependent if.
+fn mix in[i32 n] out[i32] {
+  i32 acc = 1;
+  i32 b = 7;
+  i32 i = 0;
+  loop {
+    if !(i < n) { leave; }
+    i32 t = i & 7;
+    acc = acc + t;
+    acc = acc + 9;
+    acc = acc - (acc / 251) * 251;
+    b = b * 3;
+    b = b + t;
+    b = b & 255;
+    i32 sh = b & 3;
+    i32 c = acc << sh;
+    c = c & 511;
+    i32 r = b >> sh;
+    c = c ^ (b | t);
+    c = c ^ r;
+    c = c % 97;
+    if c == 0 {
+      acc = c + 1;
+    } else {
+      acc = c - 1;
+    }
+    i = i + 1;
+  }
+  return acc;
+}
+
+fn hot in[i32 n] out[i32] @inlined {
+  i32 acc = 1;
+  i32 b = 7;
+  i32 i = 0;
+  loop {
+    if !(i < n) { leave; }
+    i32 t = i & 7;
+    acc = acc + t;
+    acc = acc + 9;
+    acc = acc - (acc / 251) * 251;
+    b = b * 3;
+    b = b + t;
+    b = b & 255;
+    i32 sh = b & 3;
+    i32 c = acc << sh;
+    c = c & 511;
+    i32 r = b >> sh;
+    c = c ^ (b | t);
+    c = c ^ r;
+    c = c % 97;
+    if c == 0 {
+      acc = c + 1;
+    } else {
+      acc = c - 1;
+    }
+    i = i + 1;
+  }
+  return acc;
+}
+
+fn main in[] out[i32] {
+  i32 a = mix in[10000];
+  i32 warm = hot in[10000];
+  i32 b = hot in[10000];
+  if a != warm { return 1; }
+  if a != b { return 2; }
+  return 0;
+}

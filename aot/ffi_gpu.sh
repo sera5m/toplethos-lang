@@ -9,10 +9,10 @@ if [ ! -x gpu/bench ]; then
   gcc -O2 -o gpu/bench gpu/bench.c -ldl || exit 1
 fi
 
-echo "=== 1 compiled -> ffi c -> gpu ==="
-python3 aot/tpc.py aot/ffi_gpu_test.tpth_s -o /tmp/ffi_gpu_test --run || exit 1
-
-echo "=== 2 interpreted -> ffi c -> gpu ==="
-echo "plain and call are the interpreter. The pause before the first line is g++."
-echo "=== 3 jit is the jit line: the inlined loop, after that compile ==="
-python3 lang/host.py aot/ffi_gpu_test.tpth_s || exit 1
+echo "=== compiled, interpreted, and jit are one program ==="
+make -C compiler tpcc
+compiler/tpcc --asm /tmp/ffi_gpu_test.s aot/ffi_gpu_test.tpth_s || exit 1
+gcc -o /tmp/ffi_gpu_test /tmp/ffi_gpu_test.s || exit 1
+/tmp/ffi_gpu_test || exit 1
+compiler/tpcc --run aot/ffi_gpu_test.tpth_s || exit 1
+compiler/tpcc --jit aot/ffi_gpu_test.tpth_s || exit 1

@@ -11,19 +11,13 @@ echo "--- rust ---"
 rustc -C opt-level=3 -o /tmp/battery_rs aot/battery.rs || exit 1
 /usr/bin/time -f 'rust wall %e sec' /tmp/battery_rs
 
-echo "--- toplethos naive, N=2000000 ---"
-python3 aot/tpc.py aot/naive.tpth_s -o /tmp/battery_tp || exit 1
+echo "--- toplethos, unified compiler ---"
+make -C compiler tpcc
+compiler/tpcc --asm /tmp/battery_tp.s aot/naive.tpth_s || exit 1
+gcc -o /tmp/battery_tp /tmp/battery_tp.s || exit 1
 /usr/bin/time -f 'naive wall %e sec' /tmp/battery_tp
-
-echo "--- toplethos smart, N=2000000 ---"
-python3 aot/tpc.py aot/smart.tpth_s -o /tmp/battery_smart || exit 1
+compiler/tpcc --run aot/naive.tpth_s
+compiler/tpcc --asm /tmp/battery_smart.s aot/smart.tpth_s || exit 1
+gcc -o /tmp/battery_smart /tmp/battery_smart.s || exit 1
 /usr/bin/time -f 'smart wall %e sec' /tmp/battery_smart
-
-echo "--- toplethos naive interpreted, N=20000 ---"
-sed 's/2000000/20000/g' aot/naive.tpth_s > /tmp/battery_interp.tpth_s
-/usr/bin/time -f 'naive interp %e sec' python3 -c 'import sys; sys.path.insert(0, "lang"); from host import run_text; sys.stdout.write(run_text(open(sys.argv[1], encoding="utf-8").read()))' /tmp/battery_interp.tpth_s
-
-echo "--- toplethos smart interpreted, N=20000 ---"
-sed 's/2000000/20000/g' aot/smart.tpth_s > /tmp/battery_smart_interp.tpth_s
-/usr/bin/time -f 'smart interp %e sec' python3 -c 'import sys; sys.path.insert(0, "lang"); from host import run_text; sys.stdout.write(run_text(open(sys.argv[1], encoding="utf-8").read()))' /tmp/battery_smart_interp.tpth_s
 

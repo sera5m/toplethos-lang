@@ -1,0 +1,6 @@
+fn sh in[i32 c] out[i32] {
+  return 1 << c;
+}
+fn main in[] out[i32] {
+  return sh in[3];
+}

@@ -7,9 +7,10 @@ ROOT="$(pwd)"
 REAL="$ROOT/aot/real"
 EX="$ROOT/examples"
 
+make -C compiler tpcc
 cxx() { g++ -O2 -std=c++20 -ffp-contract=off -pthread -o "$2" "$1" || exit 1; }
 rsc() { rustc -C opt-level=3 -C target-feature=-fma -o "$2" "$1" || exit 1; }
-tpc() { python3 aot/tpc.py "$1" -o "$2" || exit 1; }
+tpc() { compiler/tpcc --asm "$2.s" "$1" && gcc -o "$2" "$2.s" || exit 1; }
 
 echo "--- dict ---"
 cxx "$REAL/dict.cpp" /tmp/dict_cpp

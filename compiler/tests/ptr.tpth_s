@@ -1,0 +1,10 @@
+fn bump in[i32* a] out[] {
+  *a = *a + 1;
+}
+fn main in[] out[i32] {
+  i32 x = 1;
+  i32* p = &x;
+  *p = 2;
+  bump in[p];
+  return x;
+}

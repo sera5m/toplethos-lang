@@ -58,7 +58,8 @@ enum class TokenKind : uint16_t {
   KwTrue,
   KwFalse,
   KwAs,
-  KwDo
+  KwDo,
+  At
 };
 
 struct Token {

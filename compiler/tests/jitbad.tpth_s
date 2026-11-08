@@ -1,0 +1,9 @@
+fn id in[i32 x] out[i32] {
+  return x;
+}
+fn hot in[i32 x] out[i32] @inlined {
+  return id in[x];
+}
+fn main in[] out[i32] {
+  return hot in[1];
+}

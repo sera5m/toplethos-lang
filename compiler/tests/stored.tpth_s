@@ -1,0 +1,10 @@
+fn keep in[i32 n] out[i32] {
+  bool b = n >= 1 && n <= 9;
+  if b {
+    return 5;
+  }
+  return 0;
+}
+fn main in[] out[i32] {
+  return keep in[3];
+}

@@ -1,14 +1,15 @@
 #!/bin/sh
-# Old Python host versus C++ and Rust. Not the unified compiler.
-# Interpreter, amd64, and JIT of one bytecode are compiler/tests/mix.tpth_s.
-# Mixed ops. One checksum, three languages. N = 1000000.
-# The integer and float formulas are the same in mix.cpp, mix.rs, and mix.tpth_s.
+# Cross-language checksum. The Toplethos row is compiler/tpcc.
+# The three modes of one bytecode are compiler/tests/mix.tpth_s.
+# N = 1000000. The formulas match mix.cpp and mix.rs.
 cd "$(dirname "$0")/.." || exit 1
 
 echo "--- mixed ops, N=1000000 ---"
+make -C compiler tpcc
 g++ -O2 -ffp-contract=off -o /tmp/mix_cpp aot/mix.cpp || exit 1
 rustc -C opt-level=3 -C llvm-args=--fp-contract=off -o /tmp/mix_rs aot/mix.rs || exit 1
-python3 aot/tpc.py aot/mix.tpth_s -o /tmp/mix_tp || exit 1
+compiler/tpcc --asm /tmp/mix_tp.s aot/mix.tpth_s || exit 1
+gcc -o /tmp/mix_tp /tmp/mix_tp.s || exit 1
 
 /usr/bin/time -f 'cpp  %e' -o /tmp/mix_cpp.time /tmp/mix_cpp > /tmp/mix_cpp.out
 /usr/bin/time -f 'rs   %e' -o /tmp/mix_rs.time /tmp/mix_rs > /tmp/mix_rs.out

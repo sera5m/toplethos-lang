@@ -44,8 +44,26 @@ TypeMap::TypeMap() {
 
 const Atom* TypeMap::find(std::string_view name) const {
   auto it = by_name_.find(std::string(name));
-  if (it == by_name_.end()) return nullptr;
-  return &atoms_[it->second];
+  if (it != by_name_.end()) return &atoms_[it->second];
+  auto extra = extra_by_name_.find(std::string(name));
+  if (extra != extra_by_name_.end()) return extra->second;
+  return nullptr;
+}
+
+const Atom* TypeMap::pointer_to(const Atom* pointee) {
+  if (!pointee) return nullptr;
+  std::string name = pointee->name + "*";
+  if (const Atom* found = find(name)) return found;
+  extra_.push_back(Atom{});
+  Atom& atom = extra_.back();
+  atom.name = name;
+  atom.family = Family::Pointer;
+  atom.bits = 64;
+  atom.specifics = "cell, aims at " + pointee->name;
+  atom.pointee = pointee;
+  atom.ptr_kind = "cell";
+  extra_by_name_[atom.name] = &atom;
+  return &atom;
 }
 
 const char* TypeMap::family_name(Family f) {
@@ -70,6 +88,8 @@ const char* TypeMap::family_name(Family f) {
       return "size";
     case Family::String:
       return "string";
+    case Family::Pointer:
+      return "pointer";
   }
   return "unset";
 }

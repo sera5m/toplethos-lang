@@ -6,7 +6,7 @@
 namespace tp {
 namespace {
 
-enum class St { Start, Ident, Number, String, Char, Slash, LineComment, BlockComment };
+enum class St { Start, Ident, Number, String, Char, Slash, LineComment, BlockComment, At };
 
 const std::unordered_map<std::string, TokenKind>& keywords() {
   static const std::unordered_map<std::string, TokenKind> map = {
@@ -68,6 +68,12 @@ class Lexer {
             get();
             buf.clear();
             st = St::Char;
+            break;
+          }
+          if (c == '@') {
+            get();
+            buf.clear();
+            st = St::At;
             break;
           }
           punct(start_line, start_col);
@@ -174,6 +180,17 @@ class Lexer {
           }
           if (get() != '\'') throw Fail("lex", "unclosed character", start_line, start_col);
           emit(TokenKind::CharLit, std::string(1, c), start_line, start_col, false, static_cast<unsigned char>(c));
+          st = St::Start;
+          break;
+        }
+        case St::At: {
+          unsigned char c = i_ < s_.size() ? static_cast<unsigned char>(s_[i_]) : 0;
+          if (std::isalnum(c) || c == '_') {
+            buf.push_back(get());
+            break;
+          }
+          if (buf.empty()) throw Fail("lex", "expected a mark after @", start_line, start_col);
+          emit(TokenKind::At, buf, start_line, start_col, false, 0);
           st = St::Start;
           break;
         }
@@ -405,6 +422,8 @@ const char* token_name(TokenKind k) {
       return "as";
     case TokenKind::KwDo:
       return "do";
+    case TokenKind::At:
+      return "at";
   }
   return "unset";
 }

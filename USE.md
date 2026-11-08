@@ -101,7 +101,7 @@ Geometry is not a type. On a function it chooses the device. On a large cell it 
 | mark | where |
 |---|---|
 | unmarked | CPU. One run. |
-| `@parallel[n]` | n CPU threads. Not a GPU launch. |
+| `@parallel[n]` | n CPU threads. Not a GPU launch. The worker contract is under Runs. |
 | `@gpuparallel` | GPU. The geometry is the device's. No thread count. |
 | `@npuparallel` | NPU. The same crossing rule as the GPU. |
 | `@paged` | Only the locked sector is present. A read or a store while it is unlocked is a failure. |
@@ -110,7 +110,27 @@ Geometry is not a type. On a function it chooses the device. On a large cell it 
 
 The scheduler does not pick a device. You write the mark. A call through an instance uses the instance's geometry when a transform has set one, and the definition's geometry otherwise.
 
-A `@gpuparallel` or `@npuparallel` parameter or result must be an atom, an `enum`, or an array or object made only of those. An `enum` crosses as its underlying atom. An object crosses only when it contains no pointer. A pointer, `string`, `rng`, `fn`, `fnid`, `blockid`, `pool`, or `pipe` is a compile error. The host copies the inputs to the device and copies the results back. The device does not keep a pointer after the call.
+A `@gpuparallel` or `@npuparallel` parameter or result must be an atom, an `enum`, or an array or object made only of those. An `enum` crosses as its underlying atom. An object crosses only when it contains no pointer. A pointer, `string`, `rng`, `fn`, `fnid`, `blockid`, `pool`, or `pipe` is a compile error. The host copies the inputs to the device and copies the results back. The device does not keep a pointer after the call. `@gpuparallel` and `@npuparallel` are not in the hosts.
+
+## Runs
+
+`@parallel[n]` marks a worker. The worker returns `f64`. The first parameter is the lane, an `i32`. A second parameter is allowed only as a pointer, and only when the `fork` or `run` names it with `with[cell]`. That cell is `@mutex`. Every lane is handed the same cell. It is not a move, and it is not an `@xor` handoff.
+
+```text
+fork work;
+fork work in[4];
+fork work in[4] with[tape];
+f64 total = start work;
+finish work;
+f64 total = run work in[4] with[tape];
+```
+
+`fork` with no `in[k]` uses the `n` on the function. `fork work in[k]` is a compile error when the function's `@parallel[n]` is a different `n`. `k` is a constant from 1 to 64. `with` takes an `@mutex` cell. Anything else is a compile error.
+
+`fork` readies the threads and does not let them enter the body. `start` is an `f64` expression. It lets them enter, waits until every lane has returned, and its value is the sum of those results. A failure in one lane is raised after the others have finished. It does not cancel them. `finish` joins the threads. A second `fork` before that `finish` is a failure. `run` is `fork`, then `start`, then `finish`, and it is an `f64` expression.
+
+There is no parent mark. An unmarked `fork` does not outlive its caller. `@structuredConcurrency`, `@topology`, `select`, `pipe`, `push`, `pop`, and `@accum` are not in the hosts.
+
 
 ## Objects
 An object is a struct in memory. `struct` is not a second keyword. Fields are in the order written, with that target's C++ alignment. There is no virtual function and no vptr. `@ismutationof` does not make a subclass. A `flow` converts two layouts that are not parent and child.
@@ -781,21 +801,18 @@ The right-hand value is resolved into the left-hand cell's kind, then stored. Tw
 | `i32 y = 1` or `i32 y; y = 1` | Both store. Later stores are legal unless the cell is `@val` or `@config`. |
 | a function instance | Frozen. Callable. Not transformable until `@mut`. |
 | no `@comptime` and no `@compeval` | The function runs when called. |
-| no `@structuredConcurrency` | A failed sibling keeps going. The run may outlive the caller. |
-| `@topology[fanin]` or `[barrier]` | Wait for every participant. A failure does not cancel that wait. |
-| `@topology[race]` or `select` | The first present result. If two are present in the same step, the one written first wins. The other arms of that race are cancelled. |
-| no `@stream` | The function runs to one result. |
-| `@stream` with no n | A queue of one. The producer waits when it is full. |
+| no `@structuredConcurrency` | The mark is not in the hosts. `start` waits for every lane. A failure does not cancel a lane that is already running. The run does not outlive `finish`. |
+| `@topology`, `select`, `@stream`, `pipe`, `pool` | Not in the hosts. No barrier, no race, no queue, no pipe default. |
 | a missing `else` or match arm | No-op, unless `@total` or the project switch `total` is on. |
-| `@NoFailTolerance` | Compile error. It is not a mode. |
-| a pipe with no kind | `@process` and `@direct`. |
-| a pool hold with no mode | `@read`. |
+| `@NoFailTolerance` | Not a mode. |
+| a pipe with no kind | Not in the hosts. |
+| a pool hold with no mode | Not in the hosts. `hold` on an `@mutex` cell is the lock around a block. |
 
 `@comptime` may run at compile time when every input is a constant. `@compeval` must. A non-constant input to `@compeval` is a compile error.
 
 ## Shared store
 
-`@mutex` guards a cell that is not a pool. `lock` and `unlock` are the calls. `@xor` is not a mutex: a mutex is shared, and xor has one owner. A pool uses `hold` and its access mode instead.
+`@mutex` guards a cell that is not a pool. `lock` and `unlock` are the calls. `@xor` is not a mutex: a mutex is shared, and xor has one owner. A pool is not in the hosts. `hold` on an `@mutex` cell is the lock around a block.
 
 ```text
 i32 tape[4] @static @mutex = {1, 2, 3, 4};
@@ -809,7 +826,7 @@ hold[tape] {
 
 `hold` on a `@mutex` cell is `lock` plus `unlock` on every exit. A read or a store outside the pair is a compile error. Every path that locks must unlock.
 
-A cell that no run stores may be read by any number of runs. A cell that a run stores may be read or stored by another run only if it is `@mutex`, `@xor`, or `@accum`. Otherwise that second run is a compile error. `@accum` allows only an atomic add. Any other store to it is a compile error. In one run, stores happen in source order and the last store wins.
+A cell that no run stores may be read by any number of runs. The hosts do not check a second run beyond this: a `fork` may share one cell, and only by `with` on an `@mutex` cell. `@xor` is a move inside one run. A pointer to an `@xor` cell is a compile error. `@accum` is not in the hosts. In one run, stores happen in source order and the last store wins.
 
 Arguments of a call are evaluated left to right, then the call runs. `a = b = c` evaluates `c`, stores it in `b`, then stores that value in `a`. A `@static` local is initialized once. Concurrent first calls wait for that one initialization.
 
@@ -841,7 +858,7 @@ A failure walks until `onfail` resolves it.
 
 A failure has no payload. `STOP[THIS]` ends it. It does not produce a value, and it does not become `0`. If the failure leaves `main` with nothing stopping it, the host halts.
 
-`@structuredConcurrency` is the only mark that cancels siblings when one fails. A detached run must not keep a pointer to a cell that dies with the caller.
+`@structuredConcurrency` is not in the hosts. `start` does not cancel a lane. A `fork` shares a cell only through `with` on an `@mutex` cell, and that cell outlives the `finish`.
 
 ## Keywords
 
@@ -895,7 +912,11 @@ A failure has no payload. `STOP[THIS]` ends it. It does not produce a value, and
 | `STOP[THIS]` | Halts the failure in hand. |
 | `fatal` | Emergency shutdown. `onfail` does not run. |
 | `lock` `unlock` | The mutex pair, for a cell that is not a pool. |
-| `hold` | That pair around a block, or a pool access of the named mode. |
+| `hold` | That pair around a block. |
+| `fork` | Readies an `@parallel` worker. Does not enter the body. One `fork` at a time, until `finish`. |
+| `start` | An `f64` expression. Releases the lanes, waits for all of them, and returns the sum. |
+| `finish` | Joins the lanes from the current `fork`. |
+| `run` | `fork`, then `start`, then `finish`. An `f64` expression. |
 | `pause` | Keeps the coroutine stack. |
 | `resume` | Continues a coroutine. |
 | `await` | A host wait on that same stack. Not a second kind of coroutine. |

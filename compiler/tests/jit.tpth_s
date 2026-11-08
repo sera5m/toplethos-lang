@@ -1,0 +1,30 @@
+fn sum_n in[i32 n] out[i32] {
+  i32 acc = 0;
+  i32 i = 0;
+  loop {
+    if !(i < n) { leave; }
+    acc = acc + i;
+    i = i + 1;
+  }
+  return acc;
+}
+
+fn hot in[i32 n] out[i32] @inlined {
+  i32 acc = 0;
+  i32 i = 0;
+  loop {
+    if !(i < n) { leave; }
+    acc = acc + i;
+    i = i + 1;
+  }
+  return acc;
+}
+
+fn main in[] out[i32] {
+  i32 warm = hot in[1000];
+  i32 a = sum_n in[100000];
+  i32 b = hot in[100000];
+  if a != b { return 1; }
+  if warm != 499500 { return 2; }
+  return 0;
+}

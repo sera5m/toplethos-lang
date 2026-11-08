@@ -1,6 +1,7 @@
 #include "tp/bytecode.hpp"
 #include "tp/diag.hpp"
 #include "tp/eval.hpp"
+#include "tp/pointer.hpp"
 #include "tp/target.hpp"
 
 #include <fstream>
@@ -36,6 +37,8 @@ int main(int argc, char** argv) {
   bool dump_bind = false;
   bool dump_bc = false;
   bool do_run = false;
+  bool do_active = false;
+  bool do_jit = false;
   bool do_emit = false;
   tp::Target target = tp::Target::Amd64;
   std::string out_path;
@@ -54,6 +57,12 @@ int main(int argc, char** argv) {
       dump_bc = true;
     } else if (arg == "--run") {
       do_run = true;
+    } else if (arg == "--active") {
+      do_run = true;
+      do_active = true;
+    } else if (arg == "--jit") {
+      do_run = true;
+      do_jit = true;
     } else if (arg == "--asm" || arg == "--target") {
       do_emit = true;
       if (arg == "--target") {
@@ -84,7 +93,7 @@ int main(int argc, char** argv) {
     }
   }
   if (file.empty()) {
-    std::cerr << "usage: tpcc [--dump] [--run] [--asm out.s | --target amd64|arm64|cpp|spirv out] file.tpth_s\n";
+    std::cerr << "usage: tpcc [--dump] [--run] [--active] [--jit] [--asm out.s | --target amd64|arm64|cpp|spirv out] file.tpth_s\n";
     return 2;
   }
 
@@ -110,6 +119,7 @@ int main(int argc, char** argv) {
             std::cout << "atom " << atom.name << " bits=" << atom.bits << " family=" << tp::TypeMap::family_name(atom.family)
                       << " specifics=" << atom.specifics << "\n";
           }
+          std::cout << tp::dump_pointer_kinds();
         }
         if (dump_tokens && !dump_bind && !dump_bc && !do_run && !do_emit && !dump_types) return 0;
         phase = Phase::Bind;
@@ -136,7 +146,11 @@ int main(int argc, char** argv) {
       }
       case Phase::Interpret:
         if (do_run) {
-          int64_t value = tp::interpret(prog, "main");
+          tp::Active active;
+          std::string jit_log;
+          int64_t value = tp::interpret(prog, "main", do_active ? &active : nullptr, do_jit ? &jit_log : nullptr);
+          if (do_active) std::cout << tp::active_report(prog, active);
+          if (do_jit && !jit_log.empty()) std::cout << jit_log;
           std::cout << "result " << value << "\n";
         }
         if (!do_emit) return 0;

@@ -1,0 +1,6 @@
+fn id in[i32 x] out[i32] {
+  return x;
+}
+fn main in[] out[i32] {
+  return id in[id in[21]];
+}
