@@ -11,7 +11,7 @@ echo "--- rust ---"
 rustc -C opt-level=3 -o /tmp/battery_rs aot/battery.rs || exit 1
 /usr/bin/time -f 'rust wall %e sec' /tmp/battery_rs
 
-echo "--- toplethos, unified compiler ---"
+echo "--- toplethos, UMMES ---"
 make -C compiler tpcc
 compiler/tpcc --asm /tmp/battery_tp.s aot/naive.tpth_s || exit 1
 gcc -o /tmp/battery_tp /tmp/battery_tp.s || exit 1

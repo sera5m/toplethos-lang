@@ -1083,6 +1083,38 @@ std::unique_ptr<Expr> Binder::call_expr(const Atom* expect, bool as_value) {
   node->name = name.text;
   node->line = name.line;
   node->col = name.col;
+  if (name.text == "saveArrayAsbmp") {
+    auto data = expr(nullptr);
+    const Atom* elem = nullptr;
+    if (data->atom && data->atom->family == Family::Pointer && data->atom->pointee) {
+      elem = data->atom->pointee;
+    } else if (data->atom && (data->atom->family == Family::SignedInt || data->atom->family == Family::UnsignedInt)) {
+      elem = data->atom;
+      data = as_addr(std::move(data));
+    }
+    if (!elem || (elem->family != Family::SignedInt && elem->family != Family::UnsignedInt) || elem->bits < 1 || elem->bits > 64) {
+      throw Fail("bind", "saveArrayAsbmp wants an integer array", name.line, name.col);
+    }
+    c.expect(TokenKind::Comma, ",");
+    auto width = expr(types.find("i32"));
+    if (!width->atom || width->atom->name != "i32") mismatch(width->atom, types.find("i32"), width->line, width->col, "width is");
+    c.expect(TokenKind::Comma, ",");
+    auto height = expr(types.find("i32"));
+    if (!height->atom || height->atom->name != "i32") mismatch(height->atom, types.find("i32"), height->line, height->col, "height is");
+    c.expect(TokenKind::Comma, ",");
+    if (c.cur().kind != TokenKind::String || c.cur().text.empty()) {
+      throw Fail("bind", "saveArrayAsbmp wants a path", c.cur().line, c.cur().col);
+    }
+    node->op = c.cur().text;
+    node->bits = static_cast<uint64_t>(elem->bits);
+    ++c.i;
+    c.expect(TokenKind::RBracket, "]");
+    node->atom = types.find("i32");
+    node->args.push_back(std::move(data));
+    node->args.push_back(std::move(width));
+    node->args.push_back(std::move(height));
+    return node;
+  }
   if (name.text == "threads" || name.text == "freemem") {
     if (!c.eat(TokenKind::RBracket)) throw Fail("bind", name.text + " takes no arguments", c.cur().line, c.cur().col);
     node->atom = types.find(name.text == "threads" ? "i32" : "i64");

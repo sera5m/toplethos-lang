@@ -683,6 +683,24 @@ struct Lowerer {
           put(in);
           return dst;
         }
+        if (e.name == "saveArrayAsbmp") {
+          uint32_t ptr = emit_expr(*e.args[0]);
+          uint32_t width = emit_expr(*e.args[1]);
+          uint32_t height = emit_expr(*e.args[2]);
+          uint32_t dst = fresh("bmp");
+          Insn in;
+          in.op = Op::SaveBmp;
+          in.atom = e.atom;
+          in.src = e.args[0]->atom ? e.args[0]->atom->pointee : nullptr;
+          in.dst = dst;
+          in.lhs = ptr;
+          in.args = {width, height};
+          in.note = e.op;
+          in.imm = e.bits;
+          in.line = e.line;
+          put(in);
+          return dst;
+        }
         if (e.name == "print") {
           uint32_t val = emit_expr(*e.args[0]);
           Insn in;
@@ -1221,7 +1239,7 @@ struct Lowerer {
         else if (!scalar(in.atom)) why = "parameter";
       }
       for (const Insn& in : fn.code) {
-        if (in.op == Op::Call || in.op == Op::Print || in.op == Op::Watch) why = "call";
+        if (in.op == Op::Call || in.op == Op::Print || in.op == Op::Watch || in.op == Op::SaveBmp) why = "call";
         else if (in.op == Op::Threads) why = "threads";
         else if (in.op == Op::Freemem) why = "freemem";
         else if (in.op == Op::Addr || in.op == Op::Load || in.op == Op::Store) why = "pointer";

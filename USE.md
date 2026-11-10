@@ -768,6 +768,13 @@ i32 buf[140000] @static;
 i32 n = loadbytes in["lipsum-cicero.txt", buf];
 ```
 
+`saveArrayAsbmp` writes one 24-bit uncompressed bottom-up bitmap. The first argument is an integer array, or a pointer to a signed or unsigned integer atom (`i4` through `i64`, `ui4` through `ui64`). Then an `i32` width, an `i32` height, and a string-literal path. The result is an `i32` signal: `1` if the file was written, `0` if it was not. It does not raise. Width and height must be in `1` .. `1048576`. The file is a `BITMAPINFOHEADER`, 24 bits, no compression, 2835 pixels per meter. A cell of 24 bits or more stores `r * 65536 + g * 256 + b` in the low 24 bits. A cell of 8 .. 23 bits stores grayscale in the low 8 bits. A cell of fewer than 8 bits stores `v * 255 / ((1 << bits) - 1)`. Row 0 of the array is the top row.
+
+```text
+i32 pix[4] = {255, 65280, 16711680, 16777215};
+i32 ok = saveArrayAsbmp in[pix, 2, 2, "out.bmp"];
+```
+
 ## Flow
 
 `Hz` and `Pin` do not match because both store an integer. Nothing converts implicitly.
@@ -941,7 +948,9 @@ A failure has no payload. `STOP[THIS]` ends it. It does not produce a value, and
 
 `@checkpoint` saves the present cells at a barrier or at the end of a `hold`. Omitted: nothing is saved.
 
-`@name` is allowed on `loop` and `do`. `@total` on a `match` makes a missing arm a compile error.
+`@name` is allowed on `loop` and `do`. `@total` on a `match` makes a missing arm a compile error. `i` from `do n[k]` exists for that `do` only, including a nested `do` and its `onFinished`, and it is gone after the closing brace.
+
+`@time["name"] watch <f64> { }` is a statement. It measures the brace with a monotonic clock and prints `name`, the seconds, and the `f64`.
 
 If a wait has already lasted 15 minutes, the host moves that coroutine stack to disk or to other memory. The program cannot tell which. If the move fails, the coroutine stays paused and the wait is a failure.
 

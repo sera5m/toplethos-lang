@@ -149,6 +149,7 @@ inline uint32_t arch_bit(Op op) {
     case Op::SlotAdd:
     case Op::Clock:
     case Op::Watch:
+    case Op::SaveBmp:
       return 0;
   }
   return 0;
@@ -248,6 +249,8 @@ inline const char* arch_op_name(Op op) {
       return "clock";
     case Op::Watch:
       return "watch";
+    case Op::SaveBmp:
+      return "savebmp";
     default:
       return "op";
   }
@@ -290,6 +293,7 @@ inline bool amd64_host_op(Op op) {
     case Op::Print:
     case Op::StaticInit:
     case Op::BitNot:
+    case Op::SaveBmp:
       return true;
     default:
       return false;
@@ -329,6 +333,15 @@ inline void arch_require(Target target, const Insn& in) {
   if (target == Target::Amd64 && (in.op == Op::Addr || in.op == Op::Load || in.op == Op::Store)) {
     const Atom* held = in.op == Op::Addr ? in.atom : in.src;
     if (held && held->family != Family::Pointer && std::string(held->name) == "i64") return;
+  }
+  /* Slot traffic for a width that has no arithmetic row. ui32 and ui64 stay
+     rejected: a folded ui32 immediate is still "no amd64 row". i32 and i64
+     already have rows. saveArrayAsbmp only reads the cells. */
+  if (target == Target::Amd64 && in.atom &&
+      (in.atom->family == Family::SignedInt || in.atom->family == Family::UnsignedInt) &&
+      in.atom->bits >= 1 && in.atom->bits < 32 &&
+      (in.op == Op::Imm || in.op == Op::Mov || in.op == Op::Ret)) {
+    return;
   }
   if (in.atom && arch_supports(target, in.op, in.atom->name)) return;
   std::string why = "no ";

@@ -26,7 +26,7 @@ The word-count example is one forward scan. The index is not reset, so the neste
 
 ## C++ pipeline, 2026-11-07
 
-The compiler is `compiler/tpcc`. The Python compiler has been removed. This is not a 1.2 tripar claim. That name waits on the conformance suite.
+The compiler is `compiler/tpcc`. The Python compiler has been removed. This tree is release 1.2 tripar. The system is UMMES (pronounced "yu-mees"): the unified multimodal execution system. One program interprets, compiles, and JIT-compiles.
 
 In the working tree, and covered by `make test`: the state-machine lexer, bind against the type map, typed three-address bytecode as the source of truth after bind, const-fold and DCE before any backend, the arch permission table, amd64 and arm64 listings, C++ transpilation, the interpreter as the CPU oracle, control flow, the shift/div/neg failures, `threads` and `freemem`, the static counts, active call edges, the pointer-kind list, and `cell` (`T*`, `&x`, `*p`). `@inlined` on a pure scalar function compiles that function's bytecode to an amd64 listing while the interpreter is still running, checks the native result against that oracle, then flips the dispatch slot. A scalar loop stays on the CPU even when every opcode is one SPIR-V could print.
 

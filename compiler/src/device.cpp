@@ -59,6 +59,78 @@ uint64_t host_freemem() {
   return static_cast<uint64_t>(bytes);
 }
 
+void put_u16(std::vector<uint8_t>& b, size_t at, uint16_t v) {
+  b[at] = static_cast<uint8_t>(v);
+  b[at + 1] = static_cast<uint8_t>(v >> 8);
+}
+
+void put_u32(std::vector<uint8_t>& b, size_t at, uint32_t v) {
+  b[at] = static_cast<uint8_t>(v);
+  b[at + 1] = static_cast<uint8_t>(v >> 8);
+  b[at + 2] = static_cast<uint8_t>(v >> 16);
+  b[at + 3] = static_cast<uint8_t>(v >> 24);
+}
+
+/* 24-bit BI_RGB, bottom-up. 0 is a signal, not a thrown failure.
+   cell[addr + i] is element i. A count that runs past ncell is 0. */
+int save_cells_bmp(const uint64_t* cell, uint64_t ncell, uint64_t addr, int32_t width, int32_t height,
+                   const std::string& path, int bits) {
+  if (path.empty() || width < 1 || height < 1 || width > 1048576 || height > 1048576) return 0;
+  if (bits < 1 || bits > 64) return 0;
+  if (addr == 0 || addr >= ncell) return 0;
+  uint64_t uw = static_cast<uint64_t>(width);
+  uint64_t uh = static_cast<uint64_t>(height);
+  if (uw > (ncell - addr) / uh) return 0;
+  uint64_t stride = (uw * 3ull + 3ull) & ~3ull;
+  if (uh != 0 && stride > (0xffffffffull - 54ull) / uh) return 0;
+  uint32_t image = static_cast<uint32_t>(stride * uh);
+  uint32_t filesize = 54u + image;
+  std::vector<uint8_t> buf(filesize, 0);
+  buf[0] = 'B';
+  buf[1] = 'M';
+  put_u32(buf, 2, filesize);
+  put_u32(buf, 10, 54);
+  put_u32(buf, 14, 40);
+  put_u32(buf, 18, static_cast<uint32_t>(width));
+  put_u32(buf, 22, static_cast<uint32_t>(height));
+  put_u16(buf, 26, 1);
+  put_u16(buf, 28, 24);
+  put_u32(buf, 34, image);
+  put_u32(buf, 38, 2835);
+  put_u32(buf, 42, 2835);
+  uint64_t mask = bits >= 64 ? ~0ull : (1ull << bits) - 1ull;
+  for (int32_t y = 0; y < height; ++y) {
+    int32_t src_y = height - 1 - y;
+    for (int32_t x = 0; x < width; ++x) {
+      uint64_t v = cell[addr + static_cast<uint64_t>(src_y) * uw + static_cast<uint64_t>(x)] & mask;
+      uint8_t r = 0;
+      uint8_t g = 0;
+      uint8_t b = 0;
+      if (bits >= 24) {
+        r = static_cast<uint8_t>((v >> 16) & 255u);
+        g = static_cast<uint8_t>((v >> 8) & 255u);
+        b = static_cast<uint8_t>(v & 255u);
+      } else if (bits >= 8) {
+        r = g = b = static_cast<uint8_t>(v & 255u);
+      } else {
+        uint64_t gray = (v * 255ull) / mask;
+        r = g = b = static_cast<uint8_t>(gray);
+      }
+      size_t off = 54u + static_cast<size_t>(y) * static_cast<size_t>(stride) + static_cast<size_t>(x) * 3u;
+      buf[off] = b;
+      buf[off + 1] = g;
+      buf[off + 2] = r;
+    }
+  }
+  FILE* f = std::fopen(path.c_str(), "wb");
+  if (!f) return 0;
+  size_t n = std::fwrite(buf.data(), 1, buf.size(), f);
+  int bad = std::ferror(f);
+  std::fclose(f);
+  if (bad || n != buf.size()) return 0;
+  return 1;
+}
+
 void note_call(Active* active, const Program& prog, int caller, int callee) {
   if (!active) return;
   active->calls[static_cast<size_t>(callee)]++;
@@ -378,6 +450,15 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
         char buf[160];
         std::snprintf(buf, sizeof buf, "%s %.6f %.9f\n", in.note.c_str(), dt, val);
         std::cout << buf;
+        break;
+      }
+      case Op::SaveBmp: {
+        int32_t width = static_cast<int32_t>(at_slot(in.args[0]) & 0xffffffffu);
+        int32_t height = static_cast<int32_t>(at_slot(in.args[1]) & 0xffffffffu);
+        int bits = static_cast<int>(in.imm);
+        int ok = save_cells_bmp(mem.cell.data(), mem.cell.size(), at_slot(in.lhs), width, height, in.note, bits);
+        at_slot(in.dst) = static_cast<uint64_t>(ok);
+        note_slot(in.dst, in.line);
         break;
       }
       case Op::Trap:

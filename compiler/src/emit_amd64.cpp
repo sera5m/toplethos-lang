@@ -49,6 +49,7 @@ std::string emit_amd64(const Program& prog) {
   out += "\n    .text\n";
   bool needs_fail = false;
   bool saw_host = false;
+  bool saw_bmp = false;
   bool saw_fork = false;
   int chk = 0;
   int run_n = 0;
@@ -385,6 +386,20 @@ std::string emit_amd64(const Program& prog) {
           out += "    call printf@PLT\n";
           break;
         }
+        case Op::SaveBmp: {
+          saw_host = true;
+          saw_bmp = true;
+          int id = static_cast<int>(strs.size());
+          strs.push_back(in.note);
+          out += "    mov " + slot(in.lhs) + ", %rdi\n";
+          out += "    movslq " + slot(in.args[0]) + ", %rsi\n";
+          out += "    movslq " + slot(in.args[1]) + ", %rdx\n";
+          out += "    lea .Ltp_s" + std::to_string(id) + "(%rip), %rcx\n";
+          out += "    mov $" + std::to_string(static_cast<unsigned>(in.imm)) + ", %r8\n";
+          out += "    call .Ltp_save_bmp\n";
+          out += "    mov %eax, " + slot(in.dst) + "\n";
+          break;
+        }
         case Op::Print: {
           saw_host = true;
           if (in.atom && (in.atom->family == Family::Bool || in.atom->name == "bool")) {
@@ -492,6 +507,206 @@ std::string emit_amd64(const Program& prog) {
     }
     if (fn.shape.outputs.empty()) out += "    leave\n    ret\n";
   }
+  if (saw_bmp) {
+    /* rdi ptr, rsi width, rdx height, rcx path, r8 bits. Element i is at
+       ptr - i*8: the frame grows down. No cell-count check. */
+    out += R"asm(.Ltp_save_bmp:
+    push %rbp
+    mov %rsp, %rbp
+    push %rbx
+    push %r12
+    push %r13
+    push %r14
+    push %r15
+    sub $88, %rsp
+    mov %rdi, %r12
+    mov %rsi, %r13
+    mov %rdx, %r14
+    mov %rcx, %rbx
+    mov %r8, %r15
+    movq $0, 72(%rsp)
+    movq $0, 80(%rsp)
+    test %rbx, %rbx
+    jz .Ltp_bmp_fail
+    cmpb $0, (%rbx)
+    je .Ltp_bmp_fail
+    cmp $1, %r13
+    jl .Ltp_bmp_fail
+    cmp $1048576, %r13
+    jg .Ltp_bmp_fail
+    cmp $1, %r14
+    jl .Ltp_bmp_fail
+    cmp $1048576, %r14
+    jg .Ltp_bmp_fail
+    cmp $1, %r15
+    jl .Ltp_bmp_fail
+    cmp $64, %r15
+    jg .Ltp_bmp_fail
+    mov %r13, %rax
+    lea (%rax,%rax,2), %rax
+    add $3, %rax
+    and $-4, %rax
+    mov %rax, 64(%rsp)
+    mul %r14
+    test %rdx, %rdx
+    jnz .Ltp_bmp_fail
+    movabs $4294967242, %rcx
+    cmp %rcx, %rax
+    ja .Ltp_bmp_fail
+    mov %rax, %r11
+    xor %eax, %eax
+    mov $54, %ecx
+    lea (%rsp), %rdi
+.Ltp_bmp_hz:
+    movb $0, (%rdi)
+    inc %rdi
+    dec %ecx
+    jnz .Ltp_bmp_hz
+    movb $66, (%rsp)
+    movb $77, 1(%rsp)
+    mov %r11d, %eax
+    add $54, %eax
+    mov %eax, 2(%rsp)
+    movl $54, 10(%rsp)
+    movl $40, 14(%rsp)
+    mov %r13d, 18(%rsp)
+    mov %r14d, 22(%rsp)
+    movw $1, 26(%rsp)
+    movw $24, 28(%rsp)
+    mov %r11d, 34(%rsp)
+    movl $2835, 38(%rsp)
+    movl $2835, 42(%rsp)
+    mov %rbx, %rdi
+    lea .Ltp_wb(%rip), %rsi
+    call fopen@PLT
+    test %rax, %rax
+    jz .Ltp_bmp_fail
+    mov %rax, 72(%rsp)
+    lea (%rsp), %rdi
+    mov $1, %rsi
+    mov $54, %rdx
+    mov 72(%rsp), %rcx
+    call fwrite@PLT
+    cmp $54, %rax
+    jne .Ltp_bmp_fail
+    mov 64(%rsp), %rdi
+    call malloc@PLT
+    test %rax, %rax
+    jz .Ltp_bmp_fail
+    mov %rax, 80(%rsp)
+    mov %r14, %rax
+    dec %rax
+    mov %rax, 56(%rsp)
+.Ltp_bmp_row:
+    mov 80(%rsp), %rdi
+    mov 64(%rsp), %rcx
+.Ltp_bmp_z:
+    test %rcx, %rcx
+    jz .Ltp_bmp_zd
+    movb $0, (%rdi)
+    inc %rdi
+    dec %rcx
+    jmp .Ltp_bmp_z
+.Ltp_bmp_zd:
+    xor %r11, %r11
+.Ltp_bmp_pix:
+    cmp %r13, %r11
+    jge .Ltp_bmp_pixd
+    mov 56(%rsp), %rax
+    imul %r13, %rax
+    add %r11, %rax
+    shl $3, %rax
+    mov %r12, %rsi
+    sub %rax, %rsi
+    mov (%rsi), %rax
+    cmp $64, %r15
+    je .Ltp_bmp_nomask
+    mov %r15d, %ecx
+    mov $1, %rdx
+    shl %cl, %rdx
+    dec %rdx
+    and %rdx, %rax
+.Ltp_bmp_nomask:
+    cmp $24, %r15
+    jl .Ltp_bmp_narrow
+    mov %rax, %r8
+    mov %rax, %r9
+    shr $16, %r8
+    shr $8, %r9
+    mov %al, %dl
+    jmp .Ltp_bmp_store
+.Ltp_bmp_narrow:
+    cmp $8, %r15
+    jl .Ltp_bmp_tiny
+    mov %al, %dl
+    mov %dl, %r8b
+    mov %dl, %r9b
+    jmp .Ltp_bmp_store
+.Ltp_bmp_tiny:
+    mov %r15d, %ecx
+    mov $1, %rdi
+    shl %cl, %rdi
+    dec %rdi
+    imul $255, %rax, %rax
+    xor %edx, %edx
+    div %edi
+    mov %al, %dl
+    mov %al, %r8b
+    mov %al, %r9b
+.Ltp_bmp_store:
+    mov %r11, %rax
+    lea (%rax,%rax,2), %rax
+    add 80(%rsp), %rax
+    movb %dl, (%rax)
+    movb %r9b, 1(%rax)
+    movb %r8b, 2(%rax)
+    inc %r11
+    jmp .Ltp_bmp_pix
+.Ltp_bmp_pixd:
+    mov 80(%rsp), %rdi
+    mov 64(%rsp), %rsi
+    mov $1, %rdx
+    mov 72(%rsp), %rcx
+    call fwrite@PLT
+    cmp $1, %rax
+    jne .Ltp_bmp_fail
+    mov 56(%rsp), %rax
+    dec %rax
+    mov %rax, 56(%rsp)
+    jns .Ltp_bmp_row
+    mov 80(%rsp), %rdi
+    call free@PLT
+    movq $0, 80(%rsp)
+    mov 72(%rsp), %rdi
+    call fclose@PLT
+    movq $0, 72(%rsp)
+    test %eax, %eax
+    jnz .Ltp_bmp_fail
+    mov $1, %eax
+    jmp .Ltp_bmp_leave
+.Ltp_bmp_fail:
+    mov 80(%rsp), %rdi
+    test %rdi, %rdi
+    jz .Ltp_bmp_nofree
+    call free@PLT
+.Ltp_bmp_nofree:
+    mov 72(%rsp), %rdi
+    test %rdi, %rdi
+    jz .Ltp_bmp_noclose
+    call fclose@PLT
+.Ltp_bmp_noclose:
+    xor %eax, %eax
+.Ltp_bmp_leave:
+    add $88, %rsp
+    pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
+    pop %rbx
+    pop %rbp
+    ret
+)asm";
+  }
   if (needs_fail) out += ".Ltp_fail:\n    mov $1, %edi\n    call exit@PLT\n";
   if (saw_host) {
     out += "    .section .rodata\n";
@@ -504,6 +719,7 @@ std::string emit_amd64(const Program& prog) {
     for (size_t i = 0; i < strs.size(); ++i) {
       out += ".Ltp_s" + std::to_string(i) + ": .asciz \"" + gas_string(strs[i]) + "\"\n";
     }
+    if (saw_bmp) out += ".Ltp_wb: .asciz \"wb\"\n";
   }
   if (saw_fork) {
     size_t n = prog.fns.size();

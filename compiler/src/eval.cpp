@@ -153,7 +153,7 @@ void drop_unread(BcFunc& fn, int& dropped) {
     bool writes = in.dst < fn.nslots && in.op != Op::Store;
     bool side = in.op == Op::Ret || in.op == Op::Store || in.op == Op::Call || in.op == Op::Print || in.op == Op::Trap ||
                 in.op == Op::StaticInit || in.op == Op::Fork || in.op == Op::Start || in.op == Op::Lock || in.op == Op::Unlock ||
-                in.op == Op::Watch;
+                in.op == Op::Watch || in.op == Op::SaveBmp;
     bool live = side || (writes && used[in.dst]);
     if (writes && in.op != Op::Ret) used[in.dst] = 0;
     if (!live) {
@@ -193,10 +193,19 @@ void drop_unread(BcFunc& fn, int& dropped) {
       case Op::Br:
       case Op::BrRange:
       case Op::Load:
-      case Op::Addr:
       case Op::Cast:
       case Op::State:
         used[in.lhs] = 1;
+        break;
+      case Op::Addr:
+        /* The address is the first slot. Later slots of the same name are
+           the rest of that array or object. A pointer read does not name them. */
+        if (in.lhs < fn.nslots) used[in.lhs] = 1;
+        if (in.lhs < fn.slot_name.size()) {
+          const std::string& name = fn.slot_name[in.lhs];
+          for (uint32_t s = in.lhs + 1; s < fn.nslots && s < fn.slot_name.size() && fn.slot_name[s] == name; ++s)
+            used[s] = 1;
+        }
         break;
       case Op::Pow:
       case Op::FloorDiv:
@@ -219,6 +228,11 @@ void drop_unread(BcFunc& fn, int& dropped) {
         break;
       case Op::Call:
         for (uint32_t arg : in.args) used[arg] = 1;
+        break;
+      case Op::SaveBmp:
+        if (in.lhs < fn.nslots) used[in.lhs] = 1;
+        for (uint32_t arg : in.args)
+          if (arg < fn.nslots) used[arg] = 1;
         break;
       case Op::Imm:
       case Op::Jmp:
