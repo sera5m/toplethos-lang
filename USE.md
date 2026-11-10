@@ -768,6 +768,19 @@ i32 buf[140000] @static;
 i32 n = loadbytes in["lipsum-cicero.txt", buf];
 ```
 
+`loadfile` reads a file the same way as `loadbytes` and results in the number of bytes stored. A missing file is a failure. A file longer than the array is cut to the array length, and that length is the result. Cells past what was stored are left as they were.
+
+```text
+i32 buf[4];
+i32 n = loadfile in["lipsum-cicero.txt", buf];
+```
+
+`savebmp` writes one 24-bit uncompressed bottom-up bitmap and has no result. The arguments are a string-literal path, an `i32` array, an `i32` width, and an `i32` height. A pixel is `r * 65536 + g * 256 + b`. A failed write is a failure.
+
+```text
+savebmp in["examples/colorsort.bmp", pix, w, h];
+```
+
 `saveArrayAsbmp` writes one 24-bit uncompressed bottom-up bitmap. The first argument is an integer array, or a pointer to a signed or unsigned integer atom (`i4` through `i64`, `ui4` through `ui64`). Then an `i32` width, an `i32` height, and a string-literal path. The result is an `i32` signal: `1` if the file was written, `0` if it was not. It does not raise. Width and height must be in `1` .. `1048576`. The file is a `BITMAPINFOHEADER`, 24 bits, no compression, 2835 pixels per meter. A cell of 24 bits or more stores `r * 65536 + g * 256 + b` in the low 24 bits. A cell of 8 .. 23 bits stores grayscale in the low 8 bits. A cell of fewer than 8 bits stores `v * 255 / ((1 << bits) - 1)`. Row 0 of the array is the top row.
 
 ```text
@@ -948,7 +961,7 @@ A failure has no payload. `STOP[THIS]` ends it. It does not produce a value, and
 
 `@checkpoint` saves the present cells at a barrier or at the end of a `hold`. Omitted: nothing is saved.
 
-`@name` is allowed on `loop` and `do`. `@total` on a `match` makes a missing arm a compile error. `i` from `do n[k]` exists for that `do` only, including a nested `do` and its `onFinished`, and it is gone after the closing brace.
+`@name` is allowed on `loop` and `do`. `@total` on a `match` makes a missing arm a compile error. `i` from `do n[k]` exists for that `do` only, including a nested `do` and its `onFinished`, and it is gone after the closing brace. A name declared inside a brace ends at that brace. The same name in that same brace is an error. `continue` inside a `do` still increments `i`.
 
 `@time["name"] watch <f64> { }` is a statement. It measures the brace with a monotonic clock and prints `name`, the seconds, and the `f64`.
 

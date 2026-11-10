@@ -29,10 +29,10 @@ Tokenize, bind against the type map, lower to typed three-address bytecode, cons
 |---|---|
 | functions, `return`, calls, SysV: 6 integer registers and 8 `f64` registers | yes |
 | arrays, `cell` pointers, `&`, `*`, load and store | yes |
-| a local name ends at the brace | no. The name is the whole function. A second `i32 r` after an `if` is `already declared`. |
+| a local name ends at the brace | yes. The same name in that same brace is still `already declared`. |
 | `do n[k]`, index `i` read-only and local to that `do`, including a nested `do` and `onFinished` | yes |
 | `loop`, `leave`, `leave[name]`, `@name` | yes, when the body is otherwise legal here |
-| `continue` | no. It is not a keyword. `rdp.tpth_s` stops in lex. |
+| `continue` | yes. The innermost `loop` jumps to its head. Inside a `do`, it jumps to the increment, so `i` still advances. |
 | `if` `else` | yes |
 | objects, fields, methods, `HERE` as a cell address | yes, when every atom in the body has a row here |
 | `enum`, `match`, `@total` | yes. `match` is lowered to `if`. |
@@ -50,7 +50,10 @@ Tokenize, bind against the type map, lower to typed three-address bytecode, cons
 | `threads`, `freemem` | yes. `sysconf`. A bad answer exits. |
 | `@time["name"] watch <f64> { }` | yes. `clock_gettime` of `CLOCK_MONOTONIC`, then `name seconds value`. |
 | `saveArrayAsbmp` | yes. 24-bit uncompressed bottom-up BMP. Signal in `%eax` is 1 or 0. Width and height must be 1..1048576. 24 bits or more is `r * 65536 + g * 256 + b`. 8..23 bits is grayscale of the low 8. Fewer than 8 bits is `v * 255 / ((1 << bits) - 1)`. Element `i` is at `ptr - i*8`, because the frame grows down. No check that the count fits. |
-| `loadbmp`, `loadbytes`, `savebmp` | no |
+| `savebmp` | yes. Same writer, `i32` pixels only. No result. A 0 from the writer exits. |
+| `loadbmp` | yes. 24-bit uncompressed BMP into an `i32` array. `width * height` must equal the array length. A pixel is `r * 65536 + g * 256 + b`. Negative height is top-down. A bad file exits. |
+| `loadbytes` | yes. One file byte per `i32` cell. The result is the count. A missing file exits. A file longer than the array exits. Cells past the file are left as they were. |
+| `loadfile` | yes. Same read as `loadbytes`. A longer file is cut to the array length, and that length is the result. |
 | `rng` `rand` `randf` | no |
 | `min` `max` `clamp` `abs` `swap` | yes, lowered to compare and move |
 
@@ -62,7 +65,7 @@ Tokenize, bind against the type map, lower to typed three-address bytecode, cons
 | `finish` | empty. The lanes already finished inside `start`. |
 | a second `fork` before `finish` | not a failure. It overwrites the pending fork. |
 | `lock` `unlock` `hold` `@mutex` | `Lock` and `Unlock` are empty. |
-| `@static` `@config` | `StaticInit` is empty. The initializer runs on every entry. The batteries call `main` once. |
+| `@static` `@config` | The cells are in `.bss`, not the frame. Element 0 is the high address, so `ptr - i*8` still names element `i`. A guard byte skips the initializer after the first entry. An uninitialized array is not a million zero moves. The bytes are already 0. |
 
 ## Other targets, and the JIT
 
@@ -73,17 +76,13 @@ Tokenize, bind against the type map, lower to typed three-address bytecode, cons
 | SPIR-V | an operation listing. Not a module a Vulkan loader can run. No entry point, no bindings, no merge instructions. |
 | `--jit` | the interpreter asks this same amd64 emitter for an `@inlined` function, links it, checks it against the oracle, then flips the dispatch slot. Not a second IR. |
 
-`@inlined` is rejected at lower time when the body calls, prints, watches, saves a bitmap, takes a pointer, or is not a pure `i32` / `i64` / `bool` scalar.
+`@inlined` is rejected at lower time when the body calls, prints, watches, saves or loads a file, takes a pointer, or is not a pure `i32` / `i64` / `bool` scalar.
 
 ## What still stops the task batteries
 
-`sh aot/mix.sh`, the Horner rows, dict, and table compile. After table, `tasks.sh` stops:
+`sh aot/mix.sh`, the Horner rows, dict, table, glitch, blur, words, and rdp compile. The checksums match the C++ row: blur `3330989145`, rdp `97` / `54.055720805`, words `1169608076370`, glitch `14192147618921`. colorsort assembles. Running it writes `examples/colorsort.bmp`.
 
-| program | why bind or lex stops |
+| program | why it is not a language row |
 |---|---|
-| glitch, colorsort | `loadbmp` is not declared |
-| colorsort | `savebmp` is not declared. The write that exists is `saveArrayAsbmp`. |
-| words | `loadbytes` is not declared |
-| blur | `i32 r` (and `g`, `b`) is declared again after a brace |
-| rdp | `continue` is not a keyword |
 | gputwo, gpubench | a process spawn, not a language form |
+| walk | no directory calls. C++ and Rust only. |

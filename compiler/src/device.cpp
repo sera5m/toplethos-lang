@@ -131,6 +131,89 @@ int save_cells_bmp(const uint64_t* cell, uint64_t ncell, uint64_t addr, int32_t 
   return 1;
 }
 
+std::vector<uint64_t> read_bmp_pixels(const std::string& path, uint64_t expect) {
+  FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f) throw Fail("interpret", "cannot read " + path, 0, 0);
+  unsigned char hdr[54];
+  if (std::fread(hdr, 1, 54, f) != 54 || hdr[0] != 'B' || hdr[1] != 'M') {
+    std::fclose(f);
+    throw Fail("interpret", "bitmap", 0, 0);
+  }
+  auto u32 = [&](int o) -> uint32_t {
+    return static_cast<uint32_t>(hdr[o]) | (static_cast<uint32_t>(hdr[o + 1]) << 8) |
+           (static_cast<uint32_t>(hdr[o + 2]) << 16) | (static_cast<uint32_t>(hdr[o + 3]) << 24);
+  };
+  auto u16 = [&](int o) -> uint32_t { return static_cast<uint32_t>(hdr[o]) | (static_cast<uint32_t>(hdr[o + 1]) << 8); };
+  uint32_t off = u32(10);
+  int32_t ww = static_cast<int32_t>(u32(18));
+  int32_t hh = static_cast<int32_t>(u32(22));
+  bool top = hh < 0;
+  if (top) hh = -hh;
+  if (u16(28) != 24 || u32(30) != 0 || ww < 1 || hh < 1) {
+    std::fclose(f);
+    throw Fail("interpret", "bitmap", 0, 0);
+  }
+  uint64_t need = static_cast<uint64_t>(ww) * static_cast<uint64_t>(hh);
+  if (need != expect || (hh != 0 && static_cast<uint64_t>(ww) > need / static_cast<uint64_t>(hh))) {
+    std::fclose(f);
+    throw Fail("interpret", "bitmap", 0, 0);
+  }
+  if (std::fseek(f, static_cast<long>(off), SEEK_SET) != 0) {
+    std::fclose(f);
+    throw Fail("interpret", "bitmap", 0, 0);
+  }
+  int stride = (ww * 3 + 3) & ~3;
+  std::vector<unsigned char> row(static_cast<size_t>(stride));
+  std::vector<uint64_t> pix(static_cast<size_t>(need), 0);
+  for (int32_t y = 0; y < hh; ++y) {
+    if (std::fread(row.data(), 1, row.size(), f) != row.size()) {
+      std::fclose(f);
+      throw Fail("interpret", "bitmap", 0, 0);
+    }
+    int32_t desty = top ? y : hh - 1 - y;
+    for (int32_t x = 0; x < ww; ++x) {
+      unsigned b = row[static_cast<size_t>(x) * 3];
+      unsigned g = row[static_cast<size_t>(x) * 3 + 1];
+      unsigned r = row[static_cast<size_t>(x) * 3 + 2];
+      pix[static_cast<size_t>(desty) * static_cast<size_t>(ww) + static_cast<size_t>(x)] =
+          (static_cast<uint64_t>(r) << 16) | (static_cast<uint64_t>(g) << 8) | b;
+    }
+  }
+  std::fclose(f);
+  return pix;
+}
+
+uint64_t read_file_bytes(const std::string& path, uint64_t cap, int aux, std::vector<uint64_t>& out) {
+  FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f) throw Fail("interpret", "cannot read " + path, 0, 0);
+  if (std::fseek(f, 0, SEEK_END) != 0) {
+    std::fclose(f);
+    throw Fail("interpret", "cannot read " + path, 0, 0);
+  }
+  long sz = std::ftell(f);
+  if (sz < 0 || std::fseek(f, 0, SEEK_SET) != 0) {
+    std::fclose(f);
+    throw Fail("interpret", "cannot read " + path, 0, 0);
+  }
+  uint64_t size = static_cast<uint64_t>(sz);
+  if (aux == 0 && size > cap) {
+    std::fclose(f);
+    throw Fail("interpret", "file is longer than the array", 0, 0);
+  }
+  uint64_t n = size < cap ? size : cap;
+  out.resize(static_cast<size_t>(n));
+  for (uint64_t i = 0; i < n; ++i) {
+    int c = std::fgetc(f);
+    if (c < 0) {
+      std::fclose(f);
+      throw Fail("interpret", "cannot read " + path, 0, 0);
+    }
+    out[static_cast<size_t>(i)] = static_cast<uint64_t>(static_cast<unsigned char>(c));
+  }
+  std::fclose(f);
+  return n;
+}
+
 void note_call(Active* active, const Program& prog, int caller, int callee) {
   if (!active) return;
   active->calls[static_cast<size_t>(callee)]++;
@@ -157,7 +240,9 @@ struct Mem {
   std::vector<uint8_t> flag;
   std::vector<char> is_mutex;
   std::vector<int> locks;
-  std::unordered_map<std::string, uint64_t> sticky;
+  std::unordered_map<std::string, std::vector<uint64_t>> sticky;
+  std::vector<std::string> sticky_key;
+  std::vector<uint32_t> sticky_at;
   std::unordered_map<uint32_t, std::pair<uint64_t, std::vector<uint64_t>>> forks;
   bool* printed = nullptr;
 
@@ -167,6 +252,8 @@ struct Mem {
     if (flag.size() < n) flag.resize(n, 0);
     if (is_mutex.size() < n) is_mutex.resize(n, 0);
     if (locks.size() < n) locks.resize(n, 0);
+    if (sticky_key.size() < n) sticky_key.resize(n);
+    if (sticky_at.size() < n) sticky_at.resize(n, 0);
   }
 
   uint32_t alloc(uint32_t n) {
@@ -201,6 +288,35 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
     mem.cell[base + i] = args[i];
     mem.live[base + i] = 1;
   }
+  for (uint32_t s = 0; s < fn.nslots;) {
+    uint8_t f = s < fn.flag.size() ? fn.flag[s] : 0;
+    if ((f & kFlagStatic) == 0 || s >= fn.slot_name.size()) {
+      ++s;
+      continue;
+    }
+    uint32_t e = s + 1;
+    while (e < fn.nslots && e < fn.flag.size() && e < fn.slot_name.size() && (fn.flag[e] & kFlagStatic) &&
+           fn.slot_name[e] == fn.slot_name[s]) {
+      ++e;
+    }
+    std::string key = fn.shape.name + ":" + fn.slot_name[s];
+    bool multi = e - s > 1;
+    for (uint32_t k = s; k < e; ++k) {
+      mem.sticky_key[base + k] = key;
+      mem.sticky_at[base + k] = k - s;
+      if (multi) mem.live[base + k] = 1;
+    }
+    s = e;
+  }
+  auto remember = [&](uint32_t abs) {
+    if (abs >= mem.sticky_key.size()) return;
+    const std::string& key = mem.sticky_key[abs];
+    if (key.empty()) return;
+    auto hit = mem.sticky.find(key);
+    if (hit == mem.sticky.end() || hit->second.empty()) return;
+    uint32_t ix = mem.sticky_at[abs];
+    if (ix < hit->second.size()) hit->second[ix] = mem.cell[abs];
+  };
   auto at_slot = [&](uint32_t slot) -> uint64_t& { return mem.cell[base + slot]; };
   auto read_check = [&](uint32_t abs, int line) {
     if (abs >= mem.flag.size()) return;
@@ -222,7 +338,7 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
     if ((f & kFlagMutex) && mem.is_mutex[abs] && mem.locks[abs] == 0) throw Fail("interpret", "outside lock or hold", line, 0);
     if (f & kFlagTracked) mem.live[abs] = 1;
     if (f & kFlagMutex) mem.is_mutex[abs] = 1;
-    if ((f & kFlagStatic) && slot < fn.slot_name.size()) mem.sticky[fn.shape.name + ":" + fn.slot_name[slot]] = mem.cell[abs];
+    remember(abs);
   };
   auto note_abs = [&](uint32_t abs, int line) {
     if (abs == 0 || abs >= mem.cell.size()) throw Fail("interpret", "absent pointer", line, 0);
@@ -311,6 +427,7 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
         mem.cell[static_cast<size_t>(addr)] = at_slot(in.rhs);
         if ((mem.flag[static_cast<size_t>(addr)] & kFlagTracked)) mem.live[static_cast<size_t>(addr)] = 1;
         if (mem.flag[static_cast<size_t>(addr)] & kFlagMutex) mem.is_mutex[static_cast<size_t>(addr)] = 1;
+        remember(static_cast<uint32_t>(addr));
         break;
       }
       case Op::Call: {
@@ -377,16 +494,25 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
         break;
       case Op::StaticInit: {
         std::string key = fn.shape.name + ":" + (in.dst < fn.slot_name.size() ? fn.slot_name[in.dst] : "");
+        uint32_t run = 1;
+        while (in.dst + run < fn.nslots && in.dst + run < fn.flag.size() && in.dst + run < fn.slot_name.size() &&
+               (fn.flag[in.dst + run] & kFlagStatic) && fn.slot_name[in.dst + run] == fn.slot_name[in.dst]) {
+          ++run;
+        }
         if (in.imm == 0) {
           auto hit = mem.sticky.find(key);
-          if (hit != mem.sticky.end()) {
-            at_slot(in.dst) = hit->second;
-            if (in.dst < fn.flag.size() && (fn.flag[in.dst] & kFlagTracked)) mem.live[base + in.dst] = 1;
+          if (hit != mem.sticky.end() && hit->second.size() == run) {
+            for (uint32_t i = 0; i < run; ++i) {
+              mem.cell[base + in.dst + i] = hit->second[i];
+              mem.live[base + in.dst + i] = 1;
+            }
             ip = static_cast<size_t>(at.at(in.lhs));
             continue;
           }
         } else {
-          mem.sticky[key] = at_slot(in.dst);
+          auto& vec = mem.sticky[key];
+          vec.resize(run);
+          for (uint32_t i = 0; i < run; ++i) vec[i] = mem.cell[base + in.dst + i];
         }
         break;
       }
@@ -457,8 +583,55 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
         int32_t height = static_cast<int32_t>(at_slot(in.args[1]) & 0xffffffffu);
         int bits = static_cast<int>(in.imm);
         int ok = save_cells_bmp(mem.cell.data(), mem.cell.size(), at_slot(in.lhs), width, height, in.note, bits);
-        at_slot(in.dst) = static_cast<uint64_t>(ok);
-        note_slot(in.dst, in.line);
+        if (!ok && in.imm_hi) throw Fail("interpret", "savebmp failed", in.line, 0);
+        if (in.dst < fn.nslots) {
+          at_slot(in.dst) = static_cast<uint64_t>(ok);
+          note_slot(in.dst, in.line);
+        }
+        break;
+      }
+      case Op::LoadBytes: {
+        uint64_t addr = at_slot(in.lhs);
+        std::vector<uint64_t> bytes;
+        uint64_t n = 0;
+        try {
+          n = read_file_bytes(in.note, in.imm, static_cast<int>(in.imm_lo), bytes);
+        } catch (const Fail& err) {
+          throw Fail("interpret", err.what(), in.line, 0);
+        }
+        if (n > 0 && (addr == 0 || addr >= mem.cell.size() || n > mem.cell.size() - addr)) {
+          throw Fail("interpret", "cannot read " + in.note, in.line, 0);
+        }
+        for (uint64_t i = 0; i < n; ++i) {
+          uint32_t abs = static_cast<uint32_t>(addr + i);
+          mem.cell[abs] = bytes[i];
+          if (mem.flag[abs] & kFlagTracked) mem.live[abs] = 1;
+          remember(abs);
+        }
+        if (in.dst < fn.nslots) {
+          at_slot(in.dst) = n;
+          note_slot(in.dst, in.line);
+        }
+        break;
+      }
+      case Op::LoadBmp: {
+        uint64_t addr = at_slot(in.lhs);
+        std::vector<uint64_t> pix;
+        try {
+          pix = read_bmp_pixels(in.note, in.imm);
+        } catch (const Fail& err) {
+          throw Fail("interpret", err.what(), in.line, 0);
+        }
+        uint64_t n = pix.size();
+        if (n > 0 && (addr == 0 || addr >= mem.cell.size() || n > mem.cell.size() - addr)) {
+          throw Fail("interpret", "bitmap", in.line, 0);
+        }
+        for (uint64_t i = 0; i < n; ++i) {
+          uint32_t abs = static_cast<uint32_t>(addr + i);
+          mem.cell[abs] = pix[i];
+          if (mem.flag[abs] & kFlagTracked) mem.live[abs] = 1;
+          remember(abs);
+        }
         break;
       }
       case Op::Trap:

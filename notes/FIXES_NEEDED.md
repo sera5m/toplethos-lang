@@ -8,8 +8,6 @@ USE says two hosts that accept a program produce the same result. Each row below
 
 | what | interpreter | amd64 listing |
 |---|---|---|
-| `@static` / `@config` scalar | Kept after the first call. The initializer is skipped. | `StaticInit` is empty. The initializer runs on every entry. |
-| `@static` / `@config` array | Only element 0 is kept. The next call is a fresh frame, so the other elements are 0. | Same empty `StaticInit`. Every element is initialized on every entry. |
 | `@mutex` outside `lock` or `hold` | A failure at run time: `outside lock or hold`. USE says this is a compile error. Bind does not reject it. | `Lock` and `Unlock` are empty. The read is allowed. |
 | `f64` divided by zero | A failure: `division by zero`. | `divsd` yields an infinity. Integer division by zero is a failure on both, including the lowest signed value divided by -1. |
 | `saveArrayAsbmp` past the cells | Returns 0 when `width * height` does not fit in the allocated cells from that index. It does not know the declared length, so a count that stays inside the frame but past the array is still written. | The pointer is a raw byte address. There is no check. A count past the frame can fault. |

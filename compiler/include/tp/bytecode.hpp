@@ -16,7 +16,7 @@ enum class Op : uint16_t {
   Pow, FloorDiv, BitNot, Print, Trap, StaticInit, Fork, Start, Lock, Unlock, Cast, State,
   /* SlotAdd is an address plus a slot count. The interpreter adds cells.
      amd64 subtracts bytes (count * 8): the frame grows downward. */
-  SlotAdd, Clock, Watch, SaveBmp
+  SlotAdd, Clock, Watch, SaveBmp, LoadBytes, LoadBmp
 };
 
 /* Slot flags. Tracked scalars can be absent. Ephemeral becomes empty after one read. */

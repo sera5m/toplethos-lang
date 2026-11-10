@@ -97,6 +97,11 @@ void fold_const(BcFunc& fn, int& folded) {
       case Op::Start:
         known.assign(fn.nslots, std::nullopt);
         break;
+      case Op::LoadBytes:
+      case Op::LoadBmp:
+      case Op::SaveBmp:
+        known.assign(fn.nslots, std::nullopt);
+        break;
       case Op::Threads:
       case Op::Freemem:
         if (in.dst < fn.nslots) known[in.dst].reset();
@@ -153,7 +158,7 @@ void drop_unread(BcFunc& fn, int& dropped) {
     bool writes = in.dst < fn.nslots && in.op != Op::Store;
     bool side = in.op == Op::Ret || in.op == Op::Store || in.op == Op::Call || in.op == Op::Print || in.op == Op::Trap ||
                 in.op == Op::StaticInit || in.op == Op::Fork || in.op == Op::Start || in.op == Op::Lock || in.op == Op::Unlock ||
-                in.op == Op::Watch || in.op == Op::SaveBmp;
+                in.op == Op::Watch || in.op == Op::SaveBmp || in.op == Op::LoadBytes || in.op == Op::LoadBmp;
     bool live = side || (writes && used[in.dst]);
     if (writes && in.op != Op::Ret) used[in.dst] = 0;
     if (!live) {
@@ -230,6 +235,8 @@ void drop_unread(BcFunc& fn, int& dropped) {
         for (uint32_t arg : in.args) used[arg] = 1;
         break;
       case Op::SaveBmp:
+      case Op::LoadBytes:
+      case Op::LoadBmp:
         if (in.lhs < fn.nslots) used[in.lhs] = 1;
         for (uint32_t arg : in.args)
           if (arg < fn.nslots) used[arg] = 1;

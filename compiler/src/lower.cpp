@@ -270,6 +270,7 @@ struct Lowerer {
   struct LoopFrame {
     uint32_t exit = 0;
     std::string name;
+    uint32_t next = 0;
   };
   std::vector<LoopFrame> loops;
 
@@ -669,7 +670,7 @@ struct Lowerer {
           put(started);
           return dst;
         }
-        if (e.aux == 1) {
+        if (e.aux == 1 && e.name != "loadfile" && e.name != "savebmp") {
           if (!fn_of) throw Fail("bytecode", "no function table", e.line, e.col);
           auto found = fn_of->find(e.name);
           if (found == fn_of->end()) throw Fail("bytecode", "'" + e.name + "' is not declared", e.line, e.col);
@@ -683,22 +684,53 @@ struct Lowerer {
           put(in);
           return dst;
         }
-        if (e.name == "saveArrayAsbmp") {
+        if (e.name == "loadbmp" || e.name == "loadbytes" || e.name == "loadfile") {
           uint32_t ptr = emit_expr(*e.args[0]);
-          uint32_t width = emit_expr(*e.args[1]);
-          uint32_t height = emit_expr(*e.args[2]);
+          Insn in;
+          in.op = e.name == "loadbmp" ? Op::LoadBmp : Op::LoadBytes;
+          in.lhs = ptr;
+          in.note = e.op;
+          in.imm = e.bits;
+          in.imm_lo = static_cast<uint64_t>(e.aux);
+          in.line = e.line;
+          if (e.name == "loadbmp") {
+            in.dst = 0xffffffffu;
+            put(in);
+            return imm_bits(unit->atom_i32, 0, e.line);
+          }
+          uint32_t dst = fresh("nread");
+          in.atom = e.atom;
+          in.dst = dst;
+          put(in);
+          return dst;
+        }
+        if (e.name == "savebmp" || e.name == "saveArrayAsbmp") {
+          uint32_t ptr = 0;
+          uint32_t width = 0;
+          uint32_t height = 0;
+          if (e.name == "savebmp") {
+            ptr = emit_expr(*e.args[0]);
+            width = emit_expr(*e.args[1]);
+            height = emit_expr(*e.args[2]);
+          } else {
+            ptr = emit_expr(*e.args[0]);
+            width = emit_expr(*e.args[1]);
+            height = emit_expr(*e.args[2]);
+          }
           uint32_t dst = fresh("bmp");
           Insn in;
           in.op = Op::SaveBmp;
-          in.atom = e.atom;
+          in.atom = e.name == "savebmp" ? unit->atom_i32 : e.atom;
           in.src = e.args[0]->atom ? e.args[0]->atom->pointee : nullptr;
           in.dst = dst;
           in.lhs = ptr;
           in.args = {width, height};
           in.note = e.op;
-          in.imm = e.bits;
+          in.imm = e.name == "savebmp" ? 32 : e.bits;
+          in.imm_hi = e.name == "savebmp" ? 1 : 0;
           in.line = e.line;
           put(in);
+          if (e.name == "savebmp") return imm_bits(unit->atom_i32, 0, e.line);
           return dst;
         }
         if (e.name == "print") {
@@ -881,16 +913,19 @@ struct Lowerer {
           int n = st.var.length > 0 ? st.var.length : 1;
           bool scalar = st.var.atom && st.var.atom->family != Family::Object && st.var.length == 0;
           bool object = st.var.atom && st.var.atom->family == Family::Object;
+          bool sticky = hasm(st.var, Mutator::Static) || hasm(st.var, Mutator::Config);
           uint8_t flags = kFlagTracked;
           if (scalar) {
             if (hasm(st.var, Mutator::Ephemeral)) flags |= kFlagEphemeral;
-            if (hasm(st.var, Mutator::Static) || hasm(st.var, Mutator::Config)) flags |= kFlagStatic;
+            if (sticky) flags |= kFlagStatic;
             if (hasm(st.var, Mutator::Mutex)) flags |= kFlagMutex;
+          } else if (!object && st.var.length > 0 && sticky) {
+            flags |= kFlagStatic;
           }
           uint32_t base = fresh(st.var.name);
           slots[st.var.name] = base;
           track(base, flags);
-          for (int i = 1; i < n; ++i) track(fresh(st.var.name), kFlagTracked);
+          for (int i = 1; i < n; ++i) track(fresh(st.var.name), flags);
           uint32_t skip = 0;
           if (flags & kFlagStatic) {
             skip = lab();
@@ -920,7 +955,12 @@ struct Lowerer {
           } else if (st.expr) {
             mov_at(base, emit_expr(*st.expr));
           } else if (!object && st.var.length > 0) {
-            for (int i = 0; i < n; ++i) mov_at(base + static_cast<uint32_t>(i), imm_bits(st.var.atom, 0, st.line));
+            /* A static array lives in zeroed storage. Millions of zero moves
+               would only rewrite that. A one-cell array still gets the move,
+               so a scalar stays absent until its own initializer. */
+            if (!((flags & kFlagStatic) && n > 1)) {
+              for (int i = 0; i < n; ++i) mov_at(base + static_cast<uint32_t>(i), imm_bits(st.var.atom, 0, st.line));
+            }
           }
           if (flags & kFlagStatic) {
             Insn sav;
@@ -1001,7 +1041,7 @@ struct Lowerer {
         case StmtKind::Loop: {
           uint32_t head = lab();
           uint32_t exit = lab();
-          loops.push_back({exit, st.label});
+          loops.push_back({exit, st.label, head});
           mark(head);
           emit_stmts(st.yes);
           jump(head);
@@ -1024,6 +1064,11 @@ struct Lowerer {
             }
           }
           if (!found) throw Fail("bytecode", "leave is not inside a loop", st.line, st.col);
+          break;
+        }
+        case StmtKind::Continue: {
+          if (loops.empty()) throw Fail("bytecode", "continue is not inside a loop", st.line, st.col);
+          jump(loops.back().next);
           break;
         }
         case StmtKind::Store: {
@@ -1058,8 +1103,9 @@ struct Lowerer {
           put(zero);
           uint32_t count = emit_expr(*st.expr);
           uint32_t head = lab();
+          uint32_t step_at = lab();
           uint32_t done = lab();
-          loops.push_back({done, ""});
+          loops.push_back({done, "", step_at});
           mark(head);
           uint32_t cond = fresh("cmp");
           Insn lt;
@@ -1073,6 +1119,7 @@ struct Lowerer {
           put(lt);
           branch_false(cond, done, unit->atom_bool);
           emit_stmts(st.yes);
+          mark(step_at);
           uint32_t one = imm_bits(unit->atom_i32, 1, st.line);
           uint32_t next = fresh("bump");
           Insn add;
@@ -1239,7 +1286,9 @@ struct Lowerer {
         else if (!scalar(in.atom)) why = "parameter";
       }
       for (const Insn& in : fn.code) {
-        if (in.op == Op::Call || in.op == Op::Print || in.op == Op::Watch || in.op == Op::SaveBmp) why = "call";
+        if (in.op == Op::Call || in.op == Op::Print || in.op == Op::Watch || in.op == Op::SaveBmp || in.op == Op::LoadBmp ||
+            in.op == Op::LoadBytes)
+          why = "call";
         else if (in.op == Op::Threads) why = "threads";
         else if (in.op == Op::Freemem) why = "freemem";
         else if (in.op == Op::Addr || in.op == Op::Load || in.op == Op::Store) why = "pointer";

@@ -60,6 +60,7 @@ enum class TokenKind : uint16_t {
   KwElse,
   KwLoop,
   KwLeave,
+  KwContinue,
   KwTrue,
   KwFalse,
   KwAs,

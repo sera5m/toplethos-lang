@@ -76,6 +76,35 @@ struct Binder {
   const Atom* ret_atom = nullptr;
   bool in_method = false;
   std::string current_obj;
+  std::vector<std::vector<std::string>> scopes;
+  int loop_depth = 0;
+
+  void push_scope() { scopes.emplace_back(); }
+
+  void pop_scope() {
+    if (scopes.empty()) return;
+    for (const std::string& name : scopes.back()) locals.erase(name);
+    scopes.pop_back();
+  }
+
+  void note_decl(const std::string& name) {
+    if (scopes.empty()) scopes.emplace_back();
+    scopes.back().push_back(name);
+  }
+
+  std::unique_ptr<Expr> take_i32_array(const char* what, uint64_t& len) {
+    if (c.cur().kind != TokenKind::Ident) throw Fail("bind", std::string(what) + " wants an i32 array", c.cur().line, c.cur().col);
+    auto found = locals.find(c.cur().text);
+    if (found == locals.end() || found->second.length <= 0 || !found->second.atom || found->second.atom->name != "i32") {
+      throw Fail("bind", std::string(what) + " wants an i32 array", c.cur().line, c.cur().col);
+    }
+    len = static_cast<uint64_t>(found->second.length);
+    int line = c.cur().line;
+    int col = c.cur().col;
+    auto data = as_addr(name_expr(found->second.name, found->second.atom, line, col));
+    ++c.i;
+    return data;
+  }
 
   const Atom* atom_of(const Token& tok) {
     if (tok.kind != TokenKind::Ident) throw Fail("bind", "expected a type name", tok.line, tok.col);
@@ -359,10 +388,8 @@ struct Binder {
     c.expect(TokenKind::KwIn, "in");
     c.expect(TokenKind::LBracket, "[");
     auto saved_locals = locals;
-    if (!method) locals.clear();
-    else {
-      locals.clear();
-    }
+    locals.clear();
+    push_scope();
     if (!c.eat(TokenKind::RBracket)) {
       for (;;) {
         VarShape var;
@@ -372,6 +399,7 @@ struct Binder {
         ++c.i;
         fn.shape.inputs.push_back(var);
         locals[var.name] = var;
+        note_decl(var.name);
         if (c.eat(TokenKind::RBracket)) break;
         c.expect(TokenKind::Comma, ",");
       }
@@ -449,6 +477,7 @@ struct Binder {
     }
     in_method = saved_method;
     if (!method) current_obj = saved_obj;
+    pop_scope();
     locals = std::move(saved_locals);
     ret_atom = nullptr;
     return fn;
@@ -593,9 +622,11 @@ struct Binder {
 };
 
 std::vector<Stmt> Binder::block() {
+  push_scope();
   std::vector<Stmt> body;
   while (c.cur().kind != TokenKind::RBrace && c.cur().kind != TokenKind::End) append_stmt(body);
   if (c.cur().kind != TokenKind::RBrace) throw Fail("bind", "unclosed block", c.cur().line, c.cur().col);
+  pop_scope();
   return body;
 }
 
@@ -660,7 +691,9 @@ Stmt Binder::stmt() {
       c.expect(TokenKind::RBracket, "]");
     }
     c.expect(TokenKind::LBrace, "{");
+    ++loop_depth;
     st.yes = block();
+    --loop_depth;
     c.expect(TokenKind::RBrace, "}");
     return st;
   }
@@ -672,6 +705,12 @@ Stmt Binder::stmt() {
       ++c.i;
       c.expect(TokenKind::RBracket, "]");
     }
+    c.expect(TokenKind::Semicolon, ";");
+    return st;
+  }
+  if (c.eat(TokenKind::KwContinue)) {
+    if (loop_depth <= 0) throw Fail("bind", "continue is not inside a loop", st.line, st.col);
+    st.kind = StmtKind::Continue;
     c.expect(TokenKind::Semicolon, ";");
     return st;
   }
@@ -691,7 +730,9 @@ Stmt Binder::stmt() {
     idx.readonly = true;
     locals["i"] = idx;
     c.expect(TokenKind::LBrace, "{");
+    ++loop_depth;
     st.yes = block();
+    --loop_depth;
     c.expect(TokenKind::RBrace, "}");
     if (c.cur().kind == TokenKind::Ident && c.cur().text == "onFinished") {
       ++c.i;
@@ -896,6 +937,7 @@ Stmt Binder::stmt() {
     }
     c.expect(TokenKind::Semicolon, ";");
     locals[st.var.name] = st.var;
+    note_decl(st.var.name);
     return st;
   }
   throw Fail("bind", "expected a declaration, an assignment, or return", c.cur().line, c.cur().col);
@@ -1083,6 +1125,54 @@ std::unique_ptr<Expr> Binder::call_expr(const Atom* expect, bool as_value) {
   node->name = name.text;
   node->line = name.line;
   node->col = name.col;
+  if (name.text == "loadbmp" || name.text == "loadbytes" || name.text == "loadfile") {
+    if (c.cur().kind != TokenKind::String || c.cur().text.empty()) {
+      throw Fail("bind", name.text + " wants a path", c.cur().line, c.cur().col);
+    }
+    node->op = c.cur().text;
+    ++c.i;
+    c.expect(TokenKind::Comma, ",");
+    uint64_t len = 0;
+    auto data = take_i32_array(name.text.c_str(), len);
+    c.expect(TokenKind::RBracket, "]");
+    node->bits = len;
+    node->args.push_back(std::move(data));
+    if (name.text == "loadbmp") {
+      node->atom = nullptr;
+      if (as_value) throw Fail("bind", "loadbmp has no result", name.line, name.col);
+      return node;
+    }
+    /* loadfile truncates a long file. loadbytes fails instead. */
+    node->aux = name.text == "loadfile" ? 1 : 0;
+    node->atom = types.find("i32");
+    return node;
+  }
+  if (name.text == "savebmp") {
+    if (c.cur().kind != TokenKind::String || c.cur().text.empty()) {
+      throw Fail("bind", "savebmp wants a path", c.cur().line, c.cur().col);
+    }
+    node->op = c.cur().text;
+    ++c.i;
+    c.expect(TokenKind::Comma, ",");
+    uint64_t len = 0;
+    auto data = take_i32_array("savebmp", len);
+    (void)len;
+    c.expect(TokenKind::Comma, ",");
+    auto width = expr(types.find("i32"));
+    if (!width->atom || width->atom->name != "i32") mismatch(width->atom, types.find("i32"), width->line, width->col, "width is");
+    c.expect(TokenKind::Comma, ",");
+    auto height = expr(types.find("i32"));
+    if (!height->atom || height->atom->name != "i32") mismatch(height->atom, types.find("i32"), height->line, height->col, "height is");
+    c.expect(TokenKind::RBracket, "]");
+    node->atom = nullptr;
+    node->bits = 32;
+    node->aux = 1;
+    node->args.push_back(std::move(data));
+    node->args.push_back(std::move(width));
+    node->args.push_back(std::move(height));
+    if (as_value) throw Fail("bind", "savebmp has no result", name.line, name.col);
+    return node;
+  }
   if (name.text == "saveArrayAsbmp") {
     auto data = expr(nullptr);
     const Atom* elem = nullptr;
@@ -1588,7 +1678,7 @@ std::vector<Token> expand_includes(const std::vector<Token>& in, int depth) {
 
 Unit bind_unit(const std::vector<Token>& src, TypeMap& types) {
   auto toks = expand_includes(src, 0);
-  Binder binder{{toks, 0}, types, {}, {}, {}, {}, nullptr, false, {}};
+  Binder binder{{toks, 0}, types, {}, {}, {}, {}, nullptr, false, {}, {}, 0};
   Unit unit;
   unit.atom_i32 = types.find("i32");
   unit.atom_i64 = types.find("i64");

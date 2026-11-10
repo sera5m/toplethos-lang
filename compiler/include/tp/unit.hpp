@@ -14,7 +14,7 @@ enum class ExprKind : uint8_t {
 };
 
 enum class StmtKind : uint8_t {
-  Decl, Assign, Return, If, Loop, Leave, Store, CallStmt, Do, Lock, Unlock, Hold, Fork, Finish, Time
+  Decl, Assign, Return, If, Loop, Leave, Store, CallStmt, Do, Lock, Unlock, Hold, Fork, Finish, Time, Continue
 };
 
 struct Expr {

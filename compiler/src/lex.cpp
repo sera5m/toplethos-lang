@@ -12,7 +12,8 @@ const std::unordered_map<std::string, TokenKind>& keywords() {
   static const std::unordered_map<std::string, TokenKind> map = {
       {"fn", TokenKind::KwFn},     {"in", TokenKind::KwIn},     {"out", TokenKind::KwOut},
       {"return", TokenKind::KwReturn}, {"if", TokenKind::KwIf}, {"else", TokenKind::KwElse},
-      {"loop", TokenKind::KwLoop}, {"leave", TokenKind::KwLeave}, {"true", TokenKind::KwTrue},
+      {"loop", TokenKind::KwLoop}, {"leave", TokenKind::KwLeave}, {"continue", TokenKind::KwContinue},
+      {"true", TokenKind::KwTrue},
       {"false", TokenKind::KwFalse}, {"as", TokenKind::KwAs},   {"do", TokenKind::KwDo},
       {"object", TokenKind::KwObject}, {"enum", TokenKind::KwEnum}, {"match", TokenKind::KwMatch},
       {"fork", TokenKind::KwFork}, {"finish", TokenKind::KwFinish}, {"lock", TokenKind::KwLock},
@@ -445,6 +446,8 @@ const char* token_name(TokenKind k) {
       return "loop";
     case TokenKind::KwLeave:
       return "leave";
+    case TokenKind::KwContinue:
+      return "continue";
     case TokenKind::KwTrue:
       return "true";
     case TokenKind::KwFalse:

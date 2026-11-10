@@ -51,6 +51,16 @@ std::string emit_amd64(const Program& prog) {
   bool saw_host = false;
   bool saw_bmp = false;
   bool saw_fork = false;
+  bool saw_load = false;
+  std::string bss;
+  int fn_i = 0;
+  auto clean = [](std::string s) {
+    for (char& c : s) {
+      bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+      if (!ok) c = '_';
+    }
+    return s;
+  };
   int chk = 0;
   int run_n = 0;
   std::vector<std::string> strs;
@@ -63,13 +73,43 @@ std::string emit_amd64(const Program& prog) {
   std::string nano_imm = hex64(nano_bits);
   for (const BcFunc& fn : prog.fns) {
     for (const Insn& in : fn.code) arch_require(Target::Amd64, in);
-    int frame = static_cast<int>(((fn.nslots * 8) + 15) & ~15);
+    std::string tag = clean(fn.shape.name) + "_" + std::to_string(fn_i++);
+    std::vector<std::string> memop(fn.nslots);
+    std::vector<std::string> guard(fn.nslots);
+    int frame_n = 0;
+    for (uint32_t s = 0; s < fn.nslots;) {
+      bool st = s < fn.flag.size() && (fn.flag[s] & kFlagStatic);
+      if (!st) {
+        memop[s] = "-" + std::to_string(8 * (frame_n + 1)) + "(%rbp)";
+        ++frame_n;
+        ++s;
+        continue;
+      }
+      uint32_t e = s + 1;
+      const std::string name = s < fn.slot_name.size() ? fn.slot_name[s] : std::string();
+      while (e < fn.nslots && e < fn.flag.size() && (fn.flag[e] & kFlagStatic) && e < fn.slot_name.size() &&
+             fn.slot_name[e] == name) {
+        ++e;
+      }
+      uint32_t count = e - s;
+      std::string slab = ".Ltp_st_" + tag + "_" + std::to_string(s);
+      std::string glab = ".Ltp_og_" + tag + "_" + std::to_string(s);
+      guard[s] = glab;
+      bss += "    .align 8\n" + slab + ":\n    .zero " + std::to_string(static_cast<unsigned long long>(count) * 8ull) + "\n";
+      bss += glab + ":\n    .zero 1\n";
+      for (uint32_t k = s; k < e; ++k) {
+        int off = 8 * (static_cast<int>(count) - 1 - static_cast<int>(k - s));
+        memop[k] = off == 0 ? slab + "(%rip)" : slab + "+" + std::to_string(off) + "(%rip)";
+      }
+      s = e;
+    }
+    int frame = ((frame_n * 8) + 15) & ~15;
     if (frame < 16) frame = 16;
     out += "    .globl " + fn.shape.name + "\n";
     out += fn.shape.name + ":\n";
     out += "    push %rbp\n    mov %rsp, %rbp\n";
     out += "    sub $" + std::to_string(frame) + ", %rsp\n";
-    auto slot = [](uint32_t id) { return "-" + std::to_string(8 * (id + 1)) + "(%rbp)"; };
+    auto slot = [&](uint32_t id) { return memop.at(id); };
     auto lab = [&](uint64_t id) { return ".L" + fn.shape.name + "_" + std::to_string(id); };
     if (fn.shape.inputs.size() > 14) throw Fail("amd64", "more than 6 arguments", 0, 0);
     int ni = 0;
@@ -397,7 +437,36 @@ std::string emit_amd64(const Program& prog) {
           out += "    lea .Ltp_s" + std::to_string(id) + "(%rip), %rcx\n";
           out += "    mov $" + std::to_string(static_cast<unsigned>(in.imm)) + ", %r8\n";
           out += "    call .Ltp_save_bmp\n";
+          if (in.imm_hi) {
+            needs_fail = true;
+            out += "    test %eax, %eax\n    jz .Ltp_fail\n";
+          } else {
+            out += "    mov %eax, " + slot(in.dst) + "\n";
+          }
+          break;
+        }
+        case Op::LoadBytes: {
+          saw_host = true;
+          saw_load = true;
+          int id = static_cast<int>(strs.size());
+          strs.push_back(in.note);
+          out += "    mov " + slot(in.lhs) + ", %rdi\n";
+          out += "    mov $" + std::to_string(in.imm) + ", %rsi\n";
+          out += "    lea .Ltp_s" + std::to_string(id) + "(%rip), %rdx\n";
+          out += "    mov $" + std::to_string(in.imm_lo) + ", %rcx\n";
+          out += "    call .Ltp_load_bytes\n";
           out += "    mov %eax, " + slot(in.dst) + "\n";
+          break;
+        }
+        case Op::LoadBmp: {
+          saw_host = true;
+          saw_load = true;
+          int id = static_cast<int>(strs.size());
+          strs.push_back(in.note);
+          out += "    mov " + slot(in.lhs) + ", %rdi\n";
+          out += "    mov $" + std::to_string(in.imm) + ", %rsi\n";
+          out += "    lea .Ltp_s" + std::to_string(id) + "(%rip), %rdx\n";
+          out += "    call .Ltp_load_bmp\n";
           break;
         }
         case Op::Print: {
@@ -495,7 +564,15 @@ std::string emit_amd64(const Program& prog) {
         }
         case Op::Lock:
         case Op::Unlock:
+          break;
         case Op::StaticInit:
+          if (in.dst >= guard.size() || guard[in.dst].empty()) throw Fail("amd64", "static has no cell", in.line, 0);
+          if (in.imm == 0) {
+            out += "    cmpb $0, " + guard[in.dst] + "(%rip)\n";
+            out += "    jne " + lab(in.lhs) + "\n";
+          } else {
+            out += "    movb $1, " + guard[in.dst] + "(%rip)\n";
+          }
           break;
         case Op::Jmp:
         case Op::Br:
@@ -707,6 +784,230 @@ std::string emit_amd64(const Program& prog) {
     ret
 )asm";
   }
+  if (saw_load) {
+    out += R"asm(.Ltp_load_bytes:
+    push %rbp
+    mov %rsp, %rbp
+    push %rbx
+    push %r12
+    push %r13
+    push %r14
+    push %r15
+    sub $40, %rsp
+    mov %rdi, %r12
+    mov %rsi, %r13
+    mov %rcx, %r14
+    xor %r15, %r15
+    mov %rdx, %rdi
+    lea .Ltp_rb(%rip), %rsi
+    call fopen@PLT
+    test %rax, %rax
+    jz .Ltp_lby_fail
+    mov %rax, %r15
+    mov %r15, %rdi
+    xor %esi, %esi
+    mov $2, %edx
+    call fseek@PLT
+    test %eax, %eax
+    jnz .Ltp_lby_fail
+    mov %r15, %rdi
+    call ftell@PLT
+    cmp $0, %rax
+    jl .Ltp_lby_fail
+    mov %rax, %rbx
+    mov %r15, %rdi
+    xor %esi, %esi
+    xor %edx, %edx
+    call fseek@PLT
+    test %eax, %eax
+    jnz .Ltp_lby_fail
+    cmp %r13, %rbx
+    jbe .Ltp_lby_len
+    test %r14, %r14
+    jz .Ltp_lby_fail
+    mov %r13, %rbx
+.Ltp_lby_len:
+    mov %rbx, (%rsp)
+    xor %rbx, %rbx
+.Ltp_lby_loop:
+    cmp (%rsp), %rbx
+    jge .Ltp_lby_done
+    mov %r15, %rdi
+    call fgetc@PLT
+    cmp $-1, %eax
+    je .Ltp_lby_fail
+    mov %rbx, %rcx
+    shl $3, %rcx
+    mov %r12, %rdx
+    sub %rcx, %rdx
+    mov %eax, (%rdx)
+    inc %rbx
+    jmp .Ltp_lby_loop
+.Ltp_lby_done:
+    mov %r15, %rdi
+    call fclose@PLT
+    mov (%rsp), %eax
+    add $40, %rsp
+    pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
+    pop %rbx
+    pop %rbp
+    ret
+.Ltp_lby_fail:
+    test %r15, %r15
+    jz .Ltp_lby_exit
+    mov %r15, %rdi
+    call fclose@PLT
+.Ltp_lby_exit:
+    mov $1, %edi
+    call exit@PLT
+.Ltp_load_bmp:
+    push %rbp
+    mov %rsp, %rbp
+    push %rbx
+    push %r12
+    push %r13
+    push %r14
+    push %r15
+    sub $88, %rsp
+    mov %rdi, %r12
+    mov %rsi, %rbx
+    xor %r15, %r15
+    movq $0, 72(%rsp)
+    mov %rdx, %rdi
+    lea .Ltp_rb(%rip), %rsi
+    call fopen@PLT
+    test %rax, %rax
+    jz .Ltp_lbmp_fail
+    mov %rax, %r15
+    lea (%rsp), %rdi
+    mov $1, %rsi
+    mov $54, %rdx
+    mov %r15, %rcx
+    call fread@PLT
+    cmp $54, %rax
+    jne .Ltp_lbmp_fail
+    cmpb $66, (%rsp)
+    jne .Ltp_lbmp_fail
+    cmpb $77, 1(%rsp)
+    jne .Ltp_lbmp_fail
+    movzwl 28(%rsp), %eax
+    cmp $24, %eax
+    jne .Ltp_lbmp_fail
+    movl 30(%rsp), %eax
+    test %eax, %eax
+    jnz .Ltp_lbmp_fail
+    mov 18(%rsp), %r13d
+    mov 22(%rsp), %r14d
+    movl $0, 56(%rsp)
+    test %r14d, %r14d
+    jns .Ltp_lbmp_pos
+    negl %r14d
+    movl $1, 56(%rsp)
+.Ltp_lbmp_pos:
+    test %r13d, %r13d
+    jle .Ltp_lbmp_fail
+    test %r14d, %r14d
+    jle .Ltp_lbmp_fail
+    mov %r13, %rax
+    imul %r14, %rax
+    jo .Ltp_lbmp_fail
+    cmp %rbx, %rax
+    jne .Ltp_lbmp_fail
+    mov %r15, %rdi
+    mov 10(%rsp), %esi
+    xor %edx, %edx
+    call fseek@PLT
+    test %eax, %eax
+    jnz .Ltp_lbmp_fail
+    mov %r13, %rax
+    lea (%rax,%rax,2), %rax
+    add $3, %rax
+    and $-4, %rax
+    mov %rax, 64(%rsp)
+    mov %rax, %rdi
+    call malloc@PLT
+    test %rax, %rax
+    jz .Ltp_lbmp_fail
+    mov %rax, 72(%rsp)
+    movq $0, 80(%rsp)
+.Ltp_lbmp_row:
+    mov 72(%rsp), %rdi
+    mov $1, %rsi
+    mov 64(%rsp), %rdx
+    mov %r15, %rcx
+    call fread@PLT
+    cmp 64(%rsp), %rax
+    jne .Ltp_lbmp_fail
+    mov 80(%rsp), %rax
+    cmpl $0, 56(%rsp)
+    jne .Ltp_lbmp_top
+    mov %r14, %rax
+    sub 80(%rsp), %rax
+    dec %rax
+    jmp .Ltp_lbmp_got
+.Ltp_lbmp_top:
+    mov 80(%rsp), %rax
+.Ltp_lbmp_got:
+    imul %r13, %rax
+    mov %rax, %r10
+    xor %r11, %r11
+.Ltp_lbmp_pix:
+    cmp %r13, %r11
+    jge .Ltp_lbmp_pixd
+    mov %r11, %rcx
+    lea (%rcx,%rcx,2), %rcx
+    mov 72(%rsp), %rdx
+    movzbl (%rdx,%rcx), %esi
+    movzbl 1(%rdx,%rcx), %edi
+    movzbl 2(%rdx,%rcx), %eax
+    shl $16, %eax
+    shl $8, %edi
+    or %edi, %eax
+    or %esi, %eax
+    mov %r10, %rdx
+    add %r11, %rdx
+    shl $3, %rdx
+    mov %r12, %rcx
+    sub %rdx, %rcx
+    mov %eax, (%rcx)
+    inc %r11
+    jmp .Ltp_lbmp_pix
+.Ltp_lbmp_pixd:
+    incq 80(%rsp)
+    mov 80(%rsp), %rax
+    cmp %r14, %rax
+    jl .Ltp_lbmp_row
+    mov 72(%rsp), %rdi
+    call free@PLT
+    movq $0, 72(%rsp)
+    mov %r15, %rdi
+    call fclose@PLT
+    add $88, %rsp
+    pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
+    pop %rbx
+    pop %rbp
+    ret
+.Ltp_lbmp_fail:
+    mov 72(%rsp), %rdi
+    test %rdi, %rdi
+    jz .Ltp_lbmp_nofree
+    call free@PLT
+.Ltp_lbmp_nofree:
+    test %r15, %r15
+    jz .Ltp_lbmp_exit
+    mov %r15, %rdi
+    call fclose@PLT
+.Ltp_lbmp_exit:
+    mov $1, %edi
+    call exit@PLT
+)asm";
+  }
   if (needs_fail) out += ".Ltp_fail:\n    mov $1, %edi\n    call exit@PLT\n";
   if (saw_host) {
     out += "    .section .rodata\n";
@@ -720,13 +1021,18 @@ std::string emit_amd64(const Program& prog) {
       out += ".Ltp_s" + std::to_string(i) + ": .asciz \"" + gas_string(strs[i]) + "\"\n";
     }
     if (saw_bmp) out += ".Ltp_wb: .asciz \"wb\"\n";
+    if (saw_load) out += ".Ltp_rb: .asciz \"rb\"\n";
   }
-  if (saw_fork) {
-    size_t n = prog.fns.size();
-    if (n < 1) n = 1;
-    out += "    .bss\n    .align 8\n";
-    out += ".Ltp_fork_n: .zero " + std::to_string(8 * n) + "\n";
-    out += ".Ltp_fork_x: .zero " + std::to_string(64 * n) + "\n";
+  if (saw_fork || !bss.empty()) {
+    out += "    .bss\n";
+    if (saw_fork) {
+      size_t n = prog.fns.size();
+      if (n < 1) n = 1;
+      out += "    .align 8\n";
+      out += ".Ltp_fork_n: .zero " + std::to_string(8 * n) + "\n";
+      out += ".Ltp_fork_x: .zero " + std::to_string(64 * n) + "\n";
+    }
+    out += bss;
   }
   out += "    .section .note.GNU-stack,\"\",@progbits\n";
   return out;

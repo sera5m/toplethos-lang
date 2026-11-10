@@ -57,7 +57,7 @@ constexpr uint32_t kGpuInt = kIntArith | kOpNeg | kOpBrRange;
 inline constexpr ArchRow kArch[] = {
     {Target::Amd64, "i32", kCpuInt | kOpThreads},
     {Target::Amd64, "i64", kCpuInt | kOpFreemem},
-    {Target::Amd64, "bool", kBoolOps},
+    {Target::Amd64, "bool", kBoolOps | kOpRet | kOpCall},
     {Target::Amd64, "f64", kOpImm | kOpMov | kOpAdd | kOpSub | kOpMul | kOpDiv | kOpNeg | kOpRet | kOpCall | kOpLoad | kOpStore},
     {Target::Arm64, "i32", kCpuInt | kOpThreads},
     {Target::Arm64, "i64", kCpuInt | kOpFreemem},
@@ -150,6 +150,8 @@ inline uint32_t arch_bit(Op op) {
     case Op::Clock:
     case Op::Watch:
     case Op::SaveBmp:
+    case Op::LoadBytes:
+    case Op::LoadBmp:
       return 0;
   }
   return 0;
@@ -251,6 +253,10 @@ inline const char* arch_op_name(Op op) {
       return "watch";
     case Op::SaveBmp:
       return "savebmp";
+    case Op::LoadBytes:
+      return "loadbytes";
+    case Op::LoadBmp:
+      return "loadbmp";
     default:
       return "op";
   }
@@ -294,6 +300,8 @@ inline bool amd64_host_op(Op op) {
     case Op::StaticInit:
     case Op::BitNot:
     case Op::SaveBmp:
+    case Op::LoadBytes:
+    case Op::LoadBmp:
       return true;
     default:
       return false;
