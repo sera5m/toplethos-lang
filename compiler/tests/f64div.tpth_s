@@ -1,0 +1,7 @@
+fn div in[f64 z] out[f64] { return 1.0 / z; }
+fn main in[] out[i32] {
+  f64 z = 0.0;
+  f64 x = div in[z];
+  print in[x];
+  return 0;
+}

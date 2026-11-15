@@ -20,7 +20,7 @@ Tokenize, bind against the type map, lower to typed three-address bytecode, cons
 | `ui32` `ui64` | no. A folded `ui32` immediate is still `no amd64 row for ui32`. |
 | `char` `string` `size` as a value | no |
 | integer `/` `0`, and the lowest signed value divided by -1 or negated | yes, the process exits |
-| `f64 / 0` | emits `divsd`. See FIXES_NEEDED. |
+| `f64 / 0` | a failure. The process exits. `@divzero` stores the stand-in instead. |
 | `**` and `/_/` | no |
 
 ## Names, control, calls
@@ -49,7 +49,7 @@ Tokenize, bind against the type map, lower to typed three-address bytecode, cons
 | `print` | yes. `printf`. |
 | `threads`, `freemem` | yes. `sysconf`. A bad answer exits. |
 | `@time["name"] watch <f64> { }` | yes. `clock_gettime` of `CLOCK_MONOTONIC`, then `name seconds value`. |
-| `saveArrayAsbmp` | yes. 24-bit uncompressed bottom-up BMP. Signal in `%eax` is 1 or 0. Width and height must be 1..1048576. 24 bits or more is `r * 65536 + g * 256 + b`. 8..23 bits is grayscale of the low 8. Fewer than 8 bits is `v * 255 / ((1 << bits) - 1)`. Element `i` is at `ptr - i*8`, because the frame grows down. No check that the count fits. |
+| `saveArrayAsbmp` | yes. 24-bit uncompressed bottom-up BMP. Signal in `%eax` is 1 or 0. Width and height must be 1..1048576. `width * height` must fit in the declared cells from that pointer, or the signal is 0 and nothing is written. 24 bits or more is `r * 65536 + g * 256 + b`. 8..23 bits is grayscale of the low 8. Fewer than 8 bits is `v * 255 / ((1 << bits) - 1)`. Element `i` is at `ptr - i*8`, because the frame grows down. |
 | `savebmp` | yes. Same writer, `i32` pixels only. No result. A 0 from the writer exits. |
 | `loadbmp` | yes. 24-bit uncompressed BMP into an `i32` array. `width * height` must equal the array length. A pixel is `r * 65536 + g * 256 + b`. Negative height is top-down. A bad file exits. |
 | `loadbytes` | yes. One file byte per `i32` cell. The result is the count. A missing file exits. A file longer than the array exits. Cells past the file are left as they were. |
@@ -64,7 +64,7 @@ Tokenize, bind against the type map, lower to typed three-address bytecode, cons
 | `fork`, `start`, `run`, `@parallel[n]` | yes. `run` is fork then start. Lanes run one after another on this thread. The `f64` results are summed. Not an OS thread. |
 | `finish` | empty. The lanes already finished inside `start`. |
 | a second `fork` before `finish` | replaces the pending count. A lane that fails stops `start`. |
-| `lock` `unlock` `hold` `@mutex` | `Lock` and `Unlock` are empty. |
+| `lock` `unlock` `hold` `@mutex` | The first store arms the cell. After that, a use outside `lock` or `hold` exits. |
 | `@static` `@config` | The cells are in `.bss`, not the frame. Element 0 is the high address, so `ptr - i*8` still names element `i`. A guard byte skips the initializer after the first entry. An uninitialized array is not a million zero moves. The bytes are already 0. |
 
 ## Other targets, and the JIT

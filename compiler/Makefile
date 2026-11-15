@@ -171,6 +171,28 @@ test: tpcc
 	awk '/^jit mix / { for (i = 1; i <= NF; i++) if ($$i ~ /^interp_us=/) interp = substr($$i, 11) } /^jit hot / { for (i = 1; i <= NF; i++) if ($$i ~ /^native_us=/) native = substr($$i, 11) } END { if (native+0 <= 0 || interp+0 <= native+0) exit 1 }' /tmp/tpcc_mixjit.out
 	./tpcc --dump-tokens tests/add.tpth_s >/tmp/tpcc_tokens.txt
 	grep -q 'fn' /tmp/tpcc_tokens.txt
+	if ./tpcc --run tests/mxout.tpth_s >/tmp/tpcc_mxout.err 2>&1; then echo 'mutex read was accepted'; exit 1; fi
+	grep -q 'outside lock or hold' /tmp/tpcc_mxout.err
+	./tpcc --asm /tmp/tpcc_mxout.s tests/mxout.tpth_s
+	gcc -o /tmp/tpcc_mxout /tmp/tpcc_mxout.s
+	set +e; /tmp/tpcc_mxout; code=$$?; set -e; test $$code -ne 0
+	if ./tpcc --run tests/f64div.tpth_s >/tmp/tpcc_f64div.err 2>&1; then echo 'f64/0 was accepted'; exit 1; fi
+	grep -q 'division by zero' /tmp/tpcc_f64div.err
+	./tpcc --asm /tmp/tpcc_f64div.s tests/f64div.tpth_s
+	gcc -o /tmp/tpcc_f64div /tmp/tpcc_f64div.s
+	set +e; /tmp/tpcc_f64div; code=$$?; set -e; test $$code -ne 0
+	rm -f /tmp/tpcc_past.bmp /tmp/tpcc_fit.bmp
+	./tpcc --run tests/bmpfit.tpth_s >/tmp/tpcc_bmpfit.out
+	printf '0\n1\n' | cmp -s - /tmp/tpcc_bmpfit.out
+	test ! -e /tmp/tpcc_past.bmp
+	test -s /tmp/tpcc_fit.bmp
+	rm -f /tmp/tpcc_past.bmp /tmp/tpcc_fit.bmp
+	./tpcc --asm /tmp/tpcc_bmpfit.s tests/bmpfit.tpth_s
+	gcc -o /tmp/tpcc_bmpfit /tmp/tpcc_bmpfit.s
+	/tmp/tpcc_bmpfit >/tmp/tpcc_bmpfit.out
+	printf '0\n1\n' | cmp -s - /tmp/tpcc_bmpfit.out
+	test ! -e /tmp/tpcc_past.bmp
+	test -s /tmp/tpcc_fit.bmp
 
 clean:
 	rm -f tpcc

@@ -44,7 +44,7 @@ A variable is one cell.
 | `@val` | Frozen after the first store. A later store is a compile error. |
 | `@xor` | A copy of the value. |
 | `@mut` | Changes nothing on an ordinary cell. On `@val` or `@config` it is a compile error. |
-| `@mutex` | The interpreter counts `lock` and `hold`. A use outside them is a failure there. |
+| `@mutex` | After the first store, a read or a store outside `lock` or `hold` is a failure: `outside lock or hold`. |
 | `@private` | Hidden from a file that `include`s this one. Default for a local. |
 
 `@public` and `@protected` are not marks in this version. A name declared inside a brace ends at that brace. The same name in that same brace is `already declared`. A parameter lives for the whole function.
@@ -198,7 +198,7 @@ i32 n = loadbytes in["lipsum-cicero.txt", buf];
 savebmp in["out.bmp", pix, w, h];
 ```
 
-`saveArrayAsbmp` writes the same kind of file. The first argument is an integer array, or a pointer to a signed or unsigned integer from `i4` through `i64` or `ui4` through `ui64`. Then an `i32` width, an `i32` height, and a string-literal path. The result is `i32` `1` or `0`. It does not raise. Width and height must be in `1` .. `1048576`. A cell of 24 bits or more stores `r * 65536 + g * 256 + b` in the low 24 bits. A cell of 8 .. 23 bits stores grayscale in the low 8 bits. A cell of fewer than 8 bits stores `v * 255 / ((1 << bits) - 1)`. Row 0 of the array is the top row.
+`saveArrayAsbmp` writes the same kind of file. The first argument is an integer array, or a pointer to a signed or unsigned integer from `i4` through `i64` or `ui4` through `ui64`. Then an `i32` width, an `i32` height, and a string-literal path. The result is `i32` `1` or `0`. It does not raise. Width and height must be in `1` .. `1048576`. `width * height` must fit in the cells of that array from the pointer. If it does not, the result is `0` and nothing is written. A cell of 24 bits or more stores `r * 65536 + g * 256 + b` in the low 24 bits. A cell of 8 .. 23 bits stores grayscale in the low 8 bits. A cell of fewer than 8 bits stores `v * 255 / ((1 << bits) - 1)`. Row 0 of the array is the top row.
 
 ```text
 i32 pix[4] = {255, 65280, 16711680, 16777215};
@@ -260,7 +260,7 @@ A program that compiles has one meaning. A violation is a compile error or a fai
 - a second `main`, or a program with no `main`
 - `name()` as a call
 - `+` with no row, or a narrowing `as` with no row
-- `/` by zero is a failure, not a compile error
+- `/` by zero is a failure, for an integer and for `f64`. It is not a compile error
 - a constant shift count outside `0` .. width-1
 - a second declaration of a name in the same brace
 - `continue` outside a `do` or a `loop`

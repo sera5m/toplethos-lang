@@ -1,0 +1,9 @@
+fn main in[] out[i32] {
+  i32 pix[2] = {255, 65280};
+  i32 extra = 16711680;
+  i32 bad = saveArrayAsbmp in[pix, 1, 3, "/tmp/tpcc_past.bmp"];
+  i32 ok = saveArrayAsbmp in[pix, 1, 2, "/tmp/tpcc_fit.bmp"];
+  print in[bad];
+  print in[ok];
+  return extra - extra;
+}

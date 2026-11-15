@@ -52,6 +52,16 @@ std::string emit_amd64(const Program& prog) {
   bool saw_bmp = false;
   bool saw_fork = false;
   bool saw_load = false;
+  bool any_mutex = false;
+  bool any_bmp = false;
+  for (const BcFunc& fn : prog.fns) {
+    for (uint8_t fl : fn.flag)
+      if (fl & kFlagMutex) any_mutex = true;
+    for (const Insn& in : fn.code) {
+      if (in.op == Op::SaveBmp) any_bmp = true;
+      if (in.op == Op::Lock || in.op == Op::Unlock) any_mutex = true;
+    }
+  }
   std::string bss;
   int fn_i = 0;
   auto clean = [](std::string s) {
@@ -131,12 +141,166 @@ std::string emit_amd64(const Program& prog) {
       out += "    mov " + std::string(from) + ", " + slot(static_cast<uint32_t>(i)) + "\n";
       ++ni;
     }
+    struct ExtG {
+      uint32_t slot;
+      uint32_t n;
+    };
+    std::vector<uint32_t> mx_eph;
+    std::vector<uint32_t> mx_st;
+    std::vector<ExtG> ext_groups;
+    if (any_mutex) {
+      for (uint32_t s = 0; s < fn.nslots; ++s) {
+        if (s >= fn.flag.size() || (fn.flag[s] & kFlagMutex) == 0) continue;
+        if (fn.flag[s] & kFlagStatic) mx_st.push_back(s);
+        else mx_eph.push_back(s);
+      }
+    }
+    if (any_bmp) {
+      std::vector<char> taken(fn.nslots, 0);
+      for (const Insn& in : fn.code)
+        if (in.op == Op::Addr && in.lhs < fn.nslots) taken[in.lhs] = 1;
+      for (uint32_t s = 0; s < fn.nslots;) {
+        uint32_t e = s + 1;
+        const std::string name = s < fn.slot_name.size() ? fn.slot_name[s] : std::string();
+        if (!name.empty()) {
+          while (e < fn.nslots && e < fn.slot_name.size() && fn.slot_name[e] == name) ++e;
+        }
+        bool hit = false;
+        for (uint32_t k = s; k < e; ++k)
+          if (taken[k]) hit = true;
+        if (hit) ext_groups.push_back(ExtG{s, e - s});
+        s = e;
+      }
+    }
+    bool pop_mx = !mx_eph.empty();
+    bool pop_ext = !ext_groups.empty();
+    if (pop_mx) out += "    call .Ltp_mx_push\n";
+    for (uint32_t s : mx_eph) out += "    lea " + slot(s) + ", %rdi\n    call .Ltp_mx_add\n";
+    for (uint32_t s : mx_st) out += "    lea " + slot(s) + ", %rdi\n    call .Ltp_mx_perm\n";
+    if (pop_ext) {
+      out += "    call .Ltp_ext_push\n";
+      for (const ExtG& g : ext_groups) {
+        out += "    lea " + slot(g.slot) + ", %rdi\n";
+        out += "    mov $" + std::to_string(g.n) + ", %rsi\n";
+        out += "    call .Ltp_ext_add\n";
+      }
+    }
+    auto mx_check = [&](uint32_t id) {
+      if (!any_mutex || id >= fn.flag.size() || (fn.flag[id] & kFlagMutex) == 0) return;
+      needs_fail = true;
+      out += "    lea " + slot(id) + ", %rdi\n    call .Ltp_mx_check\n";
+    };
+    auto mx_arm = [&](uint32_t id) {
+      if (!any_mutex || id >= fn.nslots || id >= fn.flag.size() || (fn.flag[id] & kFlagMutex) == 0) return;
+      needs_fail = true;
+      out += "    lea " + slot(id) + ", %rdi\n    call .Ltp_mx_arm\n";
+    };
+    auto mx_reads = [&](const Insn& in) {
+      switch (in.op) {
+        case Op::Mov:
+        case Op::Neg:
+        case Op::BitNot:
+        case Op::Not:
+        case Op::Cast:
+        case Op::State:
+        case Op::Br:
+        case Op::BrRange:
+        case Op::Print:
+          mx_check(in.lhs);
+          break;
+        case Op::Add:
+        case Op::Sub:
+        case Op::Mul:
+        case Op::Div:
+        case Op::Rem:
+        case Op::And:
+        case Op::Or:
+        case Op::Xor:
+        case Op::Shl:
+        case Op::Shr:
+        case Op::Eq:
+        case Op::Ne:
+        case Op::Lt:
+        case Op::Le:
+        case Op::Gt:
+        case Op::Ge:
+        case Op::SlotAdd:
+        case Op::Watch:
+          mx_check(in.lhs);
+          mx_check(in.rhs);
+          break;
+        case Op::Ret:
+          mx_check(in.dst);
+          break;
+        case Op::Call:
+          for (uint32_t a : in.args) mx_check(a);
+          break;
+        case Op::Fork:
+          mx_check(in.lhs);
+          for (uint32_t a : in.args) mx_check(a);
+          break;
+        case Op::Store:
+          mx_check(in.rhs);
+          break;
+        case Op::SaveBmp:
+        case Op::LoadBytes:
+        case Op::LoadBmp:
+          for (uint32_t a : in.args) mx_check(a);
+          break;
+        default:
+          break;
+      }
+    };
+    auto mx_writes = [&](const Insn& in) {
+      switch (in.op) {
+        case Op::Imm:
+        case Op::Mov:
+        case Op::Add:
+        case Op::Sub:
+        case Op::Mul:
+        case Op::Div:
+        case Op::Rem:
+        case Op::And:
+        case Op::Or:
+        case Op::Xor:
+        case Op::Shl:
+        case Op::Shr:
+        case Op::Neg:
+        case Op::BitNot:
+        case Op::Not:
+        case Op::Eq:
+        case Op::Ne:
+        case Op::Lt:
+        case Op::Le:
+        case Op::Gt:
+        case Op::Ge:
+        case Op::Threads:
+        case Op::Freemem:
+        case Op::Addr:
+        case Op::Load:
+        case Op::Cast:
+        case Op::State:
+        case Op::SlotAdd:
+        case Op::Clock:
+        case Op::Start:
+        case Op::LoadBytes:
+          mx_arm(in.dst);
+          break;
+        case Op::Call:
+        case Op::SaveBmp:
+          if (in.atom && in.dst < fn.nslots) mx_arm(in.dst);
+          break;
+        default:
+          break;
+      }
+    };
     auto fbin = [&](const Insn& in, const char* how) {
       out += "    movsd " + slot(in.lhs) + ", %xmm0\n";
       out += "    " + std::string(how) + " " + slot(in.rhs) + ", %xmm0\n";
       out += "    movsd %xmm0, " + slot(in.dst) + "\n";
     };
     for (const Insn& in : fn.code) {
+      mx_reads(in);
       if (in.op == Op::Label) {
         out += lab(in.imm) + ":\n";
         continue;
@@ -197,7 +361,27 @@ std::string emit_amd64(const Program& prog) {
         case Op::Rem: {
           if (is_f64(in.atom)) {
             if (in.op != Op::Div) throw Fail("amd64", "no row for this opcode yet", in.line, 0);
+            needs_fail = true;
+            std::string skip = ".Lchk" + std::to_string(chk++);
+            std::string dodiv = ".Lchk" + std::to_string(chk++);
+            out += "    movsd " + slot(in.rhs) + ", %xmm1\n";
+            out += "    xorpd %xmm0, %xmm0\n";
+            out += "    ucomisd %xmm0, %xmm1\n";
+            out += "    jp " + dodiv + "\n";
+            out += "    jne " + dodiv + "\n";
+            if (fn.divzero == 0) {
+              out += "    jmp .Ltp_fail\n";
+            } else if (fn.divzero == 2) {
+              out += "    movabs $9223372036854775807, %rax\n";
+              out += "    mov %rax, " + slot(in.dst) + "\n";
+              out += "    jmp " + skip + "\n";
+            } else {
+              out += "    movsd %xmm0, " + slot(in.dst) + "\n";
+              out += "    jmp " + skip + "\n";
+            }
+            out += dodiv + ":\n";
             fbin(in, "divsd");
+            out += skip + ":\n";
             break;
           }
           bool srcwide = in.atom->bits == 64;
@@ -315,6 +499,10 @@ std::string emit_amd64(const Program& prog) {
         case Op::Load: {
           bool widev = in.atom && in.atom->bits == 64;
           out += "    mov " + slot(in.lhs) + ", %rax\n";
+          if (any_mutex) {
+            needs_fail = true;
+            out += "    mov %rax, %rdi\n    call .Ltp_mx_check\n";
+          }
           out += widev ? "    mov (%rax), %rax\n" : "    mov (%rax), %eax\n";
           out += "    mov " + std::string(widev ? "%rax" : "%eax") + ", " + slot(in.dst) + "\n";
           break;
@@ -322,6 +510,10 @@ std::string emit_amd64(const Program& prog) {
         case Op::Store: {
           bool widev = in.atom && in.atom->bits == 64;
           out += "    mov " + slot(in.lhs) + ", %rax\n";
+          if (any_mutex) {
+            needs_fail = true;
+            out += "    mov %rax, %rdi\n    call .Ltp_mx_arm\n";
+          }
           out += "    mov " + slot(in.rhs) + ", " + (widev ? "%rcx" : "%ecx") + "\n";
           out += widev ? "    mov %rcx, (%rax)\n" : "    mov %ecx, (%rax)\n";
           break;
@@ -367,6 +559,8 @@ std::string emit_amd64(const Program& prog) {
         case Op::Ret:
           if (is_f64(in.atom)) out += "    movsd " + slot(in.dst) + ", %xmm0\n";
           else out += "    mov " + slot(in.dst) + ", " + std::string(in.atom && in.atom->bits == 64 ? "%rax" : "%eax") + "\n";
+          if (pop_mx) out += "    call .Ltp_mx_pop\n";
+          if (pop_ext) out += "    call .Ltp_ext_pop\n";
           out += "    leave\n    ret\n";
           break;
         case Op::Cast: {
@@ -564,6 +758,10 @@ std::string emit_amd64(const Program& prog) {
         }
         case Op::Lock:
         case Op::Unlock:
+          if (!any_mutex) break;
+          needs_fail = true;
+          out += "    mov " + slot(in.lhs) + ", %rdi\n";
+          out += in.op == Op::Lock ? "    call .Ltp_mx_lock\n" : "    call .Ltp_mx_unlock\n";
           break;
         case Op::StaticInit:
           if (in.dst >= guard.size() || guard[in.dst].empty()) throw Fail("amd64", "static has no cell", in.line, 0);
@@ -581,12 +779,15 @@ std::string emit_amd64(const Program& prog) {
         default:
           throw Fail("amd64", "no row for this opcode yet", in.line, 0);
       }
+      mx_writes(in);
     }
+    if (pop_mx) out += "    call .Ltp_mx_pop\n";
+    if (pop_ext) out += "    call .Ltp_ext_pop\n";
     if (fn.shape.outputs.empty()) out += "    leave\n    ret\n";
   }
   if (saw_bmp) {
     /* rdi ptr, rsi width, rdx height, rcx path, r8 bits. Element i is at
-       ptr - i*8: the frame grows down. No cell-count check. */
+       ptr - i*8: the frame grows down. The declared span is .Ltp_ext_span. */
     out += R"asm(.Ltp_save_bmp:
     push %rbp
     mov %rsp, %rbp
@@ -619,6 +820,15 @@ std::string emit_amd64(const Program& prog) {
     jl .Ltp_bmp_fail
     cmp $64, %r15
     jg .Ltp_bmp_fail
+    mov %r12, %rdi
+    call .Ltp_ext_span
+    test %rax, %rax
+    jz .Ltp_bmp_fail
+    mov %r13, %rcx
+    imul %r14, %rcx
+    jo .Ltp_bmp_fail
+    cmp %rax, %rcx
+    ja .Ltp_bmp_fail
     mov %r13, %rax
     lea (%rax,%rax,2), %rax
     add $3, %rax
@@ -1008,6 +1218,284 @@ std::string emit_amd64(const Program& prog) {
     call exit@PLT
 )asm";
   }
+  if (any_mutex) {
+    out += R"asm(
+.Ltp_mx_push:
+    mov .Ltp_mx_sp(%rip), %rax
+    cmp $1024, %rax
+    jb .Ltp_mx_push_ok
+    mov $1, %edi
+    call exit@PLT
+.Ltp_mx_push_ok:
+    mov .Ltp_mx_n(%rip), %rcx
+    lea .Ltp_mx_mark(%rip), %r11
+    mov %rcx, (%r11,%rax,8)
+    incq .Ltp_mx_sp(%rip)
+    ret
+.Ltp_mx_add:
+    mov .Ltp_mx_n(%rip), %rax
+    cmp $1024, %rax
+    jb .Ltp_mx_add_ok
+    mov $1, %edi
+    call exit@PLT
+.Ltp_mx_add_ok:
+    lea .Ltp_mx_addr(%rip), %r11
+    mov %rdi, (%r11,%rax,8)
+    lea .Ltp_mx_count(%rip), %r11
+    movq $0, (%r11,%rax,8)
+    lea .Ltp_mx_armed(%rip), %r11
+    movq $0, (%r11,%rax,8)
+    incq .Ltp_mx_n(%rip)
+    ret
+.Ltp_mx_perm:
+    mov .Ltp_mx_perm_n(%rip), %rcx
+    xor %eax, %eax
+.Ltp_mx_perm_scan:
+    cmp %rcx, %rax
+    jae .Ltp_mx_perm_new
+    lea .Ltp_mx_perm_addr(%rip), %r11
+    cmp %rdi, (%r11,%rax,8)
+    je .Ltp_mx_perm_done
+    inc %rax
+    jmp .Ltp_mx_perm_scan
+.Ltp_mx_perm_new:
+    cmp $256, %rcx
+    jb .Ltp_mx_perm_fit
+    mov $1, %edi
+    call exit@PLT
+.Ltp_mx_perm_fit:
+    lea .Ltp_mx_perm_addr(%rip), %r11
+    mov %rdi, (%r11,%rcx,8)
+    lea .Ltp_mx_perm_count(%rip), %r11
+    movq $0, (%r11,%rcx,8)
+    lea .Ltp_mx_perm_armed(%rip), %r11
+    movq $0, (%r11,%rcx,8)
+    incq .Ltp_mx_perm_n(%rip)
+.Ltp_mx_perm_done:
+    ret
+.Ltp_mx_pop:
+    push %rax
+    decq .Ltp_mx_sp(%rip)
+    mov .Ltp_mx_sp(%rip), %rcx
+    lea .Ltp_mx_mark(%rip), %r11
+    mov (%r11,%rcx,8), %rcx
+    mov %rcx, .Ltp_mx_n(%rip)
+    pop %rax
+    ret
+.Ltp_mx_find:
+    mov .Ltp_mx_n(%rip), %rcx
+.Ltp_mx_fe:
+    test %rcx, %rcx
+    jz .Ltp_mx_fp
+    dec %rcx
+    lea .Ltp_mx_addr(%rip), %r11
+    cmp %rdi, (%r11,%rcx,8)
+    jne .Ltp_mx_fe
+    mov %rcx, %rax
+    xor %edx, %edx
+    ret
+.Ltp_mx_fp:
+    mov .Ltp_mx_perm_n(%rip), %rcx
+    xor %eax, %eax
+.Ltp_mx_fps:
+    cmp %rcx, %rax
+    jae .Ltp_mx_fno
+    lea .Ltp_mx_perm_addr(%rip), %r11
+    cmp %rdi, (%r11,%rax,8)
+    je .Ltp_mx_fpy
+    inc %rax
+    jmp .Ltp_mx_fps
+.Ltp_mx_fpy:
+    mov $1, %edx
+    ret
+.Ltp_mx_fno:
+    mov $2, %edx
+    ret
+.Ltp_mx_check:
+    push %rax
+    push %rcx
+    push %rdx
+    push %rsi
+    push %rdi
+    call .Ltp_mx_find
+    cmp $2, %edx
+    je .Ltp_mx_check_ok
+    test %edx, %edx
+    jnz .Ltp_mx_check_p
+    lea .Ltp_mx_armed(%rip), %r11
+    mov (%r11,%rax,8), %rcx
+    lea .Ltp_mx_count(%rip), %r11
+    mov (%r11,%rax,8), %rsi
+    jmp .Ltp_mx_check_t
+.Ltp_mx_check_p:
+    lea .Ltp_mx_perm_armed(%rip), %r11
+    mov (%r11,%rax,8), %rcx
+    lea .Ltp_mx_perm_count(%rip), %r11
+    mov (%r11,%rax,8), %rsi
+.Ltp_mx_check_t:
+    test %rcx, %rcx
+    jz .Ltp_mx_check_ok
+    test %rsi, %rsi
+    jnz .Ltp_mx_check_ok
+    mov $1, %edi
+    call exit@PLT
+.Ltp_mx_check_ok:
+    pop %rdi
+    pop %rsi
+    pop %rdx
+    pop %rcx
+    pop %rax
+    ret
+.Ltp_mx_arm:
+    push %rax
+    push %rcx
+    push %rdx
+    push %rsi
+    push %rdi
+    call .Ltp_mx_find
+    cmp $2, %edx
+    je .Ltp_mx_arm_ok
+    test %edx, %edx
+    jnz .Ltp_mx_arm_p
+    lea .Ltp_mx_armed(%rip), %r11
+    mov (%r11,%rax,8), %rcx
+    lea .Ltp_mx_count(%rip), %r11
+    mov (%r11,%rax,8), %rsi
+    test %rcx, %rcx
+    jz .Ltp_mx_arm_se
+    test %rsi, %rsi
+    jz .Ltp_mx_arm_die
+.Ltp_mx_arm_se:
+    lea .Ltp_mx_armed(%rip), %r11
+    movq $1, (%r11,%rax,8)
+    jmp .Ltp_mx_arm_ok
+.Ltp_mx_arm_p:
+    lea .Ltp_mx_perm_armed(%rip), %r11
+    mov (%r11,%rax,8), %rcx
+    lea .Ltp_mx_perm_count(%rip), %r11
+    mov (%r11,%rax,8), %rsi
+    test %rcx, %rcx
+    jz .Ltp_mx_arm_sp
+    test %rsi, %rsi
+    jz .Ltp_mx_arm_die
+.Ltp_mx_arm_sp:
+    lea .Ltp_mx_perm_armed(%rip), %r11
+    movq $1, (%r11,%rax,8)
+    jmp .Ltp_mx_arm_ok
+.Ltp_mx_arm_die:
+    mov $1, %edi
+    call exit@PLT
+.Ltp_mx_arm_ok:
+    pop %rdi
+    pop %rsi
+    pop %rdx
+    pop %rcx
+    pop %rax
+    ret
+.Ltp_mx_lock:
+    push %rax
+    call .Ltp_mx_find
+    cmp $2, %edx
+    je .Ltp_mx_lock_ok
+    test %edx, %edx
+    jnz .Ltp_mx_lock_p
+    lea .Ltp_mx_count(%rip), %r11
+    incq (%r11,%rax,8)
+    jmp .Ltp_mx_lock_ok
+.Ltp_mx_lock_p:
+    lea .Ltp_mx_perm_count(%rip), %r11
+    incq (%r11,%rax,8)
+.Ltp_mx_lock_ok:
+    pop %rax
+    ret
+.Ltp_mx_unlock:
+    push %rax
+    call .Ltp_mx_find
+    cmp $2, %edx
+    je .Ltp_mx_unlock_ok
+    test %edx, %edx
+    jnz .Ltp_mx_unlock_p
+    lea .Ltp_mx_count(%rip), %r11
+    cmpq $0, (%r11,%rax,8)
+    je .Ltp_mx_unlock_ok
+    lea .Ltp_mx_count(%rip), %r11
+    decq (%r11,%rax,8)
+    jmp .Ltp_mx_unlock_ok
+.Ltp_mx_unlock_p:
+    lea .Ltp_mx_perm_count(%rip), %r11
+    cmpq $0, (%r11,%rax,8)
+    je .Ltp_mx_unlock_ok
+    lea .Ltp_mx_perm_count(%rip), %r11
+    decq (%r11,%rax,8)
+.Ltp_mx_unlock_ok:
+    pop %rax
+    ret
+)asm";
+  }
+  if (any_bmp) {
+    out += R"asm(
+.Ltp_ext_push:
+    mov .Ltp_ext_sp(%rip), %rax
+    cmp $1024, %rax
+    jb .Ltp_ext_push_ok
+    mov $1, %edi
+    call exit@PLT
+.Ltp_ext_push_ok:
+    mov .Ltp_ext_n(%rip), %rcx
+    lea .Ltp_ext_mark(%rip), %r11
+    mov %rcx, (%r11,%rax,8)
+    incq .Ltp_ext_sp(%rip)
+    ret
+.Ltp_ext_add:
+    mov .Ltp_ext_n(%rip), %rax
+    cmp $1024, %rax
+    jb .Ltp_ext_add_ok
+    mov $1, %edi
+    call exit@PLT
+.Ltp_ext_add_ok:
+    lea .Ltp_ext_base(%rip), %r11
+    mov %rdi, (%r11,%rax,8)
+    lea .Ltp_ext_len(%rip), %r11
+    mov %rsi, (%r11,%rax,8)
+    incq .Ltp_ext_n(%rip)
+    ret
+.Ltp_ext_pop:
+    push %rax
+    decq .Ltp_ext_sp(%rip)
+    mov .Ltp_ext_sp(%rip), %rcx
+    lea .Ltp_ext_mark(%rip), %r11
+    mov (%r11,%rcx,8), %rcx
+    mov %rcx, .Ltp_ext_n(%rip)
+    pop %rax
+    ret
+.Ltp_ext_span:
+    mov .Ltp_ext_n(%rip), %rcx
+.Ltp_ext_span_l:
+    test %rcx, %rcx
+    jz .Ltp_ext_span_d
+    dec %rcx
+    lea .Ltp_ext_base(%rip), %r11
+    mov (%r11,%rcx,8), %rdx
+    cmp %rdi, %rdx
+    jb .Ltp_ext_span_l
+    mov %rdx, %rax
+    sub %rdi, %rax
+    test $7, %rax
+    jnz .Ltp_ext_span_l
+    shr $3, %rax
+    lea .Ltp_ext_len(%rip), %r11
+    cmp (%r11,%rcx,8), %rax
+    jae .Ltp_ext_span_l
+    lea .Ltp_ext_len(%rip), %r11
+    mov (%r11,%rcx,8), %rdx
+    sub %rax, %rdx
+    mov %rdx, %rax
+    ret
+.Ltp_ext_span_d:
+    xor %eax, %eax
+    ret
+)asm";
+  }
   if (needs_fail) out += ".Ltp_fail:\n    mov $1, %edi\n    call exit@PLT\n";
   if (saw_host) {
     out += "    .section .rodata\n";
@@ -1022,6 +1510,18 @@ std::string emit_amd64(const Program& prog) {
     }
     if (saw_bmp) out += ".Ltp_wb: .asciz \"wb\"\n";
     if (saw_load) out += ".Ltp_rb: .asciz \"rb\"\n";
+  }
+  if (any_mutex) {
+    bss += "    .align 8\n";
+    bss += ".Ltp_mx_n: .quad 0\n.Ltp_mx_sp: .quad 0\n.Ltp_mx_perm_n: .quad 0\n";
+    bss += ".Ltp_mx_mark: .zero 8192\n.Ltp_mx_addr: .zero 8192\n";
+    bss += ".Ltp_mx_count: .zero 8192\n.Ltp_mx_armed: .zero 8192\n";
+    bss += ".Ltp_mx_perm_addr: .zero 2048\n.Ltp_mx_perm_count: .zero 2048\n.Ltp_mx_perm_armed: .zero 2048\n";
+  }
+  if (any_bmp) {
+    bss += "    .align 8\n";
+    bss += ".Ltp_ext_n: .quad 0\n.Ltp_ext_sp: .quad 0\n";
+    bss += ".Ltp_ext_mark: .zero 8192\n.Ltp_ext_base: .zero 8192\n.Ltp_ext_len: .zero 8192\n";
   }
   if (saw_fork || !bss.empty()) {
     out += "    .bss\n";

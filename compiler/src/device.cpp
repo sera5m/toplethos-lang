@@ -72,14 +72,16 @@ void put_u32(std::vector<uint8_t>& b, size_t at, uint32_t v) {
 }
 
 /* 24-bit BI_RGB, bottom-up. 0 is a signal, not a thrown failure.
-   cell[addr + i] is element i. A count that runs past ncell is 0. */
+   cell[addr + i] is element i. span is the declared cells from addr.
+   A count past that span, or past ncell, is 0. */
 int save_cells_bmp(const uint64_t* cell, uint64_t ncell, uint64_t addr, int32_t width, int32_t height,
-                   const std::string& path, int bits) {
+                   const std::string& path, int bits, uint64_t span) {
   if (path.empty() || width < 1 || height < 1 || width > 1048576 || height > 1048576) return 0;
   if (bits < 1 || bits > 64) return 0;
   if (addr == 0 || addr >= ncell) return 0;
   uint64_t uw = static_cast<uint64_t>(width);
   uint64_t uh = static_cast<uint64_t>(height);
+  if (span == 0 || uw > span / uh) return 0;
   if (uw > (ncell - addr) / uh) return 0;
   uint64_t stride = (uw * 3ull + 3ull) & ~3ull;
   if (uh != 0 && stride > (0xffffffffull - 54ull) / uh) return 0;
@@ -240,6 +242,13 @@ struct Mem {
   std::vector<uint8_t> flag;
   std::vector<char> is_mutex;
   std::vector<int> locks;
+  struct Extent {
+    uint64_t start = 0;
+    uint64_t count = 0;
+  };
+  std::vector<Extent> extent;
+  /* Armed @static @mutex cells. The frame is new on each call. The mark is not. */
+  std::unordered_map<std::string, char> mutex_on;
   std::unordered_map<std::string, std::vector<uint64_t>> sticky;
   std::vector<std::string> sticky_key;
   std::vector<uint32_t> sticky_at;
@@ -256,6 +265,13 @@ struct Mem {
     if (sticky_at.size() < n) sticky_at.resize(n, 0);
   }
 
+  uint64_t remain(uint64_t addr) const {
+    for (const Extent& e : extent) {
+      if (addr >= e.start && addr < e.start + e.count) return e.start + e.count - addr;
+    }
+    return 0;
+  }
+
   uint32_t alloc(uint32_t n) {
     if (cell.empty()) cell.push_back(0);
     uint32_t base = static_cast<uint32_t>(cell.size());
@@ -265,8 +281,7 @@ struct Mem {
   }
 };
 
-uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& args, int caller, Active* active, int& steps,
-                Mem& mem, Jit* jit) {
+uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& args, int caller, Active* active, Mem& mem, Jit* jit) {
   const BcFunc& fn = prog.fns[static_cast<size_t>(index)];
   note_call(active, prog, caller, index);
   if (args.size() != fn.shape.inputs.size()) throw Fail("interpret", fn.shape.name + " argument count", 0, 0);
@@ -276,6 +291,26 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
     if (fn.code[i].imm >= at.size()) at.resize(fn.code[i].imm + 1, -1);
     at[fn.code[i].imm] = static_cast<int>(i);
   }
+  uint32_t mark = static_cast<uint32_t>(mem.cell.size());
+  size_t ext_mark = mem.extent.size();
+  struct Release {
+    Mem& mem;
+    uint32_t mark;
+    size_t ext;
+    Release(Mem& m, uint32_t k, size_t e) : mem(m), mark(k), ext(e) {}
+    Release(const Release&) = delete;
+    Release& operator=(const Release&) = delete;
+    ~Release() {
+      mem.cell.resize(mark);
+      if (mem.live.size() > mark) mem.live.resize(mark);
+      if (mem.flag.size() > mark) mem.flag.resize(mark);
+      if (mem.is_mutex.size() > mark) mem.is_mutex.resize(mark);
+      if (mem.locks.size() > mark) mem.locks.resize(mark);
+      if (mem.sticky_key.size() > mark) mem.sticky_key.resize(mark);
+      if (mem.sticky_at.size() > mark) mem.sticky_at.resize(mark);
+      if (mem.extent.size() > ext) mem.extent.resize(ext);
+    }
+  } release(mem, mark, ext_mark);
   uint32_t base = mem.alloc(fn.nslots);
   for (uint32_t i = 0; i < fn.nslots; ++i) {
     uint8_t f = i < fn.flag.size() ? fn.flag[i] : 0;
@@ -308,6 +343,22 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
     }
     s = e;
   }
+  for (uint32_t s = 0; s < fn.nslots;) {
+    uint32_t e = s + 1;
+    const std::string name = s < fn.slot_name.size() ? fn.slot_name[s] : std::string();
+    if (!name.empty()) {
+      while (e < fn.nslots && e < fn.slot_name.size() && fn.slot_name[e] == name) ++e;
+    }
+    mem.extent.push_back(Mem::Extent{static_cast<uint64_t>(base) + s, static_cast<uint64_t>(e - s)});
+    s = e;
+  }
+  for (uint32_t k = 0; k < fn.nslots; ++k) {
+    uint32_t abs = base + k;
+    if ((mem.flag[abs] & kFlagMutex) == 0 || mem.sticky_key[abs].empty()) continue;
+    std::string key = mem.sticky_key[abs] + "#" + std::to_string(mem.sticky_at[abs]);
+    auto hit = mem.mutex_on.find(key);
+    if (hit != mem.mutex_on.end() && hit->second) mem.is_mutex[abs] = 1;
+  }
   auto remember = [&](uint32_t abs) {
     if (abs >= mem.sticky_key.size()) return;
     const std::string& key = mem.sticky_key[abs];
@@ -316,6 +367,11 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
     if (hit == mem.sticky.end() || hit->second.empty()) return;
     uint32_t ix = mem.sticky_at[abs];
     if (ix < hit->second.size()) hit->second[ix] = mem.cell[abs];
+  };
+  auto keep_mutex = [&](uint32_t abs) {
+    if (abs >= mem.sticky_key.size() || mem.sticky_key[abs].empty()) return;
+    if ((mem.flag[abs] & kFlagMutex) == 0 || !mem.is_mutex[abs]) return;
+    mem.mutex_on[mem.sticky_key[abs] + "#" + std::to_string(mem.sticky_at[abs])] = 1;
   };
   auto at_slot = [&](uint32_t slot) -> uint64_t& { return mem.cell[base + slot]; };
   auto read_check = [&](uint32_t abs, int line) {
@@ -338,6 +394,7 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
     if ((f & kFlagMutex) && mem.is_mutex[abs] && mem.locks[abs] == 0) throw Fail("interpret", "outside lock or hold", line, 0);
     if (f & kFlagTracked) mem.live[abs] = 1;
     if (f & kFlagMutex) mem.is_mutex[abs] = 1;
+    keep_mutex(abs);
     remember(abs);
   };
   auto note_abs = [&](uint32_t abs, int line) {
@@ -346,6 +403,7 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
     if ((f & kFlagMutex) && mem.is_mutex[abs] && mem.locks[abs] == 0) throw Fail("interpret", "outside lock or hold", line, 0);
     if (f & kFlagTracked) mem.live[abs] = 1;
     if (f & kFlagMutex) mem.is_mutex[abs] = 1;
+    keep_mutex(abs);
   };
   auto apply_write = [&](const Insn& in) {
     const Atom* numeric = in.src ? in.src : in.atom;
@@ -362,7 +420,6 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
   };
   size_t ip = 0;
   while (ip < fn.code.size()) {
-    if (++steps > 10000000) throw Fail("interpret", "stopped after 10000000 steps", 0, 0);
     const Insn& in = fn.code[ip];
     switch (in.op) {
       case Op::Imm:
@@ -427,6 +484,7 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
         mem.cell[static_cast<size_t>(addr)] = at_slot(in.rhs);
         if ((mem.flag[static_cast<size_t>(addr)] & kFlagTracked)) mem.live[static_cast<size_t>(addr)] = 1;
         if (mem.flag[static_cast<size_t>(addr)] & kFlagMutex) mem.is_mutex[static_cast<size_t>(addr)] = 1;
+        keep_mutex(static_cast<uint32_t>(addr));
         remember(static_cast<uint32_t>(addr));
         break;
       }
@@ -442,7 +500,7 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
           timespec ts{};
           clock_gettime(CLOCK_MONOTONIC, &ts);
           int64_t t0 = static_cast<int64_t>(ts.tv_sec) * 1000000 + ts.tv_nsec / 1000;
-          got = run_fn(prog, callee, call_args, index, active, steps, mem, jit);
+          got = run_fn(prog, callee, call_args, index, active, mem, jit);
           clock_gettime(CLOCK_MONOTONIC, &ts);
           int64_t t1 = static_cast<int64_t>(ts.tv_sec) * 1000000 + ts.tv_nsec / 1000;
           if (jit && callee >= 0 && static_cast<size_t>(callee) < jit->slot.size()) {
@@ -532,7 +590,7 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
           std::vector<uint64_t> call_args;
           call_args.push_back(lane);
           call_args.insert(call_args.end(), extra.begin(), extra.end());
-          uint64_t got = run_fn(prog, static_cast<int>(in.imm), call_args, index, active, steps, mem, jit);
+          uint64_t got = run_fn(prog, static_cast<int>(in.imm), call_args, index, active, mem, jit);
           double d = 0;
           std::memcpy(&d, &got, 8);
           sum += d;
@@ -582,7 +640,9 @@ uint64_t run_fn(const Program& prog, int index, const std::vector<uint64_t>& arg
         int32_t width = static_cast<int32_t>(at_slot(in.args[0]) & 0xffffffffu);
         int32_t height = static_cast<int32_t>(at_slot(in.args[1]) & 0xffffffffu);
         int bits = static_cast<int>(in.imm);
-        int ok = save_cells_bmp(mem.cell.data(), mem.cell.size(), at_slot(in.lhs), width, height, in.note, bits);
+        uint64_t addr = at_slot(in.lhs);
+        uint64_t span = mem.remain(addr);
+        int ok = save_cells_bmp(mem.cell.data(), mem.cell.size(), addr, width, height, in.note, bits, span);
         if (!ok && in.imm_hi) throw Fail("interpret", "savebmp failed", in.line, 0);
         if (in.dst < fn.nslots) {
           at_slot(in.dst) = static_cast<uint64_t>(ok);
@@ -659,12 +719,11 @@ int64_t interpret(const Program& prog, const std::string& entry, Active* active,
     active->calls.assign(prog.fns.size(), 0);
     active->callers.assign(prog.fns.size(), {});
   }
-  int steps = 0;
   Mem mem;
   mem.printed = printed;
   Jit jit;
   jit_prepare(jit, prog);
-  uint64_t bits = run_fn(prog, index, {}, -1, active, steps, mem, &jit);
+  uint64_t bits = run_fn(prog, index, {}, -1, active, mem, &jit);
   if (jit_log && jit.any) *jit_log = jit_report(prog, jit);
   if (fn.shape.outputs.empty()) return 0;
   return signed_result(bits, *fn.shape.outputs[0].atom);

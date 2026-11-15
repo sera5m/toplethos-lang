@@ -18,7 +18,7 @@ The front end is the same one the compiler uses: tokenize, bind against the type
 | `as` between integer widths that fit, integer to `f64`, enum to integer | yes. A narrowing `as` with no row is rejected. |
 | `**` on integers, `/_/` | yes |
 | integer `/` `0`, shift count outside the width, unary minus of the lowest signed value | yes, a failure. `@divzero[0]` and `@divzero[max]` stand in. |
-| `f64 / 0` | a failure. The amd64 listing does not match. |
+| `f64 / 0` | a failure on both hosts. `@divzero` still substitutes. |
 
 ## The 1.0 suite
 
@@ -47,10 +47,10 @@ The front end is the same one the compiler uses: tokenize, bind against the type
 | `^=` | no. The lexer emits `^` and then `=`. USE says it is not an operator. |
 | `include "file.tpth_s"` | yes, once. `@private` in that file is not visible here. A header is rejected. `include lib` is rejected. |
 | `fork` `start` `finish` `run` `@parallel[n]` | yes, in order, on this thread. `start` sums `f64`. Not an OS thread. |
-| `@mutex`, `lock`, `unlock`, `hold` | yes. The lock is a count. A use outside it fails at run time, not at bind. USE says compile error. |
+| `@mutex`, `lock`, `unlock`, `hold` | yes. The first store arms the cell. After that, a use outside `lock` or `hold` is `outside lock or hold`. The amd64 listing exits the same way. |
 | `threads` `freemem` | yes. The OS count, and available RAM in bytes. If the host cannot ask, it is a failure. It does not invent a 0. |
 | `@time["name"] watch <f64> { }` | yes. `CLOCK_MONOTONIC`. Prints `name seconds value`. |
-| `saveArrayAsbmp` | yes. Same pixel rule as the amd64 listing. The signal is `i32` 1 or 0, not a thrown failure. The pointer is a cell index. A null index, an empty path, a width or height outside 1..1048576, a bit width outside 1..64, or a count that runs past the allocated cells returns 0. The declared length is not stored on the pointer. |
+| `saveArrayAsbmp` | yes. Same pixel rule as the amd64 listing. The signal is `i32` 1 or 0, not a thrown failure. `width * height` must fit in the declared cells from that pointer. Otherwise the result is 0 and nothing is written. |
 | `savebmp` | yes. An `i32` array, a path, a width, and a height. No result. A failed write is `savebmp failed`. |
 | `loadbmp` | yes. 24-bit uncompressed BMP. The array length must be `width * height`. A pixel is `r * 65536 + g * 256 + b`. A missing, compressed, or wrong-size file is `cannot read` or `bitmap`. Negative height is top-down. |
 | `loadbytes` | yes. One byte per cell. The result is the count. A missing file is `cannot read`. A file longer than the array is `file is longer than the array`. Cells past the file stay as they were. |
@@ -64,4 +64,4 @@ Forms that are not in USE are not a backlog. `namespace`, `@NoFailTolerance`, an
 
 ## Limits of this oracle
 
-The step counter stops at 10000000. Frames are not freed. Both are in FIXES_NEEDED. A program the amd64 listing finishes can still be stopped here. glitch and words are past that cap, so the checksum above is the `--asm` row.
+A call's frame is released when the call returns. There is no step cap. A program that returns on the amd64 listing returns here. glitch and words are still slower here than `--asm`. The checksum next to C++ and Rust is the `--asm` row.
