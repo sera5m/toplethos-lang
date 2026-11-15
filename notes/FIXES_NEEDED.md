@@ -1,6 +1,6 @@
 # Fixes needed
 
-Wrong behavior in UMMES, release 1.2 tripar. A feature that is not built is not in this file. Those rows are [implemented_in_compiler.md](implemented_in_compiler.md) and [implemented_in_enterpreter.md](implemented_in_enterpreter.md).
+Wrong behavior in UMMES, release 1.2 tripar. A form that is not in USE is not a bug and is not in this file.
 
 USE says two hosts that accept a program produce the same result. Each row below is a place they do not, or a place one host breaks a rule it already implements.
 
@@ -15,10 +15,3 @@ USE says two hosts that accept a program produce the same result. Each row below
 ## Interpreter, on a program that should finish
 
 The step counter is a signed `int` and the limit is 10000000. A longer run stops with `stopped after 10000000 steps`. Each call allocates a frame and nothing frees it, so a long `--run` can also be killed by the OS before the counter trips. `sh aot/battery.sh` hits the counter on the N=2000000 `--run`. The `--asm` row is the one next to C++ and Rust.
-
-## Fork
-
-`start` runs the lanes in order and sums the `f64` results. That order is what the batteries match. It is not an OS thread. Two further rows are still wrong against USE Runs:
-
-- A second `fork` before `finish` overwrites the pending fork. USE says that is a failure. Neither host raises it.
-- A lane that fails aborts `start` immediately. USE says the failure is raised after the other lanes finish.

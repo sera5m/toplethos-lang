@@ -61,9 +61,9 @@ Tokenize, bind against the type map, lower to typed three-address bytecode, cons
 
 | feature | amd64 |
 |---|---|
-| `fork`, `start`, `run`, `@parallel[n]` | yes. `run` is fork then start. Lanes run one after another on this thread. The `f64` results are summed. Not an OS thread. USE Runs still says threads. |
+| `fork`, `start`, `run`, `@parallel[n]` | yes. `run` is fork then start. Lanes run one after another on this thread. The `f64` results are summed. Not an OS thread. |
 | `finish` | empty. The lanes already finished inside `start`. |
-| a second `fork` before `finish` | not a failure. It overwrites the pending fork. |
+| a second `fork` before `finish` | replaces the pending count. A lane that fails stops `start`. |
 | `lock` `unlock` `hold` `@mutex` | `Lock` and `Unlock` are empty. |
 | `@static` `@config` | The cells are in `.bss`, not the frame. Element 0 is the high address, so `ptr - i*8` still names element `i`. A guard byte skips the initializer after the first entry. An uninitialized array is not a million zero moves. The bytes are already 0. |
 
@@ -78,11 +78,8 @@ Tokenize, bind against the type map, lower to typed three-address bytecode, cons
 
 `@inlined` is rejected at lower time when the body calls, prints, watches, saves or loads a file, takes a pointer, or is not a pure `i32` / `i64` / `bool` scalar.
 
-## What still stops the task batteries
+## Task batteries
 
 `sh aot/mix.sh`, the Horner rows, dict, table, glitch, blur, words, and rdp compile. The checksums match the C++ row: blur `3330989145`, rdp `97` / `54.055720805`, words `1169608076370`, glitch `14192147618921`. colorsort assembles. Running it writes `examples/colorsort.bmp`.
 
-| program | why it is not a language row |
-|---|---|
-| gputwo, gpubench | a process spawn, not a language form |
-| walk | no directory calls. C++ and Rust only. |
+The language rows of `sh aot/tasks.sh` match. The directory walk stays C++ and Rust. The language has no directory calls.

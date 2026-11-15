@@ -1,6 +1,6 @@
 // Same word count as words.tpth_s. Fifty passes, one checksum.
-// The loop after the return is not reached. A loop means the body is not
-// pasted, so the scan loop calls mix once per letter.
+// Both binaries call mix. There is no paste.
+// The loop after the return is not reached.
 fn mix in[i32 h, i32 c] out[i32] {
   return (h ^ c) * 16777619;
   loop { leave; }

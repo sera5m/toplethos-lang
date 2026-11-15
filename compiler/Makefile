@@ -169,7 +169,7 @@ test: tpcc
 	grep -q 'jit mix ' /tmp/tpcc_mixjit.out
 	grep -qx 'result 0' /tmp/tpcc_mixjit.out
 	awk '/^jit mix / { for (i = 1; i <= NF; i++) if ($$i ~ /^interp_us=/) interp = substr($$i, 11) } /^jit hot / { for (i = 1; i <= NF; i++) if ($$i ~ /^native_us=/) native = substr($$i, 11) } END { if (native+0 <= 0 || interp+0 <= native+0) exit 1 }' /tmp/tpcc_mixjit.out
-	./tpcc --dump-tokens ../examples/gputwo.tpth_s >/tmp/tpcc_tokens.txt
+	./tpcc --dump-tokens tests/add.tpth_s >/tmp/tpcc_tokens.txt
 	grep -q 'fn' /tmp/tpcc_tokens.txt
 
 clean:

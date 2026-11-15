@@ -1,6 +1,6 @@
 // Intense mixed-ops kernel. One serial chain, N = 1000000.
 // Each step feeds the next, so the loop is not a pure Horner.
-// stew and spice each contain a loop, so the host does not paste them.
+// stew and spice are calls. Nothing pastes them.
 // Integer work stays in a small positive range: add, sub, mul, div, mod,
 // shift, and, or, xor, not. Float work is add, sub, mul, div.
 // The tap is an array. bias and scale are object fields. The last store

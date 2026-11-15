@@ -8,7 +8,7 @@ The Python compiler is gone. `lang/` has no parser, interpreter, or emitter. `ao
 
 The suite is the 1.0 texts in `conformance/check.py`, including the rows that must be rejected. `make -C compiler test` is still the older battery and stays green. Spec text is still 1.0 in [USE.md](../USE.md). 1.2 is the compiler release, not a new spec.
 
-What the two hosts actually run is [implemented_in_compiler.md](implemented_in_compiler.md) and [implemented_in_enterpreter.md](implemented_in_enterpreter.md). A missing feature is in those files. [FIXES_NEEDED.md](FIXES_NEEDED.md) is only behavior that is present and wrong.
+What the two hosts actually run is [implemented_in_compiler.md](implemented_in_compiler.md) and [implemented_in_enterpreter.md](implemented_in_enterpreter.md). [FIXES_NEEDED.md](FIXES_NEEDED.md) is only behavior that is present and wrong. A form that is not in USE is not a backlog.
 
 What this release runs, and only on the interpreter:
 
@@ -29,4 +29,4 @@ What this release runs, and only on the interpreter:
 
 `tpcc --asm` (amd64, then gcc) also prints the cross-language kernels: `sh aot/mix.sh`, `sh aot/battery.sh`, and `sh aot/tasks.sh` through rdp. That listing has f64 arithmetic, `as`, `print`, `@time["name"] watch`, `saveArrayAsbmp`, `savebmp`, `loadbmp`, `loadbytes`, `continue`, and `do`. `run worker in[n]` is fork then start. The lanes still run one after another. Lock and unlock are empty there, so the mutex checksum matches and the time does not show contention. It is not an OS thread. `@static` and `@config` live in `.bss`. A guard skips the initializer after the first entry, including every element of an array. The interpreter keeps the same cells in a sticky vector. `sh aot/battery.sh` also runs `tpcc --run` on the same N=2000000 program. That interpreter stops after 10000000 steps. The numbers next to C++ and Rust are the `--asm` rows.
 
-Not done: SPIR-V is still a listing. It is not a Vulkan module. arm64 and C++ do not print f64, fork, `@time`, `saveArrayAsbmp`, or the file loads. Scalar control stays on the CPU. gputwo and gpubench are process spawns, not a language form. The directory walk is still C++ and Rust only.
+Closed with this release. `emit_spirv.cpp` is an operation listing, and that listing is the SPIR-V backend. It is not a Vulkan module. arm64 and the C++ printer keep the older integer rows. They do not print f64, fork, `@time`, `saveArrayAsbmp`, or the file loads. There is no directory walk in the language. The language rows of `sh aot/tasks.sh` match C++ and Rust. The walk row stays C++ and Rust.

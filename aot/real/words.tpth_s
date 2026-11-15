@@ -1,5 +1,5 @@
 // Words in lipsum-cicero.txt. Open address, 32768 slots.
-// mix is straight, so the compiler pastes it into the scan loop.
+// Both this file and words_call.tpth_s call mix. Nothing pastes it.
 // The table is rebuilt 50 times. The checksum is one pass. The repeat
 // makes the scan, not the file read, what the clock sees.
 fn mix in[i32 h, i32 c] out[i32] {

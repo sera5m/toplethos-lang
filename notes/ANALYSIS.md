@@ -105,6 +105,6 @@ On the Cicero scan this is a few dozen source ops, not half the table. The large
 
 ## What it is not
 
-Not the scored symbol table in [GOALS.md](GOALS.md). No lower, average, or upper cycle count. The `profile` pass is only the O() ceiling above. It is not a measured run, and a loop written without a bound is not given one.
+Not a scored symbol table. That table is not in this release. No lower, average, or upper cycle count. The `profile` pass is only the O() ceiling above. It is not a measured run, and a loop written without a bound is not given one.
 
 Not a pass that deletes a bounds check. The cursor and the bound are the fact that pass would read. The phase-4 reductions in [x86-op-table.md](x86-op-table.md) are still not built.

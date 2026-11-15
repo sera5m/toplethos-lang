@@ -43,8 +43,8 @@ The front end is the same one the compiler uses: tokenize, bind against the type
 | `@require` | a trap at run time |
 | `min` `max` `clamp` `abs` `swap` | yes. `abs` of the lowest signed value is a failure. |
 | `+=`, `a = b = c` | yes |
-| `$=` `!$=` | the tokens exist. They lower to constant false and constant true. No `flow` can be declared, so nothing else can happen. |
-| `^=` | no. The lexer emits `^` and then `=`. It is not the resolve-store in USE. |
+| `$=` `!$=` | the tokens exist. They lower to constant false and constant true. There is no structural row. |
+| `^=` | no. The lexer emits `^` and then `=`. USE says it is not an operator. |
 | `include "file.tpth_s"` | yes, once. `@private` in that file is not visible here. A header is rejected. `include lib` is rejected. |
 | `fork` `start` `finish` `run` `@parallel[n]` | yes, in order, on this thread. `start` sums `f64`. Not an OS thread. |
 | `@mutex`, `lock`, `unlock`, `hold` | yes. The lock is a count. A use outside it fails at run time, not at bind. USE says compile error. |
@@ -58,29 +58,9 @@ The front end is the same one the compiler uses: tokenize, bind against the type
 | `--active` | yes. Call counts and caller names. `cost=unknown`. |
 | `--jit` on `@inlined` | yes. Compiles that function's bytecode with the amd64 emitter while this interpreter is still running, checks the native result, then calls the native symbol. A pointer, a call, a print, a watch, a save, or a load is not pure and is rejected. |
 
-## Not implemented
+## Closed
 
-These are rejected, or they are not keywords. They are not bugs in a row above.
-
-| feature | where it stops |
-|---|---|
-| `rng` `rand` `randf` | bind |
-| `namespace` | bind, `not implemented on either host` |
-| `@NoFailTolerance` `@gpuparallel` | bind, rejected on purpose |
-| an unknown `@` | bind, `is not in this stage` |
-| `onfail` `defer` `faildefer` `@retry` `STOP[THIS]` `fatal` `onwarn` | not parsed |
-| `flow` `formatconvert` | not declared. `$=` cannot see a flow. |
-| `string` `char` indexing | no |
-| multi-dimensional arrays | the second `[` is an index, not a shape |
-| `pool` `pipe` `push` `pop` `flush` `@accum` | no |
-| `fnid` `instance` `compose` `bind` `transform` `out[here]` | no |
-| `@comptime` `@compeval` `@stream` `@dataparallel` `@checkpoint` `@topology` `select` | no |
-| `window` `gather` `macro` `when` | no |
-| page placement, `@paged`, `@blockinit`, `@blockpack`, `@blockpush`, `@blockpop`, `blockid` | no |
-| `@memory_hard` `@npuparallel` | no |
-| coroutines, the 15-minute stack move | no |
-| SPIR-V / Vulkan as a device the interpreter can launch | no. The listing is a separate backend, and it is not a loadable module. |
-| OS threads for `fork` | no. Lanes run in order. That is the checksum the batteries match. |
+Forms that are not in USE are not a backlog. `namespace`, `@NoFailTolerance`, and `@gpuparallel` are rejected on purpose. An unknown `@` is `is not in this stage`.
 
 ## Limits of this oracle
 

@@ -81,7 +81,7 @@ sheet.save(out / "street.png")
 print("wrote", out / "street.png")
 PY
 
-echo "--- words, lipsum-cicero.txt, mix pasted vs call ---"
+echo "--- words, lipsum-cicero.txt, words vs call ---"
 sh "$REAL/words.sh"
 
 echo "--- rdp ---"

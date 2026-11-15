@@ -1,12 +1,10 @@
 # Use guide
 
-This is language spec 1.0. [MATRIX.md](MATRIX.md) is older and does not win where they differ. A program with `fn main` is parsed by one front end. The interpreter and the compiler both execute that program, or both reject it. The CPU core is what they run: `i32`, `i64`, `f64`, `bool`, pointers, arrays, objects, calls, `if`, `loop`, and `do`. Anything else in this file is rejected by both with the same message until it exists. A file with no `fn main` is not a program.
+This is language spec 1.0. The compiler release is 1.2 tripar. [MATRIX.md](MATRIX.md) is older and does not win where they differ. A program with `fn main` is parsed by one front end. The interpreter and the amd64 listing both execute that program, or both reject it. A file with no `fn main` is not a program.
 
 `()` groups. It never calls and it never takes an attribute argument. `[]` does.
 
-`//` starts a comment that runs to the end of the line. No space is required: `//comment` and `// comment` are both comments. `/*` starts a comment that runs until `*/` and may cross lines. A comment does not nest. A comment is not code, and a `//<<<` graph marker is a comment. Floor division is the token `/_/`: `a/_/b`. `a / b` is division toward zero.
-
-`$` is structural equality and nothing else. It is not a variable sigil. Unary `^` is not an operator. Binary `^` is bitwise xor. `^=` resolves and stores. `goto` is not in this version. Later, if it exists, it takes a pointer to a program position, not a text label.
+`//` starts a comment that runs to the end of the line. No space is required. `/*` starts a comment that runs until `*/` and may cross lines. A comment does not nest.
 
 A statement ends with `;`. A brace block does not. `return`, a declaration, a store, and a call used as a statement all end with `;`.
 
@@ -14,7 +12,7 @@ A statement ends with `;`. A brace block does not. `return`, a declaration, a st
 
 | order | operators | associativity |
 |---|---|---|
-| 1 | `::` `.` `in[]` `[index]` `++` `--` | postfix `++` `--` |
+| 1 | `.` `in[]` `[index]` `++` `--` | postfix `++` `--` |
 | 2 | unary `+` `-` `!` `~` `*` `&` `++` `--`, and `as[T, v]` | |
 | 3 | `**` | right |
 | 4 | `*` `/` `%` `/_/` | left |
@@ -27,117 +25,88 @@ A statement ends with `;`. A brace block does not. `return`, a declaration, a st
 | 11 | `\|` | left |
 | 12 | `&&` | left, and the right runs only when the left is true |
 | 13 | `\|\|` | left, and the right runs only when the left is false |
-| 14 | `=` `+=` `^=` | right |
+| 14 | `=` `+=` | right |
 
-`!`, `&&`, and `||` take `bool` and result in `bool`. An integer is not a `bool`. Unary `&` is the address. Binary `&`, `|`, and `^` are bitwise, and so are `~`, `<<`, and `>>`.
+`!`, `&&`, and `||` take `bool` and result in `bool`. An integer is not a `bool`. Unary `&` is the address. Binary `&`, `|`, and `^` are bitwise, and so are `~`, `<<`, and `>>`. `$=` lowers to constant false. `!$=` lowers to constant true. There is no structural row behind them. `^=` is not an operator. The lexer reads `^` and then `=`.
+
+Floor division is the token `/_/`. `a / b` is division toward zero.
 
 ## What a variable is
 
-A variable is one cell. Every mark on it belongs to one of four groups. A mark does not do the job of another group.
+A variable is one cell.
 
-| group | question | marks |
-|---|---|---|
-| scope | Who can name it? | `@private` `@protected` `@public` |
-| time | When does the cell exist? | unmarked `@ephemeral` `@static` `@config` |
-| type and value | What are the bits, and how do you name them? | `i8` `i16` `i32` `i64` `ui8` `ui16` `ui32` `ui64` `size` `f32` `f64` `bool` `char` `string` `object` `T*` `fn in[] out[T]` `fnid` `blockid` `@val` `@xor` |
-| geometry | Where do the bytes live, and where does a fn run? | `@paged` `@memory_hard` `@blockpack[name]` `@parallel[n]` `@gpuparallel` `@npuparallel` |
-
-Ordinary cell: mutable, `@private`, freed when the function returns, on the CPU. `@mut` on an ordinary cell changes nothing. It is not a scope. A function instance is not an ordinary cell. Its default is frozen. See Functions.
-
-### Scope
-
-| mark | who can name it |
+| mark | meaning |
 |---|---|
-| `@private` | Only the function that created it. Default for a variable. |
-| `@protected` | Any function in the same file. On an object field, also a subclass. |
-| `@public` | Any file that included this one. |
+| unmarked | Mutable. Freed when the function returns. Any number of stores. |
+| `@ephemeral` | One read. A second use is a failure. `state[name]` looks and does not consume it. |
+| `@static` | Life of the process. The initializer runs on the first call. A later call skips it and keeps every element, including an array. |
+| `@config` | Life of the process. First store only. A later store is a compile error. |
+| `@val` | Frozen after the first store. A later store is a compile error. |
+| `@xor` | A copy of the value. |
+| `@mut` | Changes nothing on an ordinary cell. On `@val` or `@config` it is a compile error. |
+| `@mutex` | The interpreter counts `lock` and `hold`. A use outside them is a failure there. |
+| `@private` | Hidden from a file that `include`s this one. Default for a local. |
 
-A function definition defaults to `@public`. `@private` hides it from other files. There is no `@global`. Two `@public` variables with the same short name in one namespace are a compile error.
+`@public` and `@protected` are not marks in this version. A name declared inside a brace ends at that brace. The same name in that same brace is `already declared`. A parameter lives for the whole function.
 
-### Time
+States sit on a tracked cell: **absent** (no value), **present** (a store has happened), **empty** (an ephemeral after its one use). `if[state[name]]` looks at the state and does not read the value. A read of an absent or empty value is a failure. An array with no initializer is stored as zeros, not left absent. An uninitialized `@static` array is those zeros. An uninitialized `@static` scalar stays absent until its initializer runs.
 
-| mark | when it is freed | store |
-|---|---|---|
-| unmarked | When the function returns. | Any number of stores. |
-| `@ephemeral` | After one read or one mov. Then wiped. | A second use is a compile error. |
-| `@static` | Life of the program. Created on the first call. Absent before that. | Stores are legal. Still hidden unless visibility says otherwise. C++ function-local static. |
-| `@config` | Life of the program. | First store only. |
+## Types
 
-`@val` is not a time. It freezes the cell after the first store, and the cell still dies with its time mark. `@config` is the time mark that also refuses a later store.
-
-States sit on the cell: **absent** (no value), **present** (a store has happened), **empty** (an ephemeral after its one use). `if[state[name]]` looks at the state and does not read the value. A read of an absent or empty value is a failure.
-
-### Type and value
-
-You name a cell in four ways. There is no fifth.
-
-| spelling | meaning |
+| name | meaning |
 |---|---|
-| `val` | The value. Passing it copies. |
-| `&val` | The address of that cell. |
-| `val*` | A pointer. It may be absent. `*p` is the cell it aims at. `*p = 1` stores there. |
-| `inst.val` | A field or method of an instance. On a pointer, `p.val` is `(*p).val` when `p` is present. An absent pointer is a failure. |
+| `i4` `i8` `i16` `i32` `i64` | Signed integers. |
+| `ui4` `ui8` `ui16` `ui32` `ui64` | Unsigned integers. |
+| `f64` | IEEE 754 binary64. |
+| `bool` | `true` or `false`. |
+| `T*` | A pointer. Kind `cell` is an interpreter index. `*p` loads. `*p = v` stores. |
+| `object` | A layout. Not a `struct` keyword. |
+
+`f32`, `char`, `string`, `size`, and the other float widths are not types here. `int` and `long` are not names.
+
+`+` `-` `*` `/` `%` `&` `|` `^` `<<` `>>` `~` and the compares take one atom. Two widths do not add. Integer `/` truncates toward zero. `/` or `%` by zero is a failure. Dividing the lowest signed value by `-1`, or negating it, is a failure. A shift count outside `0` .. width-1 is a failure, and a constant count outside that is a compile error. Integer `+` and `-` wrap. `a/_/b` is floor division. `a ** b` on integers rejects a negative exponent. `0 ** 0` is `1`. A power that does not fit is a failure. Unary `-` binds tighter than `**`, so `-2 ** 2` is `(-2) ** 2`.
+
+`@divzero[0]` makes a zero divisor return `0`. `@divzero[max]` returns the largest finite positive value of that atom. Any other argument is a compile error. The mark is off unless you write it.
+
+`as[T, v]` widens a signed or unsigned integer, or converts an integer to `f64`, or reads an enum as an integer. A narrowing `as` with no row is rejected. Pointer `==` and `!=` compare the address. An ordered compare of pointers is a compile error.
+
+`++` and `--` add or subtract one. The prefix value is the new value. The postfix value is the old value.
+
+The amd64 listing prints arithmetic for `i32`, `i64`, `f64`, and `bool`. `ui32` and `ui64` have no amd64 row. Widths below 32 are slot traffic on that listing so a bitmap writer can read the cells. The interpreter runs every integer width in the table above. Where the two hosts disagree, the row is in [notes/FIXES_NEEDED.md](notes/FIXES_NEEDED.md).
+
+## Arrays and enums
+
+An array length is a constant. `i32[0]` is a compile error. A short brace list zero-fills the tail. A long one is a compile error. One pair of brackets is the length. A second `[` is an index.
 
 ```text
-i32 x = 1;
-i32* p = &x;
-*p = 2;
-fn bump in[i32* a] out[] {
-  *a = *a + 1;
+i32 tape[4] = {1, 2, 3};
+i32 cell = tape[0];
+i32* p = &tape;
+```
+
+`&` takes a name. It does not take an index. `tape` in a pointer hole is the address of element 0.
+
+An enum is a closed set of names, not an integer. Omitted width is 32 bits. The first name is `0` unless you write a value. Two names with the same value are a compile error.
+
+```text
+enum Color {
+  red,
+  green,
+  blue = 4
 }
-bump in[&x];
+Color c = Color::red;
+match @total [c] {
+  Color::red { }
+  Color::green { }
+  Color::blue { }
+}
 ```
 
-`@xor` is ownership for security, not a way to spell a reference. One owner. Handing it to a new `@xor` name ends the previous name. While it is held, no other name may read or store it, and a pointer to it is a compile error.
-
-A function's type is `fn in[i32] out[i32]` when it returns an `i32`, and `fn in[i32] out[]` when it returns nothing. It is never written as `i32 name(i32)`.
-
-`f32` is a C `float`. `f64` is a C `double`. A foreign library may use either.
-
-### Geometry
-
-Geometry is not a type. On a function it chooses the device. On a large cell it chooses where the bytes live.
-
-| mark | where |
-|---|---|
-| unmarked | CPU. One run. |
-| `@parallel[n]` | n CPU threads. Not a GPU launch. The worker contract is under Runs. |
-| `@gpuparallel` | GPU. The geometry is the device's. No thread count. |
-| `@npuparallel` | NPU. The same crossing rule as the GPU. |
-| `@paged` | Only the locked sector is present. A read or a store while it is unlocked is a failure. |
-| `@memory_hard` | A file. The location is fixed at program start. The file is created before `main`. If it cannot be created, the host halts. A later read or write that fails is a failure. Multi-byte integers in the file are little-endian. |
-| `@blockpack[name]` | The next occupant of the load block `name`. `@blockinit` declares that block. |
-
-The scheduler does not pick a device. You write the mark. A call through an instance uses the instance's geometry when a transform has set one, and the definition's geometry otherwise.
-
-A `@gpuparallel` or `@npuparallel` parameter or result must be an atom, an `enum`, or an array or object made only of those. An `enum` crosses as its underlying atom. An object crosses only when it contains no pointer. A pointer, `string`, `rng`, `fn`, `fnid`, `blockid`, `pool`, or `pipe` is a compile error. The host copies the inputs to the device and copies the results back. The device does not keep a pointer after the call. `@gpuparallel` and `@npuparallel` are not in the hosts.
-
-## Runs
-
-`@parallel[n]` marks a worker. The worker returns `f64`. The first parameter is the lane, an `i32`. A second parameter is allowed only as a pointer, and only when the `fork` or `run` names it with `with[cell]`. That cell is `@mutex`. Every lane is handed the same cell. It is not a move, and it is not an `@xor` handoff.
-
-```text
-fork work;
-fork work in[4];
-fork work in[4] with[tape];
-f64 total = start work;
-finish work;
-f64 total = run work in[4] with[tape];
-```
-
-`fork` with no `in[k]` uses the `n` on the function. `fork work in[k]` is a compile error when the function's `@parallel[n]` is a different `n`. `k` is a constant from 1 to 64. `with` takes an `@mutex` cell. Anything else is a compile error.
-
-`fork` readies the threads and does not let them enter the body. `start` is an `f64` expression. It lets them enter, waits until every lane has returned, and its value is the sum of those results. A failure in one lane is raised after the others have finished. It does not cancel them. `finish` joins the threads. A second `fork` before that `finish` is a failure. `run` is `fork`, then `start`, then `finish`, and it is an `f64` expression.
-
-There is no parent mark. An unmarked `fork` does not outlive its caller. `@structuredConcurrency`, `@topology`, `select`, `pipe`, `push`, `pop`, and `@accum` are not in the hosts.
-
+`match` does not fall through. A missing arm is a no-op. `@total` makes a missing named arm a compile error. `match` of an `i32`, an `i64`, or a `bool` takes constant arms of that atom. `match` is lowered to `if`.
 
 ## Objects
-An object is a struct in memory. `struct` is not a second keyword. Fields are in the order written, with that target's C++ alignment. There is no virtual function and no vptr. `@ismutationof` does not make a subclass. A `flow` converts two layouts that are not parent and child.
 
-The short name of an object is one name inside its namespace. A second object with that short name in the same namespace, or a function with that short name there, is a compile error. `Draw::Point` and `Math::Point` are two objects.
-
-One parent is allowed. The mark is `@childof`, and it names that one object.
+An object is a layout in source order. No vptr. One parent, written `@childof`. The parent is a prefix at offset 0. A second `@childof`, a cycle, or a repeated field name is a compile error. An embedded object is a field, not a parent. An object must not embed itself by value. A pointer field may.
 
 ```text
 object Point {
@@ -155,586 +124,90 @@ object Colored @childof[Point] {
     HERE.rgb = 0;
   }
 }
-Colored c;
-c.x = 1;
-c.rgb = 2;
-Point* parent = as[Point, &c];
 ```
 
-The parent is a prefix at offset 0. The child's own fields follow it. `c.x` names the parent's field. The parent is written the way you name that object, so another namespace is `@childof[Draw::Point]`. A second `@childof`, a cycle, or a parent that is not an object is a compile error. A child must not declare a field name the parent already has.
-
-`as[Parent, &child]` is a pointer to that prefix. It is the only upcast. A downcast is a compile error, of a value or of a pointer. There is no vptr, so the compiler cannot check one later, and an unchecked downcast would be undefined. Keep the child pointer if you still need the child. `as` of a value copies the parent prefix and nothing else. Passing a `Colored` where a `Point` is required does not convert. A function that takes `Point*` does not accept `Colored*` until the caller writes `as`.
-
-There is still composition. An embedded field is not a parent.
-
-```text
-object Line {
-  Point a;
-  Point b;
-}
-Line ink;
-ink.a.x = 1;
-```
-
-`ink.a.x` is the embedded field. `ink.x` is not. A `Line` is not a `Point`, and `as[Point, &ink]` is a compile error.
-
-An object must not embed itself by value. A pointer field may aim at the same object type.
-
-```text
-object Node {
-  i32 v;
-  Node* next;
-}
-```
-
-Copying an object copies the parent prefix, each embedded field, and each pointer as an address. It does not follow the pointer. The instance's time mark covers the prefix and the fields. A field cannot carry `@ephemeral`, `@static`, or `@config`. A `@val` instance freezes every field. A `@val` field freezes that field even when the instance is mutable.
-
-Who may name the variable is the variable's scope. A field with no mark can be named by anyone who can name the instance. `@private` on a field is the file that defined the object, and a subclass cannot name it. `@protected` on a field is that file and any subclass. The bytes stay in the layout either way.
-
-This layout matches a C struct written as the parent's fields, then the child's fields. It matches C++ only for a class with no virtual function, no second base, and no vptr. Do not describe it as a C++ class hierarchy and expect the compiler to invent the same bytes.
-
-A function that takes `Point*` is still an operation. A method is that function written inside the object. It is not a field and it is not stored in the instance, so the layout does not grow a vptr.
-
-```text
-Point p;
-p.move in[1, 2];
-Point* q = &p;
-q.move in[1, 2];
-```
-
-`HERE` inside a method is the instance. Stores go into that instance. A parameter or local with the same name is the bare name. `HERE.x` is still the field. The function's full name is `Point.move`, so another object may also have a method named `move`. A bare `fn move` and a method `move` are different names.
-
-A child does not override. It may declare a mutation of the parent method. The parent method stays what it is, and a `Point*` call still runs `Point.move` even when the pointer aims at a child.
-
-```text
-Colored c;
-c.move in[1, 2];
-Point* parent = as[Point, &c];
-parent.move in[1, 2];
-```
-
-`c.move` is `Colored.move` because the static type is `Colored`. `parent.move` is `Point.move`. Nothing is chosen at run time. If a child has no method of that short name, the search walks the parent chain and uses the first one it finds. That walk is fixed when compiling.
-
-A child method may reuse the parent's short name only with `@ismutationof` of that parent method. Without the mark, the reused name is a compile error. A mutation with a different short name does not hide the parent method.
-
-A method defaults to `@public`. `@private` is the file that defined it, and a subclass cannot call it or mutate it. `@protected` can be called and mutated by a subclass. A `foreign` method names its C symbol in the mark, `foreign[Point_move]`, because `Point.move` is not a C symbol.
-
-
-## Namespaces
-
-A namespace is a name prefix. It is not an object, not a value, and not a parent. It holds functions, objects, and variables. Those are its components. An object cannot hold a namespace, because a namespace is not a field and it has no bytes.
-
-`::` is the namespace mark. `.` stays an instance field or a method.
-
-```text
-namespace Draw {
-  object Point {
-    i32 x;
-    i32 y;
-  }
-  fn identity in[i32 a] out[i32] {
-    return a;
-  }
-}
-Draw::Point p;
-p.x = 1;
-Draw::identity in[1];
-```
-
-Inside `Draw`, the short names `Point` and `identity` are visible. Outside it, the short name is not. The qualified name always works. There is no `using` and no argument-dependent lookup. Both would make a short name ambiguous.
-
-The same namespace may be opened again, in this file or another. The members are added to the one namespace. A repeated short name is still a compile error.
-
-Namespaces nest. `Draw::Color::pack` is one function. Its id is that qualified name, so `getfuncidbyname["Draw::Point.move"]` is the method. The same short name in another namespace is a different function.
-
-A `@public` member of another file is still named `Draw::identity`. `@private` stays in the file that defined it. `include` loads the file once and does not copy the other file's short names into this namespace.
-
-`Draw` cannot be stored, passed, or used with `as`. `Draw::Point` is the object. `Draw` itself is only the prefix.
-
-A variable written in a namespace, and not inside a function, lives for the program. It is not created on the first call. With no scope mark it is `@private` to the file that contains it. `@static` there changes nothing. `@static` inside a function is still the one created on the first call.
-
-Namespace variables initialize in a fixed order. A file is initialized when `include` first reaches it, depth first, and a file already loaded is skipped. Inside a file, the order is source order. An initializer that reads a namespace variable later in that order is a compile error. This is stricter than C++ across translation units, where that order is unspecified.
+A method is a function inside the object. The call is `p.move in[1, 2]`. `HERE` is the cell address of the instance. A child method that reuses a short name needs `@ismutationof[...]`. The pack is not evaluated. The call is chosen from the static type. `as[Parent, &child]` is the parent prefix. A downcast is a compile error. There is no implicit conversion between a child and its parent.
 
 ## Functions
 
-A definition is code, not a cell. You cannot store into it.
-
-```text
-fn add in[i32 a] out[] {
-  return a + 1;
-}
-```
-
-This is a compile error. The message is: function "add" on line 1 has no designated type out[] in function definition and cannot return this statement.
-
 ```text
 fn add in[i32 a] out[i32] {
   return a + 1;
 }
-```
-
-`out[i32]` is the result type. You write it. It is not inferred. `out[]` means there is no result. A path out of an `out[T]` function with no `return` is a compile error. A result of a different type is a compile error.
-
-Scope and geometry on that line apply to the definition. Time does not: the definition lives for the program. The type is `fn in[i32] out[i32]`. One short name is one function inside its namespace. A second definition with that short name in the same namespace is a compile error. Attributes do not choose a body.
-
-A mutation is a different function with its own id and its own name. It is not an overload. The call is the name you wrote. The relationship is the parent's id, never the parent's name.
-
-```text
-fn add in[i32 a] out[i32] {
-  return a + 1;
-}
-fn add_f in[f64 a] out[f64] @ismutationof[getfuncidbyname["add"]] {
-  return a + 1.0;
-}
-```
-
-`fnid` is the id of a definition. It is a value. It is not a pointer, not an instance, and not callable. An instance does not get its own id. Transforming an instance does not change the id or the name.
-
-```text
-fnid slot @static = getfuncidbyname["add"];
-string who = getnamebyfuncid[slot];
-fn(in[i32] out[i32]) f = getfuncbyid[slot];
-f in[1];
-```
-
-`getfuncidbyname` runs at compile time. The string is the name you would call: `add`, or `Draw::Point.move`. A short name that is not exactly one function in that namespace is a compile error. The result is a `fnid`.
-
-`getnamebyfuncid` returns the qualified name. A constant id is resolved at compile time. An id read from a cell, including a `@static` cell, is resolved when that call runs. One id has one name.
-
-`getfuncbyid` returns that definition as a frozen function value. You may call it. `instance` of it makes a cell. It is not a `@mut` instance. A missing id is a compile error when the id is a constant, and a failure when the id comes from a cell.
-
-`@ismutationof[id]` stores that id. A missing id is a compile error. A cycle of mutations is a compile error. A mutation of a mutation is allowed.
-
-The mark does not change the call and it does not change the C symbol. `add_f` is its own foreign name if it is `foreign`. The C side does not see `@ismutationof`.
-
-C++ equivalency is the type, the address, and the call. It is not the declarator syntax.
-
-| C++ idea | here |
-|---|---|
-| function type | `fn in[i32] out[i32]` |
-| address of the code | `&add` |
-| call | `add in[4]` |
-| overload | None. A different signature is another function. `@ismutationof` only records the lineage. |
-| `std::function` / bind | `instance` and `bind` |
-
-`&add` aims at the definition. It is not a cell.
-
-An instance is the cell. Scope, time, `@val`, and `@xor` apply to it.
-
-```text
-fn(in[i32] out[i32]) mine = instance[add];
-mine in[4];
-fn(in[i32] out[i32])* slot = &mine;
-```
-
-The default instance is frozen. You may call it. You may not rewrite it. `@mut` on that instance is the condition that unlocks `transform`. `@mut` on ordinary data still does not rewrite code.
-
-```text
-fn(in[i32] out[i32]) mine @mut = instance[add];
-transform[mine] @geometry {
-  @gpuparallel
-}
-transform[mine] @body {
-  return a + 2;
-}
-```
-
-| operation | new cell or the same one | needs `@mut` |
-|---|---|---|
-| `compose in[outer, inner]` | New instance. `compose in[outer, inner] in[x]` is `outer in[inner in[x]]`. | no |
-| `bind in[f, v]` | New instance. `v` fills the first free parameter. `bind in[f, n, v]` fills parameter n. A value is copied. | no |
-| `transform[mine] @geometry` | Same instance. Device only. | yes |
-| `transform[mine] @body` | Same instance. Body only. The `in` and `out` types stay. | yes |
-
-A transform that names no group is a compile error. One transform may name `@body` and `@geometry` together. That is the higher-dimensional edit this version allows: one change across those axes, not a new axis language. Scope and time are not rewritten in place. A different scope or time is a new instance.
-
-A transform is itself a function from an instance to an instance, so later it can be composed and bound like any other function. That is as far as the higher-dimensional goal goes here. No extra dimension type is added.
-
-A call that has started keeps the body and geometry it started with. A transform does not change the definition, and it does not change any other instance. A `@compeval` definition cannot be made into a `@mut` instance. Binding a pointer to a cell that dies before the instance dies is the same detached-pointer error as anywhere else.
-
-## HERE, THIS, and another function
-
-These are three different things. A result being stored is not a context, and a failure is not a function.
-
-| word | what it is |
-|---|---|
-| `HERE` | The context of the function that is running. `HERE.n` is that function's own cell `n`. |
-| `THIS` | The failure in `onfail`, or the instance in `transform`. A failure has no payload. `THIS` is not a value and it has no fields. |
-| `context[other]` | The published cells of another function. `@public` cells, plus `@protected` cells when the reader is in the same file. `@private` cells are not in it. |
-
-```text
-fn counter in[] out[i32] {
-  i32 n @static @public = 0;
-  HERE.n = HERE.n + 1;
-  return HERE.n;
-}
-i32 seen = context[counter].n;
-```
-
-`STOP[THIS]` halts the failure in hand. A call used on the right of `=` stores into that name. `out[new]` still allocates.
-
-You do not walk another function's stack to find a local. If it is not published, `context` does not have it.
-
-## out[here]
-
-`out[here]` is the chain. It is not the name on the left of `=`, and it is not `HERE`. The result type is the `out` type of the function taken as input. It is still designated. It is not inferred from the body.
-
-This function returns a value to the function it took as an input. That input function then runs. What it returns is what this function returns. The next layer is that input. `HERE` does not switch to the callee.
-
-```text
-fn last in[i32 x] out[i32] {
-  return x + 1;
-}
-fn layer in[fn(in[i32] out[i32]) next] out[here] {
-  return 1;
-}
-layer in[last];
-```
-
-`return 1` on a function marked `out[here]` means `next in[1]`. `last` returns 2, and that is what `layer` returns.
-
-`out[here] = v` does the same delivery and does not leave the function. The expression's value is what the input function returns.
-
-If several parameters are functions, `out[here]` is the first. `out[here next]` names one. No function parameter is a compile error.
-
-The callee may read `context` of this function only for published cells. A function that does not say `out[here]` returns only to its caller.
-
-## Pipe and pool
-
-These are the Oiria pipe and the Oiria pool, without a subclass for each kind. A pool is the memory. A pipe only moves bytes. The lock lives inside the pool. You do not add a second `@mutex` to it.
-
-```text
-pool buf = pool[4096];
-hold[buf] @read { }
-hold[buf] @write { }
-hold[buf] @exclusive { }
-```
-
-| mode | who may be inside |
-|---|---|
-| `@read` | Many readers. No writer. |
-| `@write` | One writer. No reader. |
-| `@exclusive` | One holder. Nobody else. |
-
-`hold` acquires on entry and releases on every exit, including failure. A store without a write or exclusive hold is a compile error. A read without a hold is a compile error.
-
-`@ring` on a pool makes it a byte queue. `push` and `pop` on a pool use that queue. Full is a failure. Empty `pop` is absent.
-
-A pipe connects functions or pools. Its kind and its shape are marks, not types.
-
-| mark | Oiria kind | behavior |
-|---|---|---|
-| `@process` | InterProcess | A queue. Time is not critical. `pop` does not block. Default depth 16. |
-| `@device` | InterDevice | A batch of 1 to 255 items. `flush` sends the batch and a CRC. |
-| `@buffer` | InterBuffer | Passes a pointer. The pointer is present only during that `push`. Storing it is a compile error. |
-
-| mark | who it connects |
-|---|---|
-| `@direct` | One source, one target. Default. |
-| `@fan` | One source, many targets. |
-| `@clone` | One source, many targets, the same bytes to each. |
-| `@merge` | Many sources, one target. |
-| `@cfan` | Fan, and each target may drop the item. |
-| `@cmerge` | Merge, and each source may drop the item. |
-
-```text
-pipe link @process @direct;
-push[link, item];
-pop[link];
-```
-
-`push` is a failure when the pipe is full or the item is dropped. `pop` of an empty pipe is absent. `flush` on a pipe that is not `@device` is a compile error. A `@device` flush appends a CRC-32/ISO-HDLC of the batch: polynomial `0x04C11DB7`, initial value `0xFFFFFFFF`, final xor `0xFFFFFFFF`. A filter on a pipe may only find, swap, replace, or remove bytes. It may not call a function. No filter means the bytes are copied unchanged. Unit conversion stays at `formatconvert`, not inside the pipe.
-
-## Link table
-
-Pointer chasing across functions is not required. Each function definition has an id. The key of two ids is the pair, lower id first, then the other. That key does not collide with a different pair.
-
-```text
-links[add, mine]
-```
-
-The record has two sides:
-
-| side | what it holds |
-|---|---|
-| `add` | Pointers `add` holds that point into `mine`. |
-| `mine` | Pointers `mine` holds that point into `add`. |
-
-One lookup returns both directions. It does not follow those pointers onward. The compiler fills the record when one function's instance stores a pointer into the other's published cell, or when `bind` captures such a pointer. A private cell never appears in the record.
-
-Calculus stays ordinary functions on values. This table is the feature that removes the chase. There is no derivative operator.
-
-
-## Foreign libraries
-
-`include "file.tpth_s"` loads Toplethos. It does not parse C or C++. A header is not a Toplethos file.
-
-`include lib` names a host library and the C symbols Toplethos may call. A C++ library is reached only through `extern "C"` in that library. Overloaded C++ names, templates, and methods stay on the C++ side of the shim. An object crosses as the layout in Objects: parent prefix, then fields, no vptr.
-
-```text
-include lib "m" {
-  fn sin in[f64 x] out[f64] foreign;
-}
-sin in[1.0];
-```
-
-The library is loaded once. A second `include lib "m"` means already loaded. A missing library or a missing symbol fails at that include, not at the first call. The host binds it, either on the link line or with `dlopen`.
-
-A value argument is copied. A pointer is the address, and it must stay valid for the call. The foreign function must not keep the pointer unless that cell outlives the call.
-
-A bare `foreign` uses the function's short name as the C symbol. That is legal only when the short name is one C identifier. A qualified name, and a method, must write the symbol: `foreign[Point_move]`. `foreign` has no Toplethos body. `transform` of its `@body` is a compile error. The call runs on the CPU in the host. `@gpuparallel` does not retarget it. If the C function starts its own device work, that stays inside the C function.
-
-
-## Entry
-
-The host calls `main`.
-
-```text
 fn main in[] out[i32] {
-  return 0;
+  return add in[41];
 }
 ```
 
-There is one `main`. It takes nothing. The result type is `i32`, and you write it. `0` is a normal exit. A failure that leaves `main` halts. It is not returned as `0`.
+`out[i32]` is the result type. You write it. `out[]` means there is no result. `return` of a value from `out[]` is a compile error. A path out of `out[T]` with no `return` is a compile error. A second `main` is a compile error. `name()` is not a call. The call is `name in[args]`.
 
-## Values
+`include "file.tpth_s"` loads that file once. `@private` in that file stays there. A C or C++ header is rejected. `include lib` is rejected.
 
-The prefix says what the atom is. The number is the width, the way `i32` is.
+`@require[bool]` traps at run time when the bool is false.
 
-| prefix | meaning | widths |
-|---|---|---|
-| `i` | Signed integer. | `i4` `i8` `i16` `i32` `i64` |
-| `ui` | Unsigned integer. | `ui4` `ui8` `ui16` `ui32` `ui64` |
-| `f` | IEEE 754 float. It has a sign. | `f8e4m3` `f8e5m2` `f16` `f32` `f64` |
-| `bf` | Bfloat. `f32`'s exponent, a 7-bit mantissa. Not `f16`. | `bf16` |
-| `uf` | Unsigned float. The same layout as `f`, with the sign bit required to be `0`. | `uf8e4m3` `uf8e5m2` `uf32` `uf64` |
-| `t` | Balanced ternary. The number counts trits, not bits. Each trit is `-1`, `0`, or `+1`. | `t1` `t8` `t16` `t32` `t64` |
+`@inlined` on a pure scalar `i32`, `i64`, or `bool` function asks the interpreter to compile that function, check it against the oracle, and call the native symbol. A call, a print, a watch, a file load or save, or a pointer is rejected.
 
-`size` is the target's unsigned pointer width. `bool` is `true` or `false`. `char` is one 8-bit code unit, written `'A'`. It is not `ui8` and it is not `i8`. A string is `"text"`. `int` and `long` are not names: their width is not fixed. C++ has no unsigned float and no ternary, so `uf` and `t` have no C++ name.
+`@time["name"] watch <f64> { }` measures the brace with a monotonic clock and prints `name`, the seconds, and the `f64`.
 
-A trit is stored in two bits: `00` is `-1`, `01` is `0`, `10` is `+1`. `11` is not a trit. `t8` is 16 bits. A negative `uf` literal is a compile error.
+## Control
 
-There is no single `f8`. `f8e4m3` is 1 sign, 4 exponent, 3 mantissa. `f8e5m2` is 1 sign, 5 exponent, 2 mantissa. `uf8e4m3` and `uf8e5m2` are those layouts with the sign bit required to be `0`. `bf16` is not a short `f32` and it is not `f16`. `i4` is `-8` through `7`. `ui4` is `0` through `15`. One `i4` or `ui4` cell uses the low nibble of a byte. An array of them packs two per byte, low nibble first.
+`if` takes a `bool`. A missing `else` does nothing.
 
-Every cell the compiler can describe has one type primitive. It is not a value you can store.
+`loop` runs until `leave`. `leave[name]` ends the loop marked `@name[name]`.
 
-```text
-typeprimitive { ptr_to_elem, size, kind }
-```
+`do n[k]` runs the body `k` times. `i` is `0` through `k - 1`, read-only, and only for that `do`, including a nested `do` and its `onFinished`. Writing `i` is a compile error. `onFinished` runs once after the `do`.
 
-`kind` is an atom or the name of a layout. A struct is a layout. A field whose type is an atom has that atom as its kind. `v.x += 1` is `v.x = v.x + 1` for that field's kind.
+`continue` starts the next iteration of the innermost `do` or `loop`. Inside a `do` it still increments `i`. Outside both, the message is `continue is not inside a loop`.
 
-`+` is the functor `addmagnitude`. The compiler unwraps the call to one definite row. There is no value that stays polymorphic at run time. `bool`, `char`, and `string` have no arithmetic row until you add one.
+## Runs
 
-| inputs | row | result |
-|---|---|---|
-| the same `i` or `ui` width twice | Integer add. The bits wrap. | That atom. |
-| the same `f` or `uf` width twice | IEEE 754 add. A `uf` result that would be negative is a failure. | That atom. |
-| the same `t` width twice | Balanced ternary add. The trits wrap. | That atom. |
-| an integer and a float, either order | Convert the integer to that float, then float add. | That float. |
-| two integers of different width or signedness | No row. | Compile error. |
-| two floats of different width or signedness | No row. | Compile error. |
-| two `string` values | Append the bytes of the right to the left. | `string` |
-| anything else | No row, until you add one. | Compile error. |
-
-`-`, `*`, `/`, and `%` are `submagnitude`, `mulmagnitude`, `divmagnitude`, and `remmagnitude`. They use the same row rules, except `uf` subtraction has no built-in row: a negative result does not fit. Integer `/` truncates toward zero. `a % b` is `a - (a / b) * b`, so the remainder takes the sign of `a`. `/` or `%` by zero is a failure. Dividing or taking the remainder of the lowest signed value by `-1` is a failure. Unary `-` of that same value is a failure. Integer `+` and `-` wrap. That wrap is the result, and an optimizer may not delete it. `%` has no row for a float. `@divzero` applies to `%` by zero and to `/_/` by zero the same way it applies to `/`. `a/_/b` is floor division, toward negative infinity, for two integers of the same width or two `f64` values. `a ** b` is `a` raised to `b`. An integer power with a negative exponent is a failure, and `0 ** 0` is `1`. A power that does not fit in the integer width is a failure. An `f64` power that is not a number is a failure. Unary `-` binds tighter than `**`, so `-2 ** 2` is `(-2) ** 2`.
-
-`++` and `--` add or subtract one from an integer cell and wrap the way `+` does. The prefix form's value is the new value. The postfix form's value is the old value. The cell must be one that can be stored.
-
-`@globaloptimize[01]` before the first function selects the passes. `02` selects `01`. `03` tags each function with a locked ikitaku verb and then turns an integer multiply by a positive power of two into a shift. The line ends with `;`. One per file. Omitted, the level is `01`.
-
-`@inlined` on a function tells the interpreter to compile that function and call the symbol. The function is scalar, not a method, and has no effect and no call. Otherwise both hosts reject it. The compiler still emits an ordinary call.
-
-Binary `&`, `^`, and `|`, and unary `~`, take two integer atoms of the same width, or one for `~`. The bits are the two's complement representation. A float, a `bool`, a pointer, or two different widths has no row. `<<` and `>>` take that integer and an `i32` count. The count must be from `0` through one less than the width. Outside that range is a failure, and a constant count outside it is a compile error. `<<` shifts the bits toward the high end and drops what leaves the width. `>>` on a signed atom fills with the sign bit. `>>` on an unsigned atom fills with zero. There is no row that turns a bitwise result into a float.
-
-A product of small factors resolves to a wider atom. `i4`, `ui4`, `i8`, and `ui8` multiply to `i32`. `f8e4m3`, `f8e5m2`, `uf8e4m3`, `uf8e5m2`, `f16`, and `bf16` multiply to `f32`. The `+` of two equal atoms stays that atom. `onfail` runs.
-
-`@divzero[0]` on a function makes a zero divisor return `0` of the result type instead. `@divzero[max]` returns the largest finite positive value of that atom. A negative dividend does not flip it. This is risky: the failure does not happen, so `onfail` does not run, and a zero divisor looks like a normal result. The mark is off unless you write it. It does not apply to any other failure.
-
-`==`, `!=`, `<`, `>`, `<=`, and `>=` result in `bool`. They accept two of the same atom, or an integer and a float under the same conversion as `+`. Pointer `==` and `!=` compare the address. An ordered compare of pointers is a compile error. `bool` and `string` have no arithmetic row. Float operations are IEEE 754, round-to-nearest, ties to even. A compare with `NaN` is false, except `!=`, which is true. The host may not flush subnormals or turn a failure into `NaN`.
-
-A new row is compile time. Its types are definite atoms. The body may call a row that already exists. It may not call the functor and hit itself.
+`@parallel[n]` marks a worker. The worker returns `f64`. The first parameter is the lane, an `i32`.
 
 ```text
-row[addmagnitude] in[i16 a, i32 b] out[i32] {
-  return addmagnitude in[as[i32, a], b];
-}
+fork work in[4];
+f64 total = start work;
+finish work;
+f64 total = run work in[4];
 ```
 
-`as[i32, a]` on atoms is the `convert` functor. Built-in rows widen `i` to a wider `i`, `ui` to a wider `ui`, and `t` to a longer `t`. They widen `f8e4m3` and `f8e5m2` to `f16`, `f16` to `f32`, `f32` to `f64`, and `bf16` to `f32`. A `uf` widens to `f` of the same layout. `uf8e4m3` and `uf8e5m2` also widen to `f16`, and `uf32` widens to `uf64`. An integer to `f16`, `f32`, or `f64` is a built-in row too. `t1` to `i8` or a wider `i` is a built-in row. A narrowing `as`, `f` to `uf`, `f16` to `bf16`, `bf16` to `f16`, or `i` to `ui`, has no built-in row.
+`fork` stores the count. It does not enter the body. `start` runs the lanes in order on this thread, from `0` through `count - 1`, and returns the sum of the `f64` results. `finish` does nothing further. The lanes already finished inside `start`. `run` is `fork`, then `start`. A second `fork` before `finish` replaces the pending count. A lane that fails stops `start`. This is not an operating-system thread, and it is not a device launch.
 
-The C++ environment maps fixed-width names only.
+`@gpuparallel` and `@NoFailTolerance` are rejected on purpose.
 
-| C++ | here |
-|---|---|
-| `int8_t` `int16_t` `int32_t` `int64_t` | `i8` `i16` `i32` `i64` |
-| `uint8_t` `uint16_t` `uint32_t` `uint64_t` | `ui8` `ui16` `ui32` `ui64` |
-| `float` `double` | `f32` `f64` |
-| `size_t` | `size` |
-| `bool` | `bool` |
-| `char` | `char` |
+## Files
 
-
-## Arrays, enums, and strings
-
-An array's size is part of its type. The size is a constant. `i32[0]` is a compile error. An array does not become a pointer. Passing it copies every element. `&a[0]` is the pointer.
+`loadbmp` reads one 24-bit uncompressed bitmap into an `i32` array. The path is a string literal. The array's length must be the file's width times its height. A pixel is `r * 65536 + g * 256 + b`. A file that is missing, compressed, or a different size is a failure. A negative height is top-down. `loadbmp` has no result.
 
 ```text
-i32 tape[4] = {1, 2, 3, 4};
-i32 cell = tape[0];
-size n = size in[tape];
+i32 pix[2249868] @static;
+loadbmp in["examples/street.bmp", pix];
 ```
 
-A short brace list zero-fills the rest. A long one is a compile error. `i32 grid[2][3]` is row-major, and the last index is contiguous. `size in[grid]` is `2`. `size in[grid[0]]` is `3`.
-
-The index may be `size` or an integer atom. A negative index is a failure. An index past the end is a failure. C++ leaves that undefined. This is a failure instead.
-
-An enum is a closed set of names. It is not an integer. The value is a signed integer of the enum's width, and a use of the name does not have the integer's type. `as[i32, c]` reads the value when the width is `e8`, `e16`, or `e32`. `as[i64, c]` reads any width. `as[Color, n]` stores an integer of that width, including a value with no name. A constant that does not fit the width is a compile error. A value that does not fit at run time is a failure.
-
-The width is written after the name. It is `e8`, `e16`, `e32`, or `e64`. Omitted, it is `e32`. The first name is `0` and each next name is one more, unless you write a value. A value may be negative. Two names with the same value are a compile error.
-
-The compiler keeps one 32-bit word per enum type, two `i16` halves. The high half is `1`, which means this type is an enum. The low half is that enum's id, counting from `0` in the order the enums are declared. The cell holds the signed value, not the word. The word is how the hosts tell one enum from another and from a plain integer.
+`loadbytes` reads a file into an `i32` array, one byte per cell, and results in the number of bytes stored. A missing file is a failure. A file longer than the array is a failure. Cells past the end of the file are left as they were.
 
 ```text
-enum Color e16 {
-  red,
-  green,
-  blue = 4
-}
-Color c = Color::red;
-match @total [c] {
-  Color::red { }
-  Color::green { }
-  Color::blue { }
-}
+i32 buf[140000] @static;
+i32 n = loadbytes in["lipsum-cicero.txt", buf];
 ```
 
-`Color::red` is the name. `match` does not fall through. An arm that does not match is skipped. `@total` makes a missing named arm a compile error. A value with no name matches no arm. `match` of an `i32`, an `i64`, or a `bool` takes constant arms of that same atom, and `@total` is not allowed there, because an atom is not a closed set of names.
+`loadfile` is the same read. A longer file is cut to the array length, and that length is the result. A missing file is still a failure.
 
-A `string` is a sequence of `char`, like `std::string`. `"text"` is a `string`, not a pointer. `==` and `<` compare the bytes in order. `+` appends. `size in[s]` is the number of `char` values. `s[i]` is one `char`, with the same index rule as an array.
-
-## Pages
-
-A page is 4096 bytes. This is where an object, an array, or a function frame is placed. It is not a type. The size table is not a mark. `@paged` is still only residency. `@memory_hard` is still a file, and a file is not packed into a RAM page. A load block is the only named slab, and only `@blockpack` puts a cell in one.
-
-The size is the laid-out size on that target. Count alignment padding, the present flag, and the extra bytes of a `@mutex` cell. Do not use the sum of the field atoms. A child counts the parent prefix. An embedded object is not placed on its own. The outer object is what is placed. An empty object occupies no page.
-
-Placement alignment is the greater of 16 and the target's C++ alignment for that type. A `@mutex` cell is also 64-byte aligned inside the page. If that pad would push the object across the page, and the object would have fit on this page without the pad, the object starts on the next page instead.
-
-The bytes left on the current page decide.
-
-| laid-out size | placement |
-|---|---|
-| 0 | No page. |
-| 1 … 2048 | Pack it. 2048 fits twice, with nothing left. 1024 fits four. 512 fits eight. Do not stop at two just because the size is under 2048. |
-| 2049 … 4096 | One object on that page, starting on the boundary. A 3 KiB object cannot share the page with another object of that size. The spare stays empty. It is not a load block. |
-| 4097 and up | Start on a boundary. The bytes stay contiguous and cover `ceil(size / 4096)` pages. Do not pad each page into its own slice of fields. |
-
-An array is one allocation. Elements stay contiguous, in index order. Do not page-align each element, even when an element is large. If the whole array fits in the bytes left on the page, place it there. If it fits in one page but not in the bytes left, start it on the next page. If it is larger than a page, page-align the base and keep the elements contiguous across pages. An element that itself spans a page is allowed. Inserting padding so each element starts on a page is not.
-
-A load block is a named run of pages. You declare it, then you pack cells into it. The compiler does not look at references to decide either step. Packing is an attribute because the address is fixed before the program runs. A call would be too late, and a live cell is not moved. The id functions only name a block. They do not pack one.
+`savebmp` writes one 24-bit uncompressed bottom-up bitmap and has no result. The arguments are a string-literal path, an `i32` array, an `i32` width, and an `i32` height. A pixel is `r * 65536 + g * 256 + b`. A failed write is a failure.
 
 ```text
-@blockinit[scratch, 1];
-u8 raw[3072] @blockpack[scratch];
-i32 note @blockpack[scratch];
-i32 tag @blockpack[scratch];
+savebmp in["out.bmp", pix, w, h];
 ```
 
-`@blockinit[name, pages];` is a statement. `pages` is how many 4096-byte pages, and it is a constant of at least 1. Omitted, it is 1. The base is page-aligned. The block is not a cell. `@static` on that statement makes the block live for the program. Without it, the block lives until the enclosing function returns. `@paged` on it makes the block a locked sector. `@memory_hard` on it is a compile error. A second `@blockinit` of that name in the same namespace is a compile error. A block with nothing packed into it is a compile error.
-
-`@blockpack[name]` places this cell in that block, in source order, at the alignment it already required. The cell is not placed by the size table, and it does not keep a spare. A cell that does not fit in the bytes left is a compile error. It is not placed beside the block. A second `@blockpack` on one cell is a compile error. A `@memory_hard` cell cannot be packed. A cell must not outlive the block.
-
-`@blockpush[name];` makes `name` the current block until `@blockpop[name];`. `@blockpack` with no argument packs into the current block. Pop requires that `name` be the current one, then restores the previous. This stack is compile-time. It does not load a page. A push that is not popped before the scope ends is a compile error. `@blockpack[name]` does not change the current block.
+`saveArrayAsbmp` writes the same kind of file. The first argument is an integer array, or a pointer to a signed or unsigned integer from `i4` through `i64` or `ui4` through `ui64`. Then an `i32` width, an `i32` height, and a string-literal path. The result is `i32` `1` or `0`. It does not raise. Width and height must be in `1` .. `1048576`. A cell of 24 bits or more stores `r * 65536 + g * 256 + b` in the low 24 bits. A cell of 8 .. 23 bits stores grayscale in the low 8 bits. A cell of fewer than 8 bits stores `v * 255 / ((1 << bits) - 1)`. Row 0 of the array is the top row.
 
 ```text
-@blockinit[scratch, 1];
-@blockpush[scratch];
-i32 note @blockpack;
-i32 tag @blockpack;
-@blockpop[scratch];
+i32 pix[4] = {255, 65280, 16711680, 16777215};
+i32 ok = saveArrayAsbmp in[pix, 2, 2, "out.bmp"];
 ```
 
-An atom that would cross a page inside the block starts at the next page of that block. If no page remains, that is a compile error. The 64-byte gap between two mutable cells of different runs still applies, and that gap counts as used bytes.
+`print` writes one value and a newline. `threads` is the processor count, an `i32`. `freemem` is available RAM in bytes, an `i64`. If the host cannot answer, that is a failure. It is not `0`.
 
-A packed cell keeps its own name. The block is a separate name. You do not use the block as a pointer.
-
-```text
-blockid id = getblockidbyname["scratch"];
-string who = getnamebyblockid[id];
-```
-
-`getblockidbyname` runs at compile time. The string is the name you would write: `scratch`, or `Draw::scratch`. A short name that is not exactly one block there is a compile error. `blockid` is a value. It is not a pointer and not callable.
-
-A block that is not `@paged` is resident for its whole life. `lock` on it is a compile error. A `@paged` block is loaded by `lock` and unloaded by `unlock`, or by `hold` around a brace. Those calls take the block name or a constant `blockid`. A read or a store of one of its cells outside that pair is a compile error. Every path that locks must unlock. A `blockid` that is not a constant cannot be locked in this version.
-
-A function frame uses the same table against the stack page. A frame that fits in the bytes left stays there. A frame that fits in one page but not in the remainder starts at the next stack page. A frame bigger than a page is contiguous and its base is page-aligned. A frame of 4096 or less is not allocated with `malloc` to force a private page. The call is still the ordinary x86-64 stack.
-
-A straight-line function whose live locals, and the objects those locals name, fit in one page keeps those bytes on that one resident page for the whole run. Arrays and objects small enough to fit are kept on a loaded page for that run. A large array stays a run of pages, with the page under the current index loaded.
-
-The compiler keeps a context for every live name: page, offset, length, resident or not, dirty or not, and whether another run may write it. The next op may use a name only when that context says its page is resident. If it is not, the compiler loads that page before the op. It does not test residency again for a page it has already proved resident and has not unlocked. An unlocked `@paged` sector is not resident. A read or a store of it is still a failure.
-
-A live object is not moved. A pointer keeps the address it was given. There is no compaction.
-
-Two runs may share a page. Two mutable cells used by different runs are separated by 64 bytes, unless both are only read. Sharing a cache line is a compile error in that case. Sharing a page is not.
-
-A huge page, 2 MiB, is used only when one allocation is at least 2 MiB. A 3 KiB object never uses one.
-
-These sizes are known from the type, so the choice is made while compiling. The desktop host places real bytes this way. The interpreter uses the same sizes and the same failure on an unlocked `@paged` sector. It does not insert 4096-byte gaps.
-
-Odd cases, all of which follow the table and are not exceptions to it:
-
-| case | result |
-|---|---|
-| exactly 2048 | Two per page. No spare. |
-| exactly 4096 | One page. No spare. The base is the boundary. |
-| 3072, or any size from 2049 to 4095 | One on the page. The tail stays empty. It is not a load block. |
-| size just over 4096 | Two pages, contiguous, base on a boundary. One extra page is not added in front. |
-| array of 3 KiB objects | The array is contiguous. The base follows the array rule. Elements are not each given a page. |
-| array of `f64` that fits in one page | One resident page. No per-element alignment to 4096. |
-| `@mutex` pad would cross | Next page, then 64-byte align. |
-| parent plus child | One object. The size includes the prefix. |
-| embedded field | Not a separate placement. |
-| `@memory_hard` | File. Not a RAM page. |
-| `@paged` sector | A run of these pages. Placement is this table. Residency is the lock. |
-| pointer, `pool`, `pipe`, `fn` | The cell is placed by its own size. The target is placed on its own. |
-| two size classes | Not mixed by the size table. A load block may hold both, in pack order, if they fit. |
-| `@blockinit` with nothing packed | Compile error. |
-| `@blockpack` past the last byte | Compile error. Not placed beside the block. |
-| live object, page looks sparse | Leave it. Do not move it. |
-| interpreter | Same decisions, no hardware gaps. |
-
-One atom load crossing a page is a compiler bug when the value's laid-out size is 4096 or less. A larger object may cross. A field whose alignment was honored does not itself cross: an `f64` stays on an 8-byte boundary, so it cannot sit on the last 4 bytes of a page.
-
-## Known rewrites
-
-These are the slow forms the compiler rewrites when it can prove the row. The interpreter does not rewrite them. Both compute the same value. A row that is not proved is left as written.
-
-`@mutex` and `@xor` are not in this table. An interlock is the cost of a shared cell, the same way a Rust mutex is. A locked cell is not moved into a register that another run could miss.
-
-The choice is made while compiling. A constant array, a constant coefficient, and a constant trip count are known before the call. They are not rebuilt on the hot path.
-
-| slow form | the proof | the rewrite |
-|---|---|---|
-| a constant array rebuilt on every call, then loaded by a constant index | every element is a constant, nothing stores into it later, nothing takes its address | the load is the element. The array is not built |
-| a `@val` or `@config` `f64` used where a coefficient is written | the initializer is a constant, nothing stores it later, nothing takes its address | the use is that constant, so the chain rule can see it |
-| `k = N` then a loop that leaves when `k < 0`, indexes that array by `k`, and does `k = k - 1`, with `N` at most 16 | `k` is only that index, that compare, and that decrement | the loop is the `N + 1` straight stores. The chain rule then applies |
-| `do n[constant]` whose body is `x = as[f64, i] * scale`, then `y = c + x * y` with constant `c`, then `s = s + y` | the same proof, and there are at most eight constants | `i` is in `%eax`, `x` `y` `s` and every `c` stay in xmm for the loop. Nothing is spilled. `mul` then `add`, not `vfmadd` |
-| a present-flag check on a cell stored on every path to the load | phase 1 | the load is the value. No flag check |
-| `y = c + x * y` with `c` a constant or a pure addend | phase 3 | one `mulsd` and one `addsd`. `x` is held. Not `vfmadd`. Not `loop` |
-| `do n[constant]` that did not get the register row | the count is a constant | the trip count is an immediate. It is not spilled and reloaded |
-| `a / 2^k` on an integer, `2^k` a positive constant | the divisor is that constant | an arithmetic shift that rounds toward zero. Not `idiv` |
-| `if (x >= lo && x <= hi)` with `lo` and `hi` constants, `lo <= hi`, and both fitting a 32-bit immediate | the condition is that test and nothing else. `>=` and `<=` only. The value is not stored | `sub lo`, then `cmp (hi - lo)` / `ja`. Not two `setcc` chains |
-| the left of an integer operator, saved while the right runs | the right is a constant or a present name, or `rbx` is free because this is not a method | the left stays in a register. It is not pushed |
-| an index of a named array, and a store through that index | the array is a name | the index is not pushed. An integer value being stored stays in `rbx` |
-| a plain integer or bool local | no call while it is live, nothing takes its address, and a register is free | the value stays in that register. The cell is not read or stored |
-| a call of a straight function | scalar arguments and result, not a method, no loop of its own, it does not call itself, no `@static` `@config` `@xor` `@mutex` `@ephemeral` or `@val` cell, the same `@divzero` as the caller, and the call is not on the skipped side of `&&` or `||` | the body is pasted at the call. One return at the end is a store. An earlier return is a store and a leave |
-
-A straight-line function whose live locals fit in one page still follows the Pages rule. These rewrites do not move a live object, and they do not page-align a small one.
-
-## Utilities
-
-`min`, `max`, `clamp`, and `abs` take one atom. The arguments of `min`, `max`, and `clamp` are that same atom. `abs` of the lowest signed value is a failure. `swap` takes two pointers to the same type.
+`min`, `max`, `clamp`, and `abs` take one atom. `abs` of the lowest signed value is a failure. `swap` takes two pointers of one type.
 
 ```text
 i32 lo = min in[a, b];
@@ -742,330 +215,83 @@ i32 hi = clamp in[v, 0, 10];
 swap in[&a, &b];
 ```
 
-`rng` is an engine, not a hidden global. Copying it copies the 312-word state. The engine is C++ `std::mt19937_64`. `rng[s]` seeds it with that `ui64`, by the C++11 constructor that passes the value to `seed`. `rng[1]` is that constructor with seed `1`. Two engines seeded with `1` draw the same sequence.
-
-```text
-rng engine = rng[1];
-i32 roll = rand in[engine, 0, 10];
-f64 unit = randf in[engine];
-```
-
-`rand` is inclusive on both ends, and both ends are the same integer atom. `lo > hi` is a failure. If the range is every value of a 64-bit atom, the next engine word is that value. Otherwise let `n` be the number of values in the range. Draw a `ui64`. Let `rem` be `2^64` modulo `n`. Draw again while the word is below `rem`, then return `lo` plus that word modulo `n`.
-
-`randf` takes the next word, keeps its high 53 bits, and multiplies by `2^-53`. The result is an `f64` in `[0, 1)`. It is never `1`.
-
-`loadbmp` reads one 24-bit uncompressed bitmap into an `i32` array. The path is a string literal. The array's length must be the file's width times its height. A pixel is stored as `r * 65536 + g * 256 + b`. A file that is missing, compressed, or a different size is a failure. A negative height in the file is a top-down bitmap.
-
-```text
-i32 pix[2249868] @static;
-loadbmp in["examples/street.bmp", pix];
-```
-
-`loadbytes` reads a file into an `i32` array, one byte per cell, and results in the number of bytes stored. The path is a string literal. A missing file is a failure. A file longer than the array is a failure. Cells past the end of the file are left as they were.
-
-```text
-i32 buf[140000] @static;
-i32 n = loadbytes in["lipsum-cicero.txt", buf];
-```
-
-`loadfile` reads a file the same way as `loadbytes` and results in the number of bytes stored. A missing file is a failure. A file longer than the array is cut to the array length, and that length is the result. Cells past what was stored are left as they were.
-
-```text
-i32 buf[4];
-i32 n = loadfile in["lipsum-cicero.txt", buf];
-```
-
-`savebmp` writes one 24-bit uncompressed bottom-up bitmap and has no result. The arguments are a string-literal path, an `i32` array, an `i32` width, and an `i32` height. A pixel is `r * 65536 + g * 256 + b`. A failed write is a failure.
-
-```text
-savebmp in["examples/colorsort.bmp", pix, w, h];
-```
-
-`saveArrayAsbmp` writes one 24-bit uncompressed bottom-up bitmap. The first argument is an integer array, or a pointer to a signed or unsigned integer atom (`i4` through `i64`, `ui4` through `ui64`). Then an `i32` width, an `i32` height, and a string-literal path. The result is an `i32` signal: `1` if the file was written, `0` if it was not. It does not raise. Width and height must be in `1` .. `1048576`. The file is a `BITMAPINFOHEADER`, 24 bits, no compression, 2835 pixels per meter. A cell of 24 bits or more stores `r * 65536 + g * 256 + b` in the low 24 bits. A cell of 8 .. 23 bits stores grayscale in the low 8 bits. A cell of fewer than 8 bits stores `v * 255 / ((1 << bits) - 1)`. Row 0 of the array is the top row.
-
-```text
-i32 pix[4] = {255, 65280, 16711680, 16777215};
-i32 ok = saveArrayAsbmp in[pix, 2, 2, "out.bmp"];
-```
-
-## Flow
-
-`Hz` and `Pin` do not match because both store an integer. Nothing converts implicitly.
-
-```text
-flow rgb565 to vec4 {
-  r = r;
-  g = g;
-  b = b;
-}
-vec4 color = formatconvert in[src];
-```
-
-A `flow` is a row of the `resolve` functor between two layouts. The type primitive of each side is `{ ptr_to_elem, size, kind }`, and `kind` is the layout name. `$=` asks whether that row exists. `a $= b` is true only when a `flow` names the correspondence. A field not named is dropped. No `flow` means not structurally equal, even when the field names look the same. `!$=` is the opposite. `$=` does not convert.
-
-`^=` is the store form of `resolve`. It is not xor, and it is not `$=`.
-
-```text
-i32 n ^= 1.5;
-vec4 color ^= src;
-```
-
-The right-hand value is resolved into the left-hand cell's kind, then stored. Two atoms use a `convert` row. Two layouts use the `flow` row. No row is a compile error. A layout and an atom do not resolve without a row you added. `formatconvert in[src]` is the same flow row, returned as a value instead of stored. `as[T, v]` is the same convert row, returned as a value.
-
-`@ignore_if_structure_matches` on a function lets a parameter accept a `$=` source without `formatconvert`. Omitted: it does not.
-
-## Defaults that are not a group
-
-| if you write nothing else | what happens |
-|---|---|
-| `i32 y = 1` or `i32 y; y = 1` | Both store. Later stores are legal unless the cell is `@val` or `@config`. |
-| a function instance | Frozen. Callable. Not transformable until `@mut`. |
-| no `@comptime` and no `@compeval` | The function runs when called. |
-| no `@structuredConcurrency` | The mark is not in the hosts. `start` waits for every lane. A failure does not cancel a lane that is already running. The run does not outlive `finish`. |
-| `@topology`, `select`, `@stream`, `pipe`, `pool` | Not in the hosts. No barrier, no race, no queue, no pipe default. |
-| a missing `else` or match arm | No-op, unless `@total` or the project switch `total` is on. |
-| `@NoFailTolerance` | Not a mode. |
-| a pipe with no kind | Not in the hosts. |
-| a pool hold with no mode | Not in the hosts. `hold` on an `@mutex` cell is the lock around a block. |
-
-`@comptime` may run at compile time when every input is a constant. `@compeval` must. A non-constant input to `@compeval` is a compile error.
-
-## Shared store
-
-`@mutex` guards a cell that is not a pool. `lock` and `unlock` are the calls. `@xor` is not a mutex: a mutex is shared, and xor has one owner. A pool is not in the hosts. `hold` on an `@mutex` cell is the lock around a block.
-
-```text
-i32 tape[4] @static @mutex = {1, 2, 3, 4};
-lock[tape];
-tape[0] = tape[0] + 1;
-unlock[tape];
-hold[tape] {
-  tape[0] = tape[0] + 1;
-}
-```
-
-`hold` on a `@mutex` cell is `lock` plus `unlock` on every exit. A read or a store outside the pair is a compile error. Every path that locks must unlock.
-
-A cell that no run stores may be read by any number of runs. The hosts do not check a second run beyond this: a `fork` may share one cell, and only by `with` on an `@mutex` cell. `@xor` is a move inside one run. A pointer to an `@xor` cell is a compile error. `@accum` is not in the hosts. In one run, stores happen in source order and the last store wins.
-
-Arguments of a call are evaluated left to right, then the call runs. `a = b = c` evaluates `c`, stores it in `b`, then stores that value in `a`. A `@static` local is initialized once. Concurrent first calls wait for that one initialization.
-
-An object or an array with no initializer is absent: the atom, every element, and every field. A read of it is a failure. `= {}` stores zero in every atom and leaves every pointer absent. A short array brace zero-fills the tail. A short object brace does not. An omitted field stays absent.
-
-A namespace initializer may not call a function. It may be a constant or an earlier namespace variable. A pointer may not be stored into a cell that outlives its target. `as` does not turn a pointer to one atom into a pointer to another. A call past the host's call-stack limit is a failure, not a crash. `do n[k]` with `k < 0` is a failure, and a constant `k < 0` is a compile error. `k = 0` runs the body zero times. A `window` that does not fit in its array is a failure. `if` and `&&` require `bool`. `match` is a statement. Using it as a value is a compile error.
-
-| how you leave | order |
-|---|---|
-| success | `defer`, then `unlock`. A pool `hold` releases in that `unlock` step. |
-| failure | `faildefer`, then `defer`, then `unlock`, then `onfail`. |
-
-`@accum` on a cell means many runs may add into it. The add is the join. No other reduction is implied.
-
-## Failure
-
-A failure walks until `onfail` resolves it.
-
-| form | effect |
-|---|---|
-| `@require[…]` | Entry guard. False is a failure. |
-| `@ensure[…]` | Exit guard. |
-| `onfail` on the function | Resolves it here. |
-| `onfail` on the call | Used when the function did not. |
-| `@retry[k]` | Try again, up to k times, then the failure walks. |
-| `STOP[THIS]` | Halt the failure in hand. `THIS` is that failure. |
-| `fatal` | Skip `onfail`. The host shuts down. |
-| `onwarn` | Does not halt. |
-
-A failure has no payload. `STOP[THIS]` ends it. It does not produce a value, and it does not become `0`. If the failure leaves `main` with nothing stopping it, the host halts.
-
-`@structuredConcurrency` is not in the hosts. `start` does not cancel a lane. A `fork` shares a cell only through `with` on an `@mutex` cell, and that cell outlives the `finish`.
-
 ## Keywords
 
 | keyword | what it does |
 |---|---|
-| `fn` | Names one definition in its namespace. The body runs when it is called. Also spells the type: `fn in[i32] out[i32]`. |
+| `fn` | One definition. Called as `name in[args]`. |
 | `in[ ]` | The parameters. A value is copied. A pointer is not. |
-| `out[ ]` | The designated result. `out[]` means none. `out[i32]` means an `i32`. `out[here]` uses the input function's `out` type. |
-| `return` | Yields the designated result and leaves. `return` with a value in `out[]` is a compile error. |
-| `HERE` | The running function's own context. |
-| `THIS` | The failure in `onfail`, or the instance in `transform`. Not a value, and not a context. |
-| `context` | Published cells of another function. |
-| `links` | The two-way pointer record for one pair of function ids. |
-| `instance` | Makes a cell from a definition. Frozen unless the cell says `@mut`. |
-| `compose` | New instance. Inner runs first, then outer. |
-| `bind` | New instance with one parameter filled. |
-| `transform` | Rewrites `@body` or `@geometry` of a `@mut` instance. Does not touch the definition. |
-| `@ismutationof[id]` | Links this function to another function's id. Not an overload and not a call. |
-| `getfuncidbyname` | Compile time. The call name becomes a `fnid`. |
-| `getnamebyfuncid` | The qualified name of that id. |
-| `getfuncbyid` | The frozen function value of that id. |
-| `blockid` | The id of one load block. A value. Not a pointer and not callable. |
-| `getblockidbyname` | Compile time. The block name becomes a `blockid`. |
-| `getnamebyblockid` | The qualified name of that id. |
-| `@blockinit[name, pages]` | Statement. Names a load block of that many pages. Omitted `pages` means 1. |
-| `@blockpack[name]` | Places this cell in that block. No argument means the current block. |
-| `@blockpush[name]` `@blockpop[name]` | Compile-time stack of the current block. Not a load. |
-| `pool` | Shared memory. The access mode is its lock. |
-| `pipe` | Moves items. Does not own their storage. |
-| `push` `pop` `flush` | Queue operations. `flush` finishes a `@device` batch. |
-| `include` | Loads a `.tpth_s` file once. A cycle means already loaded. Does not reveal `@private` names. `include lib` binds a host library's C symbols. |
-| `namespace` | A C++-style prefix. It may be opened again. Not a value. No `using`. |
-| `object` | Declares one layout. `@childof[Parent]` is the one parent. An embedded object field is composition, not a parent. |
-| `flow` | A `resolve` row between two layouts. `$=` asks if it exists. `^=` stores through it. |
-| `macro` | A bundle of attributes. The body is attributes and `when` only. |
-| `when` | Comptime, inside a macro. A false `when` adds nothing. |
-| `create` | Allocates a new cell each time the statement runs. |
-| `initialize` | Starts a stackful coroutine. Does not allocate a variable. |
-| `if` | Runs the body when the condition is present and true. A missing `else` is a no-op. |
-| `match` | One arm of an `enum` or of constant values of one atom. A missing arm is a no-op. Arms do not fall through. |
-| `do n[k]` | Runs the body k times. `i` is 0 through k - 1, read-only. `i < k`, not `i <= k`. |
-| `onFinished` | Runs once after that `do` finishes. |
-| `loop` | Runs until `leave` or a failure. |
-| `continue` | Starts the next iteration of the innermost `do` or `loop`. |
-| `leave` | Ends the innermost `do` or `loop`. `leave[name]` ends the one with `@name[name]`. Not `fatal`. |
-| `select` | Runs the arms until one is present. Cancels the other arms of this `select`. |
-| `defer` | Runs on every exit from the block, before `unlock`. |
-| `faildefer` | Runs only when a failure leaves the block, before `defer`. |
-| `onfail` | Resolves the failure in hand. |
-| `onwarn` | A warning path. The function continues. |
-| `STOP[THIS]` | Halts the failure in hand. |
-| `fatal` | Emergency shutdown. `onfail` does not run. |
-| `lock` `unlock` | The mutex pair, for a cell that is not a pool. |
+| `out[ ]` | The result. `out[]` means none. |
+| `return` | Yields that result and leaves. |
+| `HERE` | The instance, inside a method. |
+| `include` | Loads one `.tpth_s` file once. |
+| `object` | One layout. `@childof[Parent]` is the one parent. |
+| `if` | Runs the body when the condition is true. |
+| `match` | One arm. No fall-through. |
+| `do n[k]` | The body, `k` times. |
+| `onFinished` | Once, after that `do`. |
+| `loop` | Until `leave`. |
+| `continue` | Next iteration of the innermost `do` or `loop`. |
+| `leave` | Ends that `do` or `loop`. `leave[name]` uses `@name`. |
+| `lock` `unlock` | The mutex pair. |
 | `hold` | That pair around a block. |
-| `fork` | Readies an `@parallel` worker. Does not enter the body. One `fork` at a time, until `finish`. |
-| `start` | An `f64` expression. Releases the lanes, waits for all of them, and returns the sum. |
-| `finish` | Joins the lanes from the current `fork`. |
-| `run` | `fork`, then `start`, then `finish`. An `f64` expression. |
-| `pause` | Keeps the coroutine stack. |
-| `resume` | Continues a coroutine. |
-| `await` | A host wait on that same stack. Not a second kind of coroutine. |
-| `next` | Takes one item from a stream queue. |
-| `window` | A pointer over n elements. No copy. |
-| `gather` | Copies the present lanes named by the ids, in that order. Absent lanes are skipped, not stored as zero. |
-| `formatconvert` | Applies a `flow`. The result is a value. |
-| `enum` | A closed set of names. Not an integer. |
-| `size` | The length of an array or a `string`. |
-| `min` `max` `clamp` `abs` | The usual arithmetic utilities. Same atom. |
-| `swap` | Exchanges two cells through pointers. |
-| `rng` | An explicit random engine. |
-| `rand` | An inclusive integer from that engine. |
-| `randf` | An `f64` in `[0, 1)` from that engine. |
-| `as` | Parent or child pointer, or a `convert` row returned as a value. |
-| `^=` | Resolve the right-hand kind into the left-hand cell and store. Not xor. Not `$=`. |
-| method | A `fn` inside an object. Called as `inst.move in[...]`. Not a field. |
+| `fork` | Stores a lane count. Does not enter the body. |
+| `start` | Runs those lanes in order and sums `f64`. |
+| `finish` | The lanes already finished. |
+| `run` | `fork`, then `start`. |
+| `enum` | A closed set of names. |
+| `min` `max` `clamp` `abs` | Arithmetic. Same atom. |
+| `swap` | Two pointers, one atom. |
+| `as` | A conversion that has a row. |
+| `print` `threads` `freemem` | Host facts. |
+| `loadbmp` `loadbytes` `loadfile` `savebmp` `saveArrayAsbmp` | The file operations above. |
 
-`@stream[n]` on a function makes that function the producer. Calling it starts it. It may run ahead until n items are unread, then it waits. `leave` inside it ends it. A stream is not a pool and not a pipe.
-
-`@dataparallel` on a function applies the body once per lane. The result is a new array. Different lengths are a failure. Absent lanes are skipped.
-
-`@checkpoint` saves the present cells at a barrier or at the end of a `hold`. Omitted: nothing is saved.
-
-`@name` is allowed on `loop` and `do`. `@total` on a `match` makes a missing arm a compile error. `i` from `do n[k]` exists for that `do` only, including a nested `do` and its `onFinished`, and it is gone after the closing brace. A name declared inside a brace ends at that brace. The same name in that same brace is an error. `continue` inside a `do` still increments `i`.
-
-`@time["name"] watch <f64> { }` is a statement. It measures the brace with a monotonic clock and prints `name`, the seconds, and the `f64`.
-
-If a wait has already lasted 15 minutes, the host moves that coroutine stack to disk or to other memory. The program cannot tell which. If the move fails, the coroutine stays paused and the wait is a failure.
-
-An unknown `@` is a compile error. `@` sits after a function, after a binding, or after `loop` and `do` when the mark is `@name`. `@blockinit`, `@blockpush`, and `@blockpop` are statements.
+`@name` is allowed on `loop` and `do`. An unknown `@` is a compile error.
 
 ## Nothing is undefined
 
-A program that compiles has one meaning. A violation is a compile error or a failure. It is not undefined, and it is not left to the host. Two hosts that accept the same program produce the same result, apart from scheduling, and the rules above already decide a tie.
+A program that compiles has one meaning. A violation is a compile error or a failure. Two hosts that accept a program produce the same result, apart from the rows in [notes/FIXES_NEEDED.md](notes/FIXES_NEEDED.md).
 
 ## Compile errors
 
-- `return` of a value when `out[]` has no designated type
+- `return` of a value when `out[]` has no result type
 - a result whose type is not the designated `out` type
 - a path out of `out[T]` with no `return`
 - a second `main`, or a program with no `main`
-- `+` with no row, or a narrowing `as` with no row
-- `/` is not a compile error when the divisor is zero. It is a failure
-- `expr = name`
 - `name()` as a call
-- `i32 name(i32)` as a function type
-- a second function with the same short name in the same namespace
-- `@ismutationof` a missing id, a name that is not one function, or a mutation cycle
-- `getfuncidbyname` of a name that is not one function
-- `getnamebyfuncid` or `getfuncbyid` of a constant id that does not exist
-- `out[here]` when the function takes no function, or the named parameter is not a function
-- using `HERE` as another function, or `THIS` as a context
-- `context` reading a `@private` cell
-- a store into a function definition
-- `transform` on an instance that is not `@mut`
-- `transform` that names no group, or names `@scope` or `@time`
-- a `@body` transform that changes `in[]` or `out[]`
-- a `@mut` instance of a `@compeval` definition
+- `+` with no row, or a narrowing `as` with no row
+- `/` by zero is a failure, not a compile error
+- a constant shift count outside `0` .. width-1
+- a second declaration of a name in the same brace
+- `continue` outside a `do` or a `loop`
+- writing `i` in a `do`
+- `if` or `match` used where a `bool` is required and the condition is not `bool`
 - a later store to `@val` or `@config`
 - `@mut` written on `@val` or `@config`
-- a pointer to an `@xor` cell, or a second reader of one
-- a second use of `@ephemeral`
-- a path that locks and does not unlock
-- a pool read or store without the matching `hold`
-- a second `@mutex` on a pool
-- storing the pointer from a `@buffer` pipe
-- a function call inside a pipe filter
-- writing `i` in a `do`
-- `leave[name]` with no matching `@name`
-- `@NoFailTolerance`
-- `@ptr` or `@ref` as a mark
-- `^=` used to compare. `$=` compares structure. `^=` resolves and stores.
 - `@divzero` with an argument other than `0` or `max`
+- an ordered compare of pointers
+- `namespace`
+- `@NoFailTolerance`
+- `@gpuparallel`
+- an unknown `@`
+- `include lib`, or `include` of a C or C++ header
 - a second `@childof`, a cycle, or a parent that is not an object
 - a child field whose name the parent already uses
-- a child method reusing a short name without `@ismutationof` of that parent method
-- a subclass calling or mutating a `@private` method
+- a child method reusing a short name without `@ismutationof`
 - an implicit conversion between a child and its parent
-- `as` between objects that are not parent and descendant, or between atoms with no `convert` row
+- a downcast
 - `struct` used as a type
 - an object embedding itself by value
-- a time mark on a field
-- a second object with the same short name in one namespace, or an object and a function with that short name there
-- a second member with the same short name in one namespace
-- using a namespace as a value, a parameter, or a parent
-- `include` of a C or C++ header as Toplethos source
-- a `foreign` function with a body, or `@body` on one
-- `include lib` of a mangled C++ name
-- an unknown `@`
-- `@blockinit` whose `pages` is not a constant of at least 1, or a second block of that name in one namespace
-- a load block with nothing packed into it
-- `@blockpack` of a name that is not a block, or `@blockpack` with no argument and no current block
-- a second `@blockpack` on one cell
-- a packed cell that does not fit, counting alignment and a 64-byte gap owed to another run
-- a packed cell that outlives its block, or a `@memory_hard` cell packed into a block
-- `@memory_hard` on `@blockinit`
-- `@blockpop` of a name that is not current, or a `@blockpush` not popped before the scope ends
-- `lock` of a block that is not `@paged`, or a read or a store of a `@paged` block's cell outside `lock` or `hold`
-- `lock` or `hold` of a `blockid` that is not a constant
-- a detached pointer to a cell that dies with the caller
-- two `@public` variables with the same short name in one namespace
-- `@compeval` with an input that is not a constant
-- `@dataparallel` arrays of different lengths
-- a missing match arm when `@total` or the project switch `total` is on
-- a statement, other than a brace block, that does not end with `;`
-- `!`, `&&`, or `||` applied to a value that is not `bool`
-- a `@gpuparallel` or `@npuparallel` parameter or result that cannot cross
-- `i32[0]`, or an array size that is not a constant
-- a brace list longer than the array
 - two enumerators with the same value
-- a `match` arm that is not a value of the scrutinee's type
+- a missing match arm when `@total` is set
+- `i32[0]`, or an array length that is not a constant
+- a brace list longer than the array
 - `min`, `max`, or `clamp` of two different atoms
-- `rand` with `lo > hi`
-- a downcast, of a value or of a pointer
-- a read or a store of a `@mutex` cell outside `lock` or `hold`
-- a second run touching a cell that another run stores, unless the cell is `@mutex`, `@xor`, or `@accum`
-- a store to `@accum` that is not an add
-- a bitwise operator or `%` with no row
-- a constant shift count outside `0` through one less than the width
-- `as` from a pointer to one atom into a pointer to another
-- a namespace initializer that calls a function
-- a pointer stored into a cell that outlives its target
-- `do n[k]` when `k` is a constant and `k < 0`
-- `if` with a condition that is not `bool`
-- `match` used as a value
-- `flush` of a pipe that is not `@device`
-- a `@compeval` or any other function compiled with flush-to-zero or a mode that drops IEEE rounding
+- `loadbmp` or `savebmp` used as a value
+- `loadbmp`, `loadbytes`, `loadfile`, or `savebmp` without a named `i32` array
 
 ## Not in the language
 
-No overload resolution. No multiple inheritance. No implicit parent conversion. No struct keyword. No virtual dispatch. No vptr. No downcast. A child method is a mutation, not an override. No inferred result types. No runtime polymorphic number. No `using`. No argument-dependent lookup. No borrow checker. No traits. No `goto` in this version. No `guard`. No default reduction besides the add on `@accum`. No gradient. No warp syntax. No silent device choice. No in-place rewrite of a definition. No dimension type beyond naming `@body` and `@geometry` in one transform. No walk of another function's private locals. No type punning. No undefined behavior. A missing arm is not an error unless `@total` or the project switch `total` says so. No per-element page alignment inside an array. No moving a live object to compact a page. No inferred spare, and no `@with`. A spare on the size table stays empty. A cell joins a load block only by `@blockpack`.
+These are not waiting. A program that names one is rejected, or the token is not a keyword.
+
+No namespace. No `string` or `char` value. No `rng`, `rand`, or `randf`. No pipe, no pool, no `push` or `pop`. No coroutine, `defer`, `onfail`, `select`, or `fatal`. No page placement and no load block. No `flow`. No function value, `fnid`, `instance`, `compose`, `bind`, or `transform`. No operating-system thread. No GPU launch and no Vulkan module. No overload. No multiple inheritance. No vptr. No downcast. No `goto`. No undefined behavior.

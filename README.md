@@ -11,7 +11,7 @@ compiler/tpcc --jit file.tpth_s
 
 `python3 conformance/check.py` is the 1.0 suite. A green run is release **1.2 tripar**. This tree is that release. What the name covers, and what it does not, is [notes/TRIPAR.md](notes/TRIPAR.md).
 
-What the amd64 listing actually runs is [notes/implemented_in_compiler.md](notes/implemented_in_compiler.md). What the interpreter actually runs is [notes/implemented_in_enterpreter.md](notes/implemented_in_enterpreter.md). Behavior that is present and wrong is [notes/FIXES_NEEDED.md](notes/FIXES_NEEDED.md). Later goals are [notes/GOALS.md](notes/GOALS.md).
+What the amd64 listing actually runs is [notes/implemented_in_compiler.md](notes/implemented_in_compiler.md). What the interpreter actually runs is [notes/implemented_in_enterpreter.md](notes/implemented_in_enterpreter.md). Behavior that is present and wrong is [notes/FIXES_NEEDED.md](notes/FIXES_NEEDED.md).
 
 The Horner battery is `sh aot/battery.sh`. The mixed-ops checksum is `sh aot/mix.sh`. The other cross-language rows are `sh aot/tasks.sh`. A 1.0 Toplethos program in those scripts is compiled with `tpcc`. The conformance suite is the release gate; those batteries are not.
 
